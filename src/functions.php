@@ -450,6 +450,218 @@ function mark_sync_failure(string $datasetKey, string $syncMode, string $errorMe
     );
 }
 
+function scheduler_job_dataset_key(string $jobKey): string
+{
+    return 'scheduler.job.' . $jobKey;
+}
+
+function scheduler_normalize_error_message(string $message): string
+{
+    $normalized = trim(preg_replace('/\s+/', ' ', $message) ?? '');
+    if ($normalized === '') {
+        $normalized = 'Job failed due to an unknown scheduler error.';
+    }
+
+    return mb_substr($normalized, 0, 500);
+}
+
+function scheduler_normalize_messages(array $messages): array
+{
+    $normalized = [];
+
+    foreach ($messages as $message) {
+        $text = scheduler_normalize_error_message((string) $message);
+        if ($text === '') {
+            continue;
+        }
+
+        $normalized[$text] = true;
+    }
+
+    return array_keys($normalized);
+}
+
+function scheduler_job_definitions(): array
+{
+    return [
+        'alliance_current_sync' => [
+            'timeout_seconds' => 180,
+            'lock_ttl_seconds' => 300,
+            'handler' => static function (): array {
+                $structureId = (int) get_setting('alliance_station_id', '0');
+                if ($structureId <= 0) {
+                    throw new RuntimeException('Alliance current sync skipped: configure an alliance structure first.');
+                }
+
+                return sync_alliance_structure_orders($structureId, 'incremental');
+            },
+        ],
+        'alliance_historical_sync' => [
+            'timeout_seconds' => 480,
+            'lock_ttl_seconds' => 600,
+            'handler' => static function (): array {
+                $structureId = (int) get_setting('alliance_station_id', '0');
+                if ($structureId <= 0) {
+                    throw new RuntimeException('Alliance history sync skipped: configure an alliance structure first.');
+                }
+
+                return sync_alliance_structure_orders($structureId, 'full');
+            },
+        ],
+        'market_hub_historical_sync' => [
+            'timeout_seconds' => 300,
+            'lock_ttl_seconds' => 420,
+            'handler' => static function (): array {
+                $hubRef = trim((string) get_setting('market_station_id', ''));
+                if ($hubRef === '') {
+                    throw new RuntimeException('Hub history sync skipped: configure a market hub/station first.');
+                }
+
+                return sync_market_hub_history($hubRef, 'full');
+            },
+        ],
+    ];
+}
+
+function scheduler_due_jobs(): array
+{
+    $definitions = scheduler_job_definitions();
+    $due = db_sync_schedule_fetch_due_jobs(20);
+    $claimed = [];
+
+    foreach ($due as $job) {
+        $scheduleId = (int) ($job['id'] ?? 0);
+        if ($scheduleId <= 0) {
+            continue;
+        }
+
+        $jobKey = (string) ($job['job_key'] ?? '');
+        $lockTtl = (int) ($definitions[$jobKey]['lock_ttl_seconds'] ?? 300);
+        $claimedJob = db_sync_schedule_claim_job($scheduleId, $lockTtl);
+        if ($claimedJob !== null) {
+            $claimed[] = $claimedJob;
+        }
+    }
+
+    return $claimed;
+}
+
+function scheduler_run_job(array $job): array
+{
+    $jobKey = (string) ($job['job_key'] ?? '');
+    $scheduleId = (int) ($job['id'] ?? 0);
+    $definitions = scheduler_job_definitions();
+    $definition = $definitions[$jobKey] ?? null;
+    $datasetKey = scheduler_job_dataset_key($jobKey !== '' ? $jobKey : 'unknown');
+    $runId = db_sync_run_start($datasetKey, 'incremental', null);
+
+    if ($definition === null || !isset($definition['handler']) || !is_callable($definition['handler'])) {
+        $message = scheduler_normalize_error_message('Unknown scheduler job key: ' . ($jobKey !== '' ? $jobKey : '[empty]') . '.');
+        mark_sync_failure($datasetKey, 'incremental', $message);
+        db_sync_run_finish($runId, 'failed', 0, 0, null, $message);
+        if ($scheduleId > 0) {
+            db_sync_schedule_mark_failure($scheduleId, $message);
+        }
+
+        return [
+            'job_key' => $jobKey,
+            'status' => 'failed',
+            'error' => $message,
+            'rows_seen' => 0,
+            'rows_written' => 0,
+            'warnings' => [],
+        ];
+    }
+
+    $timeoutSeconds = max(30, min(3600, (int) ($definition['timeout_seconds'] ?? 300)));
+    $startedAt = microtime(true);
+
+    try {
+        if (function_exists('set_time_limit')) {
+            @set_time_limit($timeoutSeconds + 5);
+        }
+
+        $handler = $definition['handler'];
+        $syncResult = $handler();
+        $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+        if ($durationMs > ($timeoutSeconds * 1000)) {
+            throw new RuntimeException('Job exceeded timeout of ' . $timeoutSeconds . ' seconds.');
+        }
+
+        $rowsSeen = max(0, (int) ($syncResult['rows_seen'] ?? 0));
+        $rowsWritten = max(0, (int) ($syncResult['rows_written'] ?? 0));
+        $warnings = scheduler_normalize_messages((array) ($syncResult['warnings'] ?? []));
+        $cursor = 'finished_at:' . gmdate('Y-m-d H:i:s') . ';duration_ms:' . $durationMs;
+        $checksum = sync_checksum([
+            'job_key' => $jobKey,
+            'rows_seen' => $rowsSeen,
+            'rows_written' => $rowsWritten,
+            'warnings' => $warnings,
+        ]);
+
+        mark_sync_success($datasetKey, 'incremental', $cursor, $rowsWritten, $checksum);
+        db_sync_run_finish($runId, 'success', $rowsSeen, $rowsWritten, $cursor, null);
+        if ($scheduleId > 0) {
+            db_sync_schedule_mark_success($scheduleId);
+        }
+
+        return [
+            'job_key' => $jobKey,
+            'status' => 'success',
+            'error' => null,
+            'rows_seen' => $rowsSeen,
+            'rows_written' => $rowsWritten,
+            'warnings' => $warnings,
+            'duration_ms' => $durationMs,
+        ];
+    } catch (Throwable $exception) {
+        $message = scheduler_normalize_error_message($exception->getMessage());
+        mark_sync_failure($datasetKey, 'incremental', $message);
+        db_sync_run_finish($runId, 'failed', 0, 0, null, $message);
+        if ($scheduleId > 0) {
+            db_sync_schedule_mark_failure($scheduleId, $message);
+        }
+
+        return [
+            'job_key' => $jobKey,
+            'status' => 'failed',
+            'error' => $message,
+            'rows_seen' => 0,
+            'rows_written' => 0,
+            'warnings' => [],
+        ];
+    }
+}
+
+function cron_tick_run(): array
+{
+    $jobs = scheduler_due_jobs();
+    $results = [];
+    $successCount = 0;
+    $failureCount = 0;
+
+    foreach ($jobs as $job) {
+        $result = scheduler_run_job($job);
+        $results[] = $result;
+
+        if (($result['status'] ?? 'failed') === 'success') {
+            $successCount++;
+            continue;
+        }
+
+        $failureCount++;
+    }
+
+    return [
+        'ran_at' => gmdate('Y-m-d H:i:s'),
+        'jobs_due' => count($jobs),
+        'jobs_processed' => count($results),
+        'jobs_succeeded' => $successCount,
+        'jobs_failed' => $failureCount,
+        'results' => $results,
+    ];
+}
+
 
 
 function sync_status_from_prefix(string $datasetPrefix, int $recentRunsLimit = 5): array
