@@ -17,6 +17,7 @@ This repository establishes a clean architecture that can scale from an initial 
 - `src/functions.php` as the **single shared helper/business utility layer**
 - ESI OAuth callback (`/callback`) with token verification and DB persistence
 - ESI cache tables (`esi_cache_namespaces`, `esi_cache_entries`) for structured `cache.esi.*` namespaces
+- Incremental sync state tables (`sync_state`, `sync_runs`) for watermark/cursor tracking and run observability
 - Secure CSRF-protected settings forms
 - Session-based flash messaging
 
@@ -82,6 +83,10 @@ README.md
   2. creating the section form block in `public/settings/index.php`
   3. storing values through `save_settings()`
 - Add new navigation items in `nav_items()` to keep menus centralized.
+- Incremental sync defaults are configurable in Data Sync settings:
+  - strategy (`watermark_upsert` or `full_refresh`)
+  - delete policy (`none`, `soft_delete`, `reconcile`)
+  - chunk size (100-10000)
 
 ## Next Suggested Steps
 

@@ -166,6 +166,95 @@ function base_url(string $path = ''): string
     return rtrim((string) config('app.base_url', ''), '/') . $path;
 }
 
+function incremental_strategy_options(): array
+{
+    return [
+        'watermark_upsert' => 'Watermark + Upsert',
+        'full_refresh' => 'Full Refresh',
+    ];
+}
+
+function incremental_delete_policy_options(): array
+{
+    return [
+        'none' => 'No delete handling',
+        'soft_delete' => 'Soft delete when removed at source',
+        'reconcile' => 'Periodic reconciliation scan',
+    ];
+}
+
+function sanitize_incremental_strategy(?string $value): string
+{
+    $strategy = trim((string) $value);
+
+    return array_key_exists($strategy, incremental_strategy_options()) ? $strategy : 'watermark_upsert';
+}
+
+function sanitize_incremental_delete_policy(?string $value): string
+{
+    $policy = trim((string) $value);
+
+    return array_key_exists($policy, incremental_delete_policy_options()) ? $policy : 'reconcile';
+}
+
+function sanitize_incremental_chunk_size(mixed $value): string
+{
+    $chunk = max(100, min(10000, (int) $value));
+
+    return (string) $chunk;
+}
+
+function data_sync_settings_from_request(array $request): array
+{
+    return [
+        'incremental_updates_enabled' => isset($request['incremental_updates_enabled']) ? '1' : '0',
+        'incremental_strategy' => sanitize_incremental_strategy($request['incremental_strategy'] ?? null),
+        'incremental_delete_policy' => sanitize_incremental_delete_policy($request['incremental_delete_policy'] ?? null),
+        'incremental_chunk_size' => sanitize_incremental_chunk_size($request['incremental_chunk_size'] ?? null),
+    ];
+}
+
+function sync_watermark(string $datasetKey): ?string
+{
+    $state = db_sync_state_get($datasetKey);
+
+    if ($state === null) {
+        return null;
+    }
+
+    return $state['last_cursor'] ?: $state['last_success_at'];
+}
+
+function mark_sync_success(string $datasetKey, string $syncMode, ?string $cursor, int $rowsWritten, ?string $checksum = null): bool
+{
+    return db_sync_state_upsert(
+        $datasetKey,
+        $syncMode,
+        'success',
+        gmdate('Y-m-d H:i:s'),
+        $cursor,
+        $rowsWritten,
+        $checksum,
+        null
+    );
+}
+
+function mark_sync_failure(string $datasetKey, string $syncMode, string $errorMessage): bool
+{
+    $state = db_sync_state_get($datasetKey);
+
+    return db_sync_state_upsert(
+        $datasetKey,
+        $syncMode,
+        'failed',
+        $state['last_success_at'] ?? null,
+        $state['last_cursor'] ?? null,
+        (int) ($state['last_row_count'] ?? 0),
+        $state['last_checksum'] ?? null,
+        mb_substr($errorMessage, 0, 500)
+    );
+}
+
 
 function esi_default_scopes(): array
 {

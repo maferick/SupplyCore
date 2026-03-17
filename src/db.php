@@ -192,3 +192,81 @@ function db_esi_cache_namespace_keys(): array
 
     return array_column($rows, 'namespace_key');
 }
+
+function db_sync_state_get(string $datasetKey): ?array
+{
+    return db_select_one(
+        'SELECT dataset_key, sync_mode, status, last_success_at, last_cursor, last_row_count, last_checksum, last_error_message, updated_at
+         FROM sync_state
+         WHERE dataset_key = ?
+         LIMIT 1',
+        [$datasetKey]
+    );
+}
+
+function db_sync_state_upsert(
+    string $datasetKey,
+    string $syncMode,
+    string $status,
+    ?string $lastSuccessAt,
+    ?string $lastCursor,
+    int $lastRowCount,
+    ?string $lastChecksum,
+    ?string $lastErrorMessage
+): bool {
+    return db_execute(
+        'INSERT INTO sync_state (
+            dataset_key,
+            sync_mode,
+            status,
+            last_success_at,
+            last_cursor,
+            last_row_count,
+            last_checksum,
+            last_error_message
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+            sync_mode = VALUES(sync_mode),
+            status = VALUES(status),
+            last_success_at = VALUES(last_success_at),
+            last_cursor = VALUES(last_cursor),
+            last_row_count = VALUES(last_row_count),
+            last_checksum = VALUES(last_checksum),
+            last_error_message = VALUES(last_error_message),
+            updated_at = CURRENT_TIMESTAMP',
+        [$datasetKey, $syncMode, $status, $lastSuccessAt, $lastCursor, $lastRowCount, $lastChecksum, $lastErrorMessage]
+    );
+}
+
+function db_sync_run_start(string $datasetKey, string $runMode, ?string $cursorStart): int
+{
+    db_execute(
+        'INSERT INTO sync_runs (dataset_key, run_mode, run_status, started_at, cursor_start)
+         VALUES (?, ?, ?, UTC_TIMESTAMP(), ?)',
+        [$datasetKey, $runMode, 'running', $cursorStart]
+    );
+
+    return (int) db()->lastInsertId();
+}
+
+function db_sync_run_finish(
+    int $runId,
+    string $runStatus,
+    int $sourceRows,
+    int $writtenRows,
+    ?string $cursorEnd,
+    ?string $errorMessage
+): bool {
+    return db_execute(
+        'UPDATE sync_runs
+         SET run_status = ?,
+             finished_at = UTC_TIMESTAMP(),
+             source_rows = ?,
+             written_rows = ?,
+             cursor_end = ?,
+             error_message = ?,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?',
+        [$runStatus, $sourceRows, $writtenRows, $cursorEnd, $errorMessage, $runId]
+    );
+}

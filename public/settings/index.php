@@ -44,9 +44,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             break;
 
         case 'data-sync':
-            $saved = save_settings([
-                'incremental_updates_enabled' => isset($_POST['incremental_updates_enabled']) ? '1' : '0',
-            ]);
+            $saved = save_settings(data_sync_settings_from_request($_POST));
             break;
     }
 
@@ -66,6 +64,9 @@ $settingValues = get_settings([
     'esi_scopes',
     'esi_enabled',
     'incremental_updates_enabled',
+    'incremental_strategy',
+    'incremental_delete_policy',
+    'incremental_chunk_size',
 ]);
 
 $stations = grouped_station_options();
@@ -192,6 +193,30 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
                     <input type="checkbox" name="incremental_updates_enabled" value="1" <?= ($settingValues['incremental_updates_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
                     <span class="text-sm">Enable incremental SQL database updates</span>
+                </label>
+                <label class="block space-y-2">
+                    <span class="text-sm text-muted">Incremental Strategy</span>
+                    <select name="incremental_strategy" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring">
+                        <?php foreach (incremental_strategy_options() as $value => $label): ?>
+                            <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= ($settingValues['incremental_strategy'] ?? 'watermark_upsert') === $value ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($label, ENT_QUOTES) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </label>
+                <label class="block space-y-2">
+                    <span class="text-sm text-muted">Delete Handling Policy</span>
+                    <select name="incremental_delete_policy" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring">
+                        <?php foreach (incremental_delete_policy_options() as $value => $label): ?>
+                            <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= ($settingValues['incremental_delete_policy'] ?? 'reconcile') === $value ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($label, ENT_QUOTES) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </label>
+                <label class="block space-y-2">
+                    <span class="text-sm text-muted">Chunk Size</span>
+                    <input type="number" min="100" max="10000" step="100" name="incremental_chunk_size" value="<?= htmlspecialchars($settingValues['incremental_chunk_size'] ?? '1000', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
                 </label>
                 <p class="text-sm text-muted">When enabled, future import/sync jobs will only process changed rows for better scalability.</p>
                 <button class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save Data Sync Settings</button>

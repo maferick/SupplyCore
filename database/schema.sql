@@ -54,6 +54,41 @@ CREATE TABLE IF NOT EXISTS esi_cache_entries (
     KEY idx_namespace_expires (namespace_key, expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS sync_state (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    dataset_key VARCHAR(190) NOT NULL,
+    sync_mode ENUM('full', 'incremental') NOT NULL DEFAULT 'incremental',
+    status ENUM('idle', 'running', 'success', 'failed') NOT NULL DEFAULT 'idle',
+    last_success_at DATETIME DEFAULT NULL,
+    last_cursor VARCHAR(190) DEFAULT NULL,
+    last_row_count INT UNSIGNED NOT NULL DEFAULT 0,
+    last_checksum CHAR(64) DEFAULT NULL,
+    last_error_message VARCHAR(500) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_dataset_key (dataset_key),
+    KEY idx_status (status),
+    KEY idx_last_success_at (last_success_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS sync_runs (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    dataset_key VARCHAR(190) NOT NULL,
+    run_mode ENUM('full', 'incremental') NOT NULL DEFAULT 'incremental',
+    run_status ENUM('running', 'success', 'failed') NOT NULL DEFAULT 'running',
+    started_at DATETIME NOT NULL,
+    finished_at DATETIME DEFAULT NULL,
+    source_rows INT UNSIGNED NOT NULL DEFAULT 0,
+    written_rows INT UNSIGNED NOT NULL DEFAULT 0,
+    cursor_start VARCHAR(190) DEFAULT NULL,
+    cursor_end VARCHAR(190) DEFAULT NULL,
+    error_message VARCHAR(500) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_dataset_started (dataset_key, started_at),
+    KEY idx_run_status (run_status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 INSERT INTO trading_stations (station_name, station_type) VALUES
     ('Jita IV - Moon 4 - Caldari Navy Assembly Plant', 'market'),
     ('Amarr VIII (Oris) - Emperor Family Academy', 'market'),
@@ -65,6 +100,9 @@ ON DUPLICATE KEY UPDATE station_name = VALUES(station_name);
 
 INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('incremental_updates_enabled', '1'),
+    ('incremental_strategy', 'watermark_upsert'),
+    ('incremental_delete_policy', 'reconcile'),
+    ('incremental_chunk_size', '1000'),
     ('esi_enabled', '0'),
     ('esi_client_id', '961316f6177d4a0283fef0bd72fbd224'),
     ('esi_client_secret', 'eat_iasVmhqov40Ud568JVAyctOErv5E6AgV_3S6eiZ'),
