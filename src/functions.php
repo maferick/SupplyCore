@@ -4446,8 +4446,29 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
 
     try {
         $sequenceProbe = killmail_r2z2_fetch_json(killmail_r2z2_sequence_url());
-        if (($sequenceProbe['status'] ?? 500) !== 200) {
-            throw new RuntimeException('Unable to read killmail sequence.json, status=' . (int) ($sequenceProbe['status'] ?? 0));
+        $sequenceProbeStatus = (int) ($sequenceProbe['status'] ?? 0);
+        if ($sequenceProbeStatus === 403 || $sequenceProbeStatus === 429) {
+            $cursor = db_sync_cursor_get($datasetKey);
+            $cursorEnd = $cursor !== null ? $cursor : '0';
+            $checksum = sync_checksum([0, 0, $cursorEnd]);
+            $warnings = ['R2Z2 sequence probe returned status ' . $sequenceProbeStatus . '; respecting feed backoff.'];
+            sync_run_finalize_success($runId, $datasetKey, $runMode, 0, 0, $cursorEnd, $checksum, $warnings);
+
+            return sync_result_shape() + [
+                'rows_seen' => 0,
+                'rows_written' => 0,
+                'cursor' => $cursorEnd,
+                'checksum' => $checksum,
+                'warnings' => $warnings,
+                'meta' => [
+                    'latest_sequence_probe' => null,
+                    'last_processed_sequence' => null,
+                ],
+            ];
+        }
+
+        if ($sequenceProbeStatus !== 200) {
+            throw new RuntimeException('Unable to read killmail sequence.json, status=' . $sequenceProbeStatus);
         }
 
         $latestSequence = (int) (($sequenceProbe['json']['sequence'] ?? 0));
