@@ -25,9 +25,26 @@ if (($context['ok'] ?? false) !== true) {
 }
 
 try {
-    $results = esi_structure_search($query, $context['token']);
-    echo json_encode(['results' => $results], JSON_THROW_ON_ERROR);
+    $npcStations = esi_npc_station_search($query, $context['token']);
+    $structures = esi_structure_search($query, $context['token']);
+
+    $combined = [];
+    foreach (array_merge($npcStations, $structures) as $row) {
+        $id = (int) ($row['id'] ?? 0);
+        if ($id <= 0) {
+            continue;
+        }
+
+        $combined[$id] = $row;
+    }
+
+    $results = array_values($combined);
+    usort($results, static function (array $a, array $b): int {
+        return strcasecmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
+    });
+
+    echo json_encode(['results' => array_slice($results, 0, 20)], JSON_THROW_ON_ERROR);
 } catch (Throwable $exception) {
     http_response_code(502);
-    echo json_encode(['error' => 'Unable to fetch structures from ESI at this time.', 'results' => []], JSON_THROW_ON_ERROR);
+    echo json_encode(['error' => 'Unable to fetch stations/structures from ESI at this time.', 'results' => []], JSON_THROW_ON_ERROR);
 }

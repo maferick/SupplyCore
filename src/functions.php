@@ -76,7 +76,7 @@ function setting_sections(): array
 {
     return [
         'general' => ['title' => 'General Settings', 'description' => 'Core application behavior and preferences.'],
-        'trading-stations' => ['title' => 'Trading Stations', 'description' => 'Select market and alliance station priorities.'],
+        'trading-stations' => ['title' => 'Trading Stations', 'description' => 'Configure your reference market hub and operational trading destination.'],
         'esi-login' => ['title' => 'ESI Login', 'description' => 'Configure EVE SSO credentials and callback behavior.'],
         'data-sync' => ['title' => 'Data Sync', 'description' => 'Control database import and incremental update policies.'],
     ];
@@ -218,12 +218,29 @@ function sanitize_market_station_selection(?string $value): string
 
 function sanitize_alliance_station_selection(?string $value): string
 {
-    $structureIdValue = trim((string) $value);
-    if ($structureIdValue === '' || !preg_match('/^[1-9][0-9]{9,19}$/', $structureIdValue)) {
+    $stationIdValue = trim((string) $value);
+    if ($stationIdValue === '') {
         return '';
     }
 
-    $structureId = (int) $structureIdValue;
+    $stationId = (int) $stationIdValue;
+    if ($stationId > 0) {
+        try {
+            $npcStation = db_ref_npc_station_by_id($stationId);
+        } catch (Throwable) {
+            $npcStation = null;
+        }
+
+        if ($npcStation !== null) {
+            return (string) $stationId;
+        }
+    }
+
+    if (!preg_match('/^[1-9][0-9]{9,19}$/', $stationIdValue)) {
+        return '';
+    }
+
+    $structureId = (int) $stationIdValue;
     if ($structureId <= 0) {
         return '';
     }
@@ -252,6 +269,21 @@ function sanitize_alliance_station_selection(?string $value): string
     return (string) $structureId;
 }
 
+function configured_structure_destination_id_for_esi_sync(): int
+{
+    $configured = trim((string) get_setting('alliance_station_id', '0'));
+    if ($configured === '' || !preg_match('/^[1-9][0-9]{9,19}$/', $configured)) {
+        return 0;
+    }
+
+    return (int) $configured;
+}
+
+function configured_alliance_structure_id(): int
+{
+    return configured_structure_destination_id_for_esi_sync();
+}
+
 function selected_station_name(string $settingKey): ?string
 {
     $stationType = $settingKey === 'alliance_station_id' ? 'alliance' : 'market';
@@ -262,6 +294,16 @@ function selected_station_name(string $settingKey): ?string
     }
 
     if ($stationType === 'alliance') {
+        try {
+            $npcStation = db_ref_npc_station_by_id($stationId);
+        } catch (Throwable) {
+            $npcStation = null;
+        }
+
+        if ($npcStation !== null) {
+            return (string) ($npcStation['station_name'] ?? ('Station #' . $stationId));
+        }
+
         try {
             $metadata = db_alliance_structure_metadata_get($stationId);
         } catch (Throwable) {
@@ -680,7 +722,7 @@ function market_compare_thresholds(): array
 
 function market_compare_aggregates(array $typeIds = []): array
 {
-    $allianceStructureId = (int) get_setting('alliance_station_id', '0');
+    $allianceStructureId = configured_structure_destination_id_for_esi_sync();
     $marketHubRef = market_hub_setting_reference();
     $jitaSourceId = sync_source_id_from_hub_ref($marketHubRef);
 
@@ -952,7 +994,7 @@ function dashboard_intelligence_data(): array
 
 function current_alliance_market_status_data(): array
 {
-    $allianceStation = selected_station_name('alliance_station_id') ?? 'No alliance structure selected';
+    $allianceStation = selected_station_name('alliance_station_id') ?? 'No operational destination selected';
     $outcomes = market_comparison_outcomes();
     $rows = market_comparison_top_rows(
         static fn (array $row): bool => ($row['alliance_best_sell_price'] ?? null) !== null,
@@ -962,9 +1004,9 @@ function current_alliance_market_status_data(): array
 
     return [
         'summary' => [
-            ['label' => 'Alliance Structure', 'value' => $allianceStation, 'context' => 'Current configured structure'],
+            ['label' => 'Operational Destination', 'value' => $allianceStation, 'context' => 'Current configured destination (NPC station or structure)'],
             ['label' => 'Tracked Modules', 'value' => (string) count($outcomes['rows']), 'context' => 'Items monitored in current sync'],
-            ['label' => 'Listings with Stock', 'value' => (string) count($rows), 'context' => 'Top active alliance listings shown'],
+            ['label' => 'Listings with Stock', 'value' => (string) count($rows), 'context' => 'Top active destination listings shown'],
         ],
         'rows' => array_map(static fn (array $row): array => [
             'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
@@ -1076,13 +1118,13 @@ function history_date_range(int $days): array
 
 function history_source_context(): array
 {
-    $allianceStructureId = (int) get_setting('alliance_station_id', '0');
+    $allianceStructureId = configured_structure_destination_id_for_esi_sync();
     $hubRef = market_hub_setting_reference();
     $hubSourceId = sync_source_id_from_hub_ref($hubRef);
 
     return [
         'alliance_structure_id' => $allianceStructureId,
-        'alliance_structure_name' => selected_station_name('alliance_station_id') ?? 'Alliance structure not configured',
+        'alliance_structure_name' => selected_station_name('alliance_station_id') ?? 'Operational destination not configured',
         'hub_source_id' => $hubSourceId,
         'hub_name' => selected_station_name('market_station_id') ?? 'Market hub not configured',
     ];
@@ -1105,11 +1147,11 @@ function history_module_registry(): array
     return [
         'deviation_trend' => [
             'label' => 'Deviation Trend',
-            'description' => 'Count of items outside configured alliance-vs-hub deviation thresholds over time.',
+            'description' => 'Count of items outside configured destination-vs-reference-hub deviation thresholds over time.',
         ],
         'missing_items_trend' => [
             'label' => 'Missing Items Trend',
-            'description' => 'Daily count of hub-listed items with no alliance history snapshot.',
+            'description' => 'Daily count of reference-hub-listed items with no destination history snapshot.',
         ],
         'stock_health_trend' => [
             'label' => 'Stock Health Trend',
@@ -1448,9 +1490,9 @@ function scheduler_job_definitions(): array
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
             'handler' => static function (): array {
-                $structureId = (int) get_setting('alliance_station_id', '0');
+                $structureId = configured_structure_destination_id_for_esi_sync();
                 if ($structureId <= 0) {
-                    throw new RuntimeException('Alliance current sync skipped: configure an alliance structure first.');
+                    throw new RuntimeException('Alliance current sync skipped: choose an alliance structure destination (NPC stations are not eligible for structure sync).');
                 }
 
                 return sync_alliance_structure_orders($structureId, 'incremental');
@@ -1460,9 +1502,9 @@ function scheduler_job_definitions(): array
             'timeout_seconds' => 480,
             'lock_ttl_seconds' => 600,
             'handler' => static function (): array {
-                $structureId = (int) get_setting('alliance_station_id', '0');
+                $structureId = configured_structure_destination_id_for_esi_sync();
                 if ($structureId <= 0) {
-                    throw new RuntimeException('Alliance history sync skipped: configure an alliance structure first.');
+                    throw new RuntimeException('Alliance history sync skipped: choose an alliance structure destination (NPC stations are not eligible for structure sync).');
                 }
 
                 return sync_alliance_structure_orders($structureId, 'full');
@@ -2820,6 +2862,73 @@ function esi_structure_search(string $query, array $tokenContext): array
         json_encode($results, JSON_THROW_ON_ERROR),
         gmdate('Y-m-d H:i:s', time() + 300)
     );
+
+    return $results;
+}
+
+function esi_npc_station_search(string $query, array $tokenContext): array
+{
+    $term = trim($query);
+    if ($term === '') {
+        return [];
+    }
+
+    $characterId = (int) ($tokenContext['character_id'] ?? 0);
+    if ($characterId <= 0) {
+        return [];
+    }
+
+    $accessToken = esi_valid_access_token();
+
+    $searchResponse = http_get_json(
+        'https://esi.evetech.net/latest/characters/' . $characterId . '/search/?categories=station&strict=false&search=' . rawurlencode($term),
+        [
+            'Authorization: Bearer ' . $accessToken,
+            'Accept: application/json',
+        ]
+    );
+
+    if (($searchResponse['status'] ?? 500) >= 400) {
+        throw new RuntimeException('Failed to search NPC stations from ESI.');
+    }
+
+    $stationIds = $searchResponse['json']['station'] ?? [];
+    if (!is_array($stationIds)) {
+        return [];
+    }
+
+    $results = [];
+    foreach (array_slice($stationIds, 0, 20) as $stationId) {
+        $id = (int) $stationId;
+        if ($id <= 0) {
+            continue;
+        }
+
+        try {
+            $stationResponse = http_get_json(
+                'https://esi.evetech.net/latest/universe/stations/' . $id . '/',
+                ['Accept: application/json']
+            );
+        } catch (Throwable) {
+            continue;
+        }
+
+        if (($stationResponse['status'] ?? 500) >= 400) {
+            continue;
+        }
+
+        $name = trim((string) ($stationResponse['json']['name'] ?? ''));
+        if ($name === '' || mb_stripos($name, $term) === false) {
+            continue;
+        }
+
+        $results[] = esi_structure_result_shape([
+            'id' => $id,
+            'name' => $name,
+            'system' => isset($stationResponse['json']['system_id']) ? (string) $stationResponse['json']['system_id'] : null,
+            'type' => 'NPC Station',
+        ]);
+    }
 
     return $results;
 }

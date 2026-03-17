@@ -198,7 +198,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                 <input type="hidden" name="section" value="trading-stations">
                 <label class="block space-y-2" id="market-station-search-field">
-                    <span class="text-sm text-muted">Market Station Selection</span>
+                    <span class="text-sm text-muted">Reference Market Hub</span>
                     <?php
                         $marketStationId = trim((string) ($settingValues['market_station_id'] ?? ''));
                         $marketStationName = selected_station_name('market_station_id');
@@ -209,18 +209,18 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         id="market_station_search"
                         autocomplete="off"
                         value="<?= htmlspecialchars($marketStationName ?? '', ENT_QUOTES) ?>"
-                        placeholder="Search market stations by name"
+                        placeholder="Search reference market hubs by station name"
                         class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
                     />
                     <p id="market_station_status" class="text-xs text-muted">
                         <?= htmlspecialchars($marketStationId === ''
-                            ? 'Type at least 2 characters to search market stations.'
-                            : ('Selected station: ' . ($marketStationName ?? ('Station #' . $marketStationId)) . ' (#' . $marketStationId . ').'), ENT_QUOTES) ?>
+                            ? 'Type at least 2 characters to search reference market hubs.'
+                            : ('Selected market hub: ' . ($marketStationName ?? ('Station #' . $marketStationId)) . ' (#' . $marketStationId . ').'), ENT_QUOTES) ?>
                     </p>
                     <ul id="market_station_results" class="hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-black/40"></ul>
                 </label>
                 <label class="block space-y-2" id="alliance-structure-search-field">
-                    <span class="text-sm text-muted">Alliance Structure Selection</span>
+                    <span class="text-sm text-muted">Operational Trading Destination</span>
                     <?php
                         $allianceStationId = trim((string) ($settingValues['alliance_station_id'] ?? ''));
                         $allianceStationName = selected_station_name('alliance_station_id');
@@ -231,19 +231,20 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         id="alliance_structure_search"
                         autocomplete="off"
                         value="<?= htmlspecialchars($allianceStationName ?? '', ENT_QUOTES) ?>"
-                        placeholder="Search structures by name"
+                        placeholder="Search operational destinations (NPC stations + structures)"
                         class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
                     />
                     <p id="alliance_structure_status" class="text-xs text-muted">
                         <?= htmlspecialchars($allianceStationId === ''
-                            ? 'Search is scoped to the connected ESI character token.'
-                            : ('Selected structure: ' . ($allianceStationName ?? ('Structure #' . $allianceStationId)) . ' (#' . $allianceStationId . ').'), ENT_QUOTES) ?>
+                            ? 'Search ESI destinations (NPC stations + alliance structures).'
+                            : ('Selected destination: ' . ($allianceStationName ?? ('Destination #' . $allianceStationId)) . ' (#' . $allianceStationId . ').'), ENT_QUOTES) ?>
                     </p>
                     <ul id="alliance_structure_results" class="hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-black/40"></ul>
+                    <p class="text-xs text-muted">Used as your operational destination for alliance-vs-hub comparisons. If you pick an NPC station, structure-only sync jobs stay disabled automatically.</p>
                 </label>
                 <?php if ($latestEsiToken !== null && $missingStructureScopes !== []): ?>
                     <div class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-                        Missing required scopes for structure data: <span class="font-medium"><?= htmlspecialchars(implode(', ', $missingStructureScopes), ENT_QUOTES) ?></span>.
+                        Missing required scopes for structure-market sync: <span class="font-medium"><?= htmlspecialchars(implode(', ', $missingStructureScopes), ENT_QUOTES) ?></span>.
                         Update scopes to include <span class="font-medium">esi-universe.read_structures.v1</span> and <span class="font-medium">esi-markets.structure_markets.v1</span>, then reconnect your ESI character.
                     </div>
                 <?php endif; ?>
@@ -360,9 +361,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         statusId: 'market_station_status',
                         minimumQueryLength: 2,
                         searchingLabel: 'Searching…',
-                        selectionStatusPrefix: 'Selected station: ',
-                        emptyQueryMessage: 'Type at least 2 characters to search market stations.',
-                        noResultsMessage: 'No matching market stations found.',
+                        selectionStatusPrefix: 'Selected market hub: ',
+                        emptyQueryMessage: 'Type at least 2 characters to search reference market hubs.',
+                        noResultsMessage: 'No matching reference market hubs found.',
                         fetchResults: async (query) => {
                             const response = await fetch('/settings/market-stations.php?q=' + encodeURIComponent(query), {
                                 headers: { 'Accept': 'application/json' },
@@ -384,9 +385,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         statusId: 'alliance_structure_status',
                         minimumQueryLength: 2,
                         searchingLabel: 'Searching…',
-                        selectionStatusPrefix: 'Selected structure: ',
-                        emptyQueryMessage: 'Type at least 2 characters to search alliance structures.',
-                        noResultsMessage: 'No matching structures found.',
+                        selectionStatusPrefix: 'Selected destination: ',
+                        emptyQueryMessage: 'Type at least 2 characters to search operational destinations.',
+                        noResultsMessage: 'No matching operational destinations found.',
                         fetchResults: async (query) => {
                             const response = await fetch('/settings/esi-structures.php?q=' + encodeURIComponent(query), {
                                 headers: { 'Accept': 'application/json' },
