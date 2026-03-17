@@ -2170,16 +2170,14 @@ function market_hub_setting_reference(): string
 
     try {
         $station = db_trading_station_by_id($configuredStationId, 'market');
-        if ($station === null) {
-            return '';
-        }
-
-        $resolvedNpcStationId = db_ref_npc_station_id_by_name((string) ($station['station_name'] ?? ''));
-        if ($resolvedNpcStationId !== null) {
-            return (string) $resolvedNpcStationId;
+        if ($station !== null) {
+            $resolvedNpcStationId = db_ref_npc_station_id_by_name((string) ($station['station_name'] ?? ''));
+            if ($resolvedNpcStationId !== null) {
+                return (string) $resolvedNpcStationId;
+            }
         }
     } catch (Throwable) {
-        return '';
+        // Fall back to the configured numeric station ID when station metadata lookup is unavailable.
     }
 
     return $configuredHub;
