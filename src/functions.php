@@ -562,6 +562,11 @@ function sanitize_pipeline_enabled(mixed $value): string
     return $value === '1' || $value === 1 || $value === true || $value === 'on' ? '1' : '0';
 }
 
+function sanitize_enabled_flag(mixed $value): string
+{
+    return sanitize_pipeline_enabled($value);
+}
+
 function sanitize_backfill_start_date(mixed $value): string
 {
     $raw = trim((string) $value);
