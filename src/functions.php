@@ -2353,7 +2353,7 @@ function sync_source_id_from_hub_ref(string|int $hubRef): int
     return (int) sprintf('%u', crc32(mb_strtolower($hubString)));
 }
 
-function canonicalize_esi_market_order(array $order, int $sourceId, string $observedAt): ?array
+function canonicalize_esi_market_order(array $order, int $sourceId, string $observedAt, string $sourceType = 'alliance_structure'): ?array
 {
     $orderId = (int) ($order['order_id'] ?? 0);
     $typeId = (int) ($order['type_id'] ?? 0);
@@ -2372,8 +2372,10 @@ function canonicalize_esi_market_order(array $order, int $sourceId, string $obse
         $expiresAt = strtotime('+' . $duration . ' days', $issuedAt);
     }
 
+    $normalizedSourceType = $sourceType === 'market_hub' ? 'market_hub' : 'alliance_structure';
+
     return [
-        'source_type' => 'alliance_structure',
+        'source_type' => $normalizedSourceType,
         'source_id' => $sourceId,
         'type_id' => $typeId,
         'order_id' => $orderId,
@@ -2642,6 +2644,17 @@ function market_hub_reference_context(string|int $hubRef): array
         }
 
         $npcName = trim((string) ($npcStation['station_name'] ?? ''));
+        if ($npcName === '' || is_placeholder_station_name($npcName, $hubId)) {
+            try {
+                $metadata = esi_npc_station_metadata($hubId);
+            } catch (Throwable) {
+                $metadata = null;
+            }
+
+            if ($metadata !== null && trim((string) ($metadata['name'] ?? '')) !== '') {
+                $npcName = trim((string) ($metadata['name'] ?? ''));
+            }
+        }
 
         return [
             'hub_id' => (string) $hubId,
@@ -2749,7 +2762,7 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
                     }
 
                     $result['rows_seen']++;
-                    $mapped = canonicalize_esi_market_order($order, $sourceId, $observedAt);
+                    $mapped = canonicalize_esi_market_order($order, $sourceId, $observedAt, 'market_hub');
                     if ($mapped !== null) {
                         $canonicalRows[] = $mapped;
                     }
@@ -2799,7 +2812,7 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
                     }
 
                     $result['rows_seen']++;
-                    $mapped = canonicalize_esi_market_order($order, $sourceId, $observedAt);
+                    $mapped = canonicalize_esi_market_order($order, $sourceId, $observedAt, 'market_hub');
                     if ($mapped !== null) {
                         $canonicalRows[] = $mapped;
                     }
