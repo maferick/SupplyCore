@@ -118,11 +118,9 @@ EveMarket sync pipelines depend on the `cron` daemon being present and running o
    crontab -e
    ```
 
-   Use these exact schedule examples (replace placeholders as needed):
+   Use a single timer-only scheduler entrypoint:
    ```cron
-   */5 * * * * cd /var/www/evemarket && /usr/bin/php bin/sync_runner.php --job=alliance-current >> storage/logs/cron.log 2>&1
-   */15 * * * * cd /var/www/evemarket && /usr/bin/php bin/sync_runner.php --job=hub-history >> storage/logs/cron.log 2>&1
-   0 * * * * cd /var/www/evemarket && /usr/bin/php bin/sync_runner.php --job=alliance-history >> storage/logs/cron.log 2>&1
+   * * * * * cd /var/www/evemarket && /usr/bin/php bin/cron_tick.php >> storage/logs/cron.log 2>&1
    ```
 
 3. Ensure log directory exists and is writable by the cron user:
@@ -154,14 +152,17 @@ EveMarket sync pipelines depend on the `cron` daemon being present and running o
 
 ## Cron Scheduling for Sync Pipelines
 
-You can run targeted sync jobs on independent cadences via cron:
+Run only the timer tick from crontab:
 
-```bash
-*/5 * * * * php /path/to/bin/sync_runner.php --job=alliance-current --source-id=<structure_id> --mode=incremental
-*/15 * * * * php /path/to/bin/sync_runner.php --job=hub-history --source-id=<hub_id> --mode=incremental
-0 * * * * php /path/to/bin/sync_runner.php --job=alliance-history --source-id=<structure_id> --mode=incremental
-30 2 * * * php /path/to/bin/sync_runner.php --job=maintenance-prune --mode=incremental
+```cron
+* * * * * cd /var/www/evemarket && /usr/bin/php bin/cron_tick.php >> storage/logs/cron.log 2>&1
 ```
+
+`bin/cron_tick.php` is the single scheduler entrypoint. It decides which pipelines are due based on Data Sync settings and then dispatches `bin/sync_runner.php` internally.
+
+Environment variables used by `bin/cron_tick.php`:
+- `EVEMARKET_ALLIANCE_SOURCE_ID` (required for `alliance-current` and `alliance-history`)
+- `EVEMARKET_HUB_SOURCE_ID` (required for `hub-history`)
 
 Recommended mapping to Data Sync settings:
 - `alliance_current_sync_interval_minutes` + `alliance_current_pipeline_enabled`
@@ -169,19 +170,7 @@ Recommended mapping to Data Sync settings:
 - `alliance_history_sync_interval_minutes` + `alliance_history_pipeline_enabled`
 - `raw_order_snapshot_retention_days` for `market_orders_history` pruning (`market_history_daily` remains long-term analytics storage)
 
-### Lock strategy (prevent overlapping runs)
-
-To avoid overlap when a previous run is still active, gate each job execution behind a lock keyed per pipeline.
-
-Preferred approaches:
-- **DB advisory lock** (single command host or shared DB):
-  - acquire `GET_LOCK('evemarket:sync:alliance-current', 0)` before starting
-  - if lock is not acquired, exit quickly
-  - release via `RELEASE_LOCK(...)` in shutdown/finally logic
-- **Lockfile** (single host scheduler):
-  - use `flock -n /var/lock/evemarket-alliance-current.lock php /path/to/bin/sync_runner.php --job=alliance-current`
-
-Use distinct lock keys/files for each pipeline (`alliance-current`, `hub-history`, `alliance-history`, `maintenance-prune`) so different jobs can run concurrently while the same job cannot overlap itself.
+The cron file should not contain provider/job-specific logic anymore; all job selection lives in `bin/cron_tick.php`.
 
 ## Next Suggested Steps
 
