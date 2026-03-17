@@ -4,7 +4,37 @@ $summary = is_array($summary ?? null) ? $summary : [];
 $tableColumns = is_array($tableColumns ?? null) ? $tableColumns : [];
 $tableRows = is_array($tableRows ?? null) ? $tableRows : [];
 $emptyMessage = is_string($emptyMessage ?? null) ? $emptyMessage : 'No records available yet.';
+$filterFields = is_array($filterFields ?? null) ? $filterFields : [];
+$filterAction = is_string($filterAction ?? null) ? $filterAction : current_path();
 ?>
+<?php if ($filterFields !== []): ?>
+    <section class="mb-6 rounded-xl border border-border bg-card p-4">
+        <form method="get" action="<?= htmlspecialchars($filterAction, ENT_QUOTES) ?>" class="grid gap-4 md:grid-cols-4 md:items-end">
+            <?php foreach ($filterFields as $field): ?>
+                <?php
+                $key = (string) ($field['key'] ?? '');
+                $label = (string) ($field['label'] ?? $key);
+                $value = (string) ($field['value'] ?? '');
+                $options = is_array($field['options'] ?? null) ? $field['options'] : [];
+                ?>
+                <?php if ($key !== ''): ?>
+                    <label class="block text-sm text-muted">
+                        <span class="mb-1 block text-xs uppercase tracking-[0.15em]"><?= htmlspecialchars($label, ENT_QUOTES) ?></span>
+                        <select name="<?= htmlspecialchars($key, ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/20 px-3 py-2 text-slate-100">
+                            <?php foreach ($options as $optionValue => $optionLabel): ?>
+                                <option value="<?= htmlspecialchars((string) $optionValue, ENT_QUOTES) ?>" <?= (string) $optionValue === $value ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars((string) $optionLabel, ENT_QUOTES) ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </label>
+                <?php endif; ?>
+            <?php endforeach; ?>
+            <button type="submit" class="rounded-lg border border-border bg-accent/30 px-4 py-2 text-sm text-white hover:bg-accent/50">Apply filters</button>
+        </form>
+    </section>
+<?php endif; ?>
+
 <?php if ($summary !== []): ?>
     <section class="grid gap-4 md:grid-cols-3">
         <?php foreach ($summary as $card): ?>

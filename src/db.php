@@ -635,6 +635,144 @@ function db_market_history_daily_recent_window(string $sourceType, int $sourceId
     );
 }
 
+function db_market_history_daily_aggregate_by_date_type_source(
+    string $sourceType,
+    int $sourceId,
+    string $startDate,
+    string $endDate,
+    array $typeIds = []
+): array {
+    $params = [$sourceType, $sourceId, $startDate, $endDate];
+    $typeFilterSql = '';
+
+    if ($typeIds !== []) {
+        $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+        if ($normalizedTypeIds === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
+        $typeFilterSql = " AND mhd.type_id IN ({$placeholders})";
+        $params = array_merge($params, $normalizedTypeIds);
+    }
+
+    return db_select(
+        "SELECT
+            mhd.trade_date,
+            mhd.type_id,
+            rit.type_name,
+            mhd.source_type,
+            mhd.source_id,
+            AVG(mhd.close_price) AS avg_close_price,
+            SUM(mhd.volume) AS total_volume,
+            SUM(COALESCE(mhd.order_count, 0)) AS total_order_count,
+            MAX(mhd.observed_at) AS last_observed_at
+         FROM market_history_daily mhd
+         LEFT JOIN ref_item_types rit ON rit.type_id = mhd.type_id
+         WHERE mhd.source_type = ?
+           AND mhd.source_id = ?
+           AND mhd.trade_date BETWEEN ? AND ?{$typeFilterSql}
+         GROUP BY mhd.trade_date, mhd.type_id, rit.type_name, mhd.source_type, mhd.source_id
+         ORDER BY mhd.trade_date ASC, mhd.type_id ASC",
+        $params
+    );
+}
+
+function db_market_history_daily_deviation_series(
+    int $allianceStructureId,
+    int $hubSourceId,
+    string $startDate,
+    string $endDate,
+    array $typeIds = []
+): array {
+    $params = [$allianceStructureId, $hubSourceId, $startDate, $endDate];
+    $typeFilterSql = '';
+
+    if ($typeIds !== []) {
+        $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+        if ($normalizedTypeIds === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
+        $typeFilterSql = " AND a.type_id IN ({$placeholders})";
+        $params = array_merge($params, $normalizedTypeIds);
+    }
+
+    return db_select(
+        "SELECT
+            a.trade_date,
+            a.type_id,
+            rit.type_name,
+            a.close_price AS alliance_close_price,
+            h.close_price AS hub_close_price,
+            CASE
+                WHEN h.close_price > 0 THEN ((a.close_price - h.close_price) / h.close_price) * 100
+                ELSE NULL
+            END AS deviation_percent,
+            a.volume AS alliance_volume,
+            h.volume AS hub_volume,
+            a.order_count AS alliance_order_count,
+            h.order_count AS hub_order_count
+         FROM market_history_daily a
+         INNER JOIN market_history_daily h
+             ON h.source_type = 'market_hub'
+            AND h.source_id = ?
+            AND h.type_id = a.type_id
+            AND h.trade_date = a.trade_date
+         LEFT JOIN ref_item_types rit ON rit.type_id = a.type_id
+         WHERE a.source_type = 'alliance_structure'
+           AND a.source_id = ?
+           AND a.trade_date BETWEEN ? AND ?{$typeFilterSql}
+         ORDER BY a.trade_date ASC, a.type_id ASC",
+        [$hubSourceId, $allianceStructureId, $startDate, $endDate, ...array_slice($params, 4)]
+    );
+}
+
+function db_market_orders_history_stock_health_series(
+    string $sourceType,
+    int $sourceId,
+    string $startDate,
+    string $endDate,
+    array $typeIds = []
+): array {
+    $params = [$sourceType, $sourceId, $startDate, $endDate];
+    $typeFilterSql = '';
+
+    if ($typeIds !== []) {
+        $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+        if ($normalizedTypeIds === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
+        $typeFilterSql = " AND moh.type_id IN ({$placeholders})";
+        $params = array_merge($params, $normalizedTypeIds);
+    }
+
+    return db_select(
+        "SELECT
+            DATE(moh.observed_at) AS observed_date,
+            moh.type_id,
+            rit.type_name,
+            SUM(CASE WHEN moh.is_buy_order = 0 THEN moh.volume_remain ELSE 0 END) AS sell_volume,
+            SUM(CASE WHEN moh.is_buy_order = 1 THEN moh.volume_remain ELSE 0 END) AS buy_volume,
+            SUM(CASE WHEN moh.is_buy_order = 0 THEN 1 ELSE 0 END) AS sell_order_count,
+            SUM(CASE WHEN moh.is_buy_order = 1 THEN 1 ELSE 0 END) AS buy_order_count,
+            AVG(CASE WHEN moh.is_buy_order = 0 THEN moh.price ELSE NULL END) AS avg_sell_price,
+            AVG(CASE WHEN moh.is_buy_order = 1 THEN moh.price ELSE NULL END) AS avg_buy_price,
+            MAX(moh.observed_at) AS last_observed_at
+         FROM market_orders_history moh
+         LEFT JOIN ref_item_types rit ON rit.type_id = moh.type_id
+         WHERE moh.source_type = ?
+           AND moh.source_id = ?
+           AND DATE(moh.observed_at) BETWEEN ? AND ?{$typeFilterSql}
+         GROUP BY DATE(moh.observed_at), moh.type_id, rit.type_name
+         ORDER BY observed_date ASC, moh.type_id ASC",
+        $params
+    );
+}
+
 function db_market_orders_current_source_aggregates(string $sourceType, int $sourceId, array $typeIds = []): array
 {
     $params = [$sourceType, $sourceId];

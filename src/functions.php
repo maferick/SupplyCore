@@ -1031,35 +1031,300 @@ function price_deviations_data(): array
     ];
 }
 
-function alliance_trends_data(): array
+function history_sanitize_days(mixed $value, int $default = 30): int
+{
+    $days = (int) $value;
+    if ($days <= 0) {
+        $days = $default;
+    }
+
+    return max(7, min(180, $days));
+}
+
+function history_filters(array $request, string $defaultModule = 'deviation_trend'): array
+{
+    $module = trim((string) ($request['module'] ?? $defaultModule));
+    $registry = history_module_registry();
+    if (!isset($registry[$module])) {
+        $module = $defaultModule;
+    }
+
+    return [
+        'days' => history_sanitize_days($request['days'] ?? 30),
+        'module' => $module,
+    ];
+}
+
+function history_date_range(int $days): array
+{
+    $safeDays = max(1, $days);
+    $end = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+    $start = $end->sub(new DateInterval('P' . ($safeDays - 1) . 'D'));
+
+    return ['start' => $start->format('Y-m-d'), 'end' => $end->format('Y-m-d')];
+}
+
+function history_source_context(): array
+{
+    $allianceStructureId = (int) get_setting('alliance_station_id', '0');
+    $hubRef = market_hub_setting_reference();
+    $hubSourceId = sync_source_id_from_hub_ref($hubRef);
+
+    return [
+        'alliance_structure_id' => $allianceStructureId,
+        'alliance_structure_name' => selected_station_name('alliance_station_id') ?? 'Alliance structure not configured',
+        'hub_source_id' => $hubSourceId,
+        'hub_name' => selected_station_name('market_station_id') ?? 'Market hub not configured',
+    ];
+}
+
+function history_trend_label(float $delta): string
+{
+    if ($delta > 0.25) {
+        return 'Up';
+    }
+    if ($delta < -0.25) {
+        return 'Down';
+    }
+
+    return 'Stable';
+}
+
+function history_module_registry(): array
 {
     return [
-        'summary' => [
-            ['label' => 'Tracked Days', 'value' => '30', 'context' => 'Rolling trend horizon'],
-            ['label' => 'Median Price Drift', 'value' => '+2.8%', 'context' => 'Across top traded modules'],
-            ['label' => 'Volume Drift', 'value' => '+6.1%', 'context' => 'Compared to prior period'],
+        'deviation_trend' => [
+            'label' => 'Deviation Trend',
+            'description' => 'Count of items outside configured alliance-vs-hub deviation thresholds over time.',
         ],
-        'rows' => [
-            ['period' => 'Last 7 days', 'median_price' => '1,240,000 ISK', 'volume' => '12,430', 'trend' => 'Up'],
-            ['period' => 'Last 14 days', 'median_price' => '1,198,000 ISK', 'volume' => '22,081', 'trend' => 'Up'],
-            ['period' => 'Last 30 days', 'median_price' => '1,151,000 ISK', 'volume' => '44,019', 'trend' => 'Stable'],
+        'missing_items_trend' => [
+            'label' => 'Missing Items Trend',
+            'description' => 'Daily count of hub-listed items with no alliance history snapshot.',
+        ],
+        'stock_health_trend' => [
+            'label' => 'Stock Health Trend',
+            'description' => 'Daily weak-stock incidence derived from order depth and order count history.',
         ],
     ];
 }
 
-function module_history_data(): array
+function alliance_trends_data(array $request = []): array
 {
+    $filters = history_filters($request, 'deviation_trend');
+    $window = history_date_range($filters['days']);
+    $source = history_source_context();
+
+    if ($source['alliance_structure_id'] <= 0) {
+        return [
+            'filters' => $filters,
+            'summary' => [
+                ['label' => 'Status', 'value' => 'Unavailable', 'context' => 'Select an alliance structure in Settings to load trends.'],
+            ],
+            'rows' => [],
+        ];
+    }
+
+    try {
+        $daily = db_market_history_daily_aggregate_by_date_type_source('alliance_structure', $source['alliance_structure_id'], $window['start'], $window['end']);
+        $stock = db_market_orders_history_stock_health_series('alliance_structure', $source['alliance_structure_id'], $window['start'], $window['end']);
+        $deviation = $source['hub_source_id'] > 0
+            ? db_market_history_daily_deviation_series($source['alliance_structure_id'], $source['hub_source_id'], $window['start'], $window['end'])
+            : [];
+    } catch (Throwable) {
+        $daily = [];
+        $stock = [];
+        $deviation = [];
+    }
+
+    $byDate = [];
+    foreach ($daily as $row) {
+        $date = (string) ($row['trade_date'] ?? '');
+        if ($date === '') {
+            continue;
+        }
+
+        if (!isset($byDate[$date])) {
+            $byDate[$date] = ['volume' => 0, 'orders' => 0, 'price_total' => 0.0, 'price_points' => 0];
+        }
+
+        $byDate[$date]['volume'] += (int) ($row['total_volume'] ?? 0);
+        $byDate[$date]['orders'] += (int) ($row['total_order_count'] ?? 0);
+
+        $price = isset($row['avg_close_price']) ? (float) $row['avg_close_price'] : 0.0;
+        if ($price > 0) {
+            $byDate[$date]['price_total'] += $price;
+            $byDate[$date]['price_points']++;
+        }
+    }
+
+    $deviationByDate = [];
+    foreach ($deviation as $row) {
+        $date = (string) ($row['trade_date'] ?? '');
+        $value = isset($row['deviation_percent']) ? (float) $row['deviation_percent'] : null;
+        if ($date === '' || $value === null) {
+            continue;
+        }
+        $deviationByDate[$date][] = $value;
+    }
+
+    $stockByDate = [];
+    foreach ($stock as $row) {
+        $date = (string) ($row['observed_date'] ?? '');
+        if ($date === '') {
+            continue;
+        }
+        $stockByDate[$date] = ($stockByDate[$date] ?? 0) + (int) ($row['sell_volume'] ?? 0);
+    }
+
+    ksort($byDate);
+    $rows = [];
+    $previousAvg = null;
+    foreach ($byDate as $date => $metrics) {
+        $avg = $metrics['price_points'] > 0 ? ($metrics['price_total'] / $metrics['price_points']) : null;
+        $medianDeviation = '—';
+        if (isset($deviationByDate[$date]) && $deviationByDate[$date] !== []) {
+            sort($deviationByDate[$date]);
+            $medianDeviation = market_format_percentage((float) $deviationByDate[$date][intdiv(count($deviationByDate[$date]), 2)]);
+        }
+
+        $delta = $previousAvg !== null && $avg !== null && $previousAvg > 0 ? (($avg - $previousAvg) / $previousAvg) * 100.0 : 0.0;
+        $rows[] = [
+            'date' => $date,
+            'avg_price' => market_format_isk($avg),
+            'volume' => number_format((int) $metrics['volume']),
+            'order_count' => number_format((int) $metrics['orders']),
+            'stock_sell_volume' => number_format((int) ($stockByDate[$date] ?? 0)),
+            'deviation_median' => $medianDeviation,
+            'trend' => history_trend_label($delta),
+        ];
+
+        if ($avg !== null) {
+            $previousAvg = $avg;
+        }
+    }
+
+    $latestRow = $rows !== [] ? $rows[count($rows) - 1] : null;
+
     return [
+        'filters' => $filters,
         'summary' => [
-            ['label' => 'History Window', 'value' => '90 days', 'context' => 'Persisted module snapshots'],
-            ['label' => 'Modules with Full Coverage', 'value' => '204', 'context' => 'No missing daily snapshots'],
-            ['label' => 'Recent Volatility Leaders', 'value' => '27', 'context' => 'Modules with >10% weekly change'],
+            ['label' => 'Window', 'value' => (string) $filters['days'] . ' days', 'context' => $window['start'] . ' → ' . $window['end']],
+            ['label' => 'Alliance Source', 'value' => $source['alliance_structure_name'], 'context' => 'Structure history aggregates'],
+            ['label' => 'Latest Snapshot', 'value' => $latestRow['date'] ?? 'No data', 'context' => $latestRow !== null ? ('Volume ' . ($latestRow['volume'] ?? '0')) : 'No historical rows yet'],
         ],
-        'rows' => [
-            ['module' => 'Heavy Missile Launcher II', 'latest_price' => '1,490,000 ISK', 'seven_day_change' => '+4.4%', 'thirty_day_change' => '+7.1%'],
-            ['module' => 'Gyrostabilizer II', 'latest_price' => '858,000 ISK', 'seven_day_change' => '-2.1%', 'thirty_day_change' => '+1.8%'],
-            ['module' => '500MN Microwarpdrive II', 'latest_price' => '4,120,000 ISK', 'seven_day_change' => '+9.2%', 'thirty_day_change' => '+14.7%'],
+        'rows' => array_reverse($rows),
+    ];
+}
+
+function module_history_data(array $request = []): array
+{
+    $filters = history_filters($request, 'deviation_trend');
+    $registry = history_module_registry();
+    $selected = $registry[$filters['module']];
+    $window = history_date_range($filters['days']);
+    $source = history_source_context();
+
+    $rows = [];
+
+    try {
+        if ($filters['module'] === 'deviation_trend' && $source['alliance_structure_id'] > 0 && $source['hub_source_id'] > 0) {
+            $series = db_market_history_daily_deviation_series($source['alliance_structure_id'], $source['hub_source_id'], $window['start'], $window['end']);
+            $threshold = market_compare_thresholds()['deviation_percent'];
+            $bucket = [];
+            foreach ($series as $row) {
+                $date = (string) ($row['trade_date'] ?? '');
+                if ($date === '') {
+                    continue;
+                }
+                $bucket[$date]['count'] = ($bucket[$date]['count'] ?? 0) + 1;
+                if (abs((float) ($row['deviation_percent'] ?? 0.0)) >= $threshold) {
+                    $bucket[$date]['alerts'] = ($bucket[$date]['alerts'] ?? 0) + 1;
+                }
+            }
+
+            foreach ($bucket as $date => $values) {
+                $rows[] = [
+                    'date' => $date,
+                    'module' => $selected['label'],
+                    'metric' => number_format((int) ($values['alerts'] ?? 0)),
+                    'context' => number_format((int) ($values['count'] ?? 0)) . ' compared items',
+                ];
+            }
+        }
+
+        if ($filters['module'] === 'stock_health_trend' && $source['alliance_structure_id'] > 0) {
+            $series = db_market_orders_history_stock_health_series('alliance_structure', $source['alliance_structure_id'], $window['start'], $window['end']);
+            $thresholds = market_compare_thresholds();
+            $bucket = [];
+            foreach ($series as $row) {
+                $date = (string) ($row['observed_date'] ?? '');
+                if ($date === '') {
+                    continue;
+                }
+                $bucket[$date]['count'] = ($bucket[$date]['count'] ?? 0) + 1;
+                $sellVolume = (int) ($row['sell_volume'] ?? 0);
+                $sellOrders = (int) ($row['sell_order_count'] ?? 0);
+                if ($sellVolume < $thresholds['min_alliance_sell_volume'] || $sellOrders < $thresholds['min_alliance_sell_orders']) {
+                    $bucket[$date]['weak'] = ($bucket[$date]['weak'] ?? 0) + 1;
+                }
+            }
+
+            foreach ($bucket as $date => $values) {
+                $rows[] = [
+                    'date' => $date,
+                    'module' => $selected['label'],
+                    'metric' => number_format((int) ($values['weak'] ?? 0)),
+                    'context' => number_format((int) ($values['count'] ?? 0)) . ' tracked types',
+                ];
+            }
+        }
+
+        if ($filters['module'] === 'missing_items_trend' && $source['alliance_structure_id'] > 0 && $source['hub_source_id'] > 0) {
+            $alliance = db_market_history_daily_aggregate_by_date_type_source('alliance_structure', $source['alliance_structure_id'], $window['start'], $window['end']);
+            $hub = db_market_history_daily_aggregate_by_date_type_source('market_hub', $source['hub_source_id'], $window['start'], $window['end']);
+
+            $allianceByDateType = [];
+            foreach ($alliance as $row) {
+                $allianceByDateType[(string) ($row['trade_date'] ?? '') . ':' . (int) ($row['type_id'] ?? 0)] = true;
+            }
+
+            $bucket = [];
+            foreach ($hub as $row) {
+                $date = (string) ($row['trade_date'] ?? '');
+                $typeId = (int) ($row['type_id'] ?? 0);
+                if ($date === '' || $typeId <= 0) {
+                    continue;
+                }
+                $bucket[$date]['hub'] = ($bucket[$date]['hub'] ?? 0) + 1;
+                if (!isset($allianceByDateType[$date . ':' . $typeId])) {
+                    $bucket[$date]['missing'] = ($bucket[$date]['missing'] ?? 0) + 1;
+                }
+            }
+
+            foreach ($bucket as $date => $values) {
+                $rows[] = [
+                    'date' => $date,
+                    'module' => $selected['label'],
+                    'metric' => number_format((int) ($values['missing'] ?? 0)),
+                    'context' => number_format((int) ($values['hub'] ?? 0)) . ' hub-listed types',
+                ];
+            }
+        }
+    } catch (Throwable) {
+        $rows = [];
+    }
+
+    usort($rows, static fn (array $a, array $b): int => strcmp((string) $b['date'], (string) $a['date']));
+
+    return [
+        'filters' => $filters,
+        'module_registry' => $registry,
+        'summary' => [
+            ['label' => 'Selected Module', 'value' => $selected['label'], 'context' => $selected['description']],
+            ['label' => 'Window', 'value' => (string) $filters['days'] . ' days', 'context' => $window['start'] . ' → ' . $window['end']],
+            ['label' => 'Snapshots', 'value' => number_format(count($rows)), 'context' => 'Daily historical points for selected analytics module'],
         ],
+        'rows' => $rows,
     ];
 }
 
