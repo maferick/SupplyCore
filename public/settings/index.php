@@ -56,6 +56,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
             }
 
+            if ($dataSyncAction === 'static-data-import') {
+                try {
+                    $result = static_data_import_reference_data('auto', false);
+                    $saved = (bool) ($result['ok'] ?? false);
+                    $message = $saved
+                        ? ('Static data import completed in ' . strtoupper((string) ($result['mode'] ?? 'auto')) . ' mode. Build ' . (string) ($result['build_id'] ?? '-') . '; changed=' . ((bool) ($result['changed'] ?? false) ? 'yes' : 'no') . '; rows=' . (int) ($result['rows_written'] ?? 0) . '.')
+                        : 'Static data import did not complete.';
+                    flash('success', $message);
+                } catch (Throwable $exception) {
+                    $saved = false;
+                    flash('success', 'Static data import failed: ' . $exception->getMessage());
+                }
+
+                header('Location: /settings?section=' . urlencode($submittedSection));
+                exit;
+            }
+
             $settingsSaved = save_settings(data_sync_settings_from_request($_POST));
             $schedulesSaved = save_data_sync_schedule_settings($_POST);
             $saved = $settingsSaved && $schedulesSaved;
@@ -90,6 +107,7 @@ $settingValues = get_settings([
     'hub_history_backfill_start_date',
     'raw_order_snapshot_retention_days',
     'sync_automation_enabled_since',
+    'static_data_source_url',
 ]);
 
 $stations = grouped_station_options();
@@ -101,11 +119,14 @@ $missingStructureScopes = [];
 $syncStatusCards = [];
 $syncScheduleCards = sync_schedule_settings_view_model();
 $runNowJobOptions = [];
+$staticDataState = null;
 if ($dbStatus['ok']) {
     $latestEsiToken = db_latest_esi_oauth_token();
     if ($latestEsiToken !== null) {
         $missingStructureScopes = esi_missing_scopes($latestEsiToken, $requiredStructureScopes);
     }
+
+    $staticDataState = db_static_data_import_state_get(static_data_source_key());
 
     $syncStatusCards = [
         [
@@ -472,6 +493,15 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </label>
                 </div>
 
+                <?php if ($staticDataState !== null): ?>
+                    <div class="rounded-lg border border-border bg-black/20 p-3 text-sm text-muted space-y-1">
+                        <p><span class="text-slate-100">Static Data Source:</span> <?= htmlspecialchars((string) ($staticDataState['source_url'] ?? ''), ENT_QUOTES) ?></p>
+                        <p><span class="text-slate-100">Remote Build:</span> <?= htmlspecialchars((string) ($staticDataState['remote_build_id'] ?? '-'), ENT_QUOTES) ?></p>
+                        <p><span class="text-slate-100">Imported Build:</span> <?= htmlspecialchars((string) ($staticDataState['imported_build_id'] ?? '-'), ENT_QUOTES) ?></p>
+                        <p><span class="text-slate-100">Last Status:</span> <?= htmlspecialchars((string) ($staticDataState['status'] ?? 'idle'), ENT_QUOTES) ?> (<?= htmlspecialchars((string) ($staticDataState['imported_mode'] ?? '-'), ENT_QUOTES) ?>)</p>
+                    </div>
+                <?php endif; ?>
+
                 <p class="text-sm text-muted">When enabled, future import/sync jobs will only process changed rows for better scalability.</p>
                 <div class="flex flex-wrap items-center gap-2">
                     <button name="data_sync_action" value="save" class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save Data Sync Settings</button>
@@ -481,6 +511,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <?php endforeach; ?>
                     </select>
                     <button name="data_sync_action" value="run-now" class="rounded-lg border border-border px-4 py-2 text-sm font-medium text-slate-100 hover:bg-white/5">Run selected now</button>
+                    <button name="data_sync_action" value="static-data-import" class="rounded-lg border border-border px-4 py-2 text-sm font-medium text-slate-100 hover:bg-white/5">Import EVE Static Data</button>
                 </div>
             </form>
         <?php endif; ?>

@@ -184,6 +184,91 @@ CREATE TABLE IF NOT EXISTS market_history_daily (
     KEY idx_market_history_daily_observed (source_type, source_id, observed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS static_data_import_state (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    source_key VARCHAR(120) NOT NULL,
+    source_url VARCHAR(500) NOT NULL,
+    remote_build_id VARCHAR(190) DEFAULT NULL,
+    imported_build_id VARCHAR(190) DEFAULT NULL,
+    imported_mode ENUM('full', 'incremental') DEFAULT NULL,
+    status ENUM('idle', 'running', 'success', 'failed') NOT NULL DEFAULT 'idle',
+    last_checked_at DATETIME DEFAULT NULL,
+    last_import_started_at DATETIME DEFAULT NULL,
+    last_import_finished_at DATETIME DEFAULT NULL,
+    last_error_message VARCHAR(500) DEFAULT NULL,
+    metadata_json JSON DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_source_key (source_key),
+    KEY idx_imported_build_id (imported_build_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ref_regions (
+    region_id INT UNSIGNED PRIMARY KEY,
+    region_name VARCHAR(120) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ref_constellations (
+    constellation_id INT UNSIGNED PRIMARY KEY,
+    region_id INT UNSIGNED NOT NULL,
+    constellation_name VARCHAR(120) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_region_id (region_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ref_systems (
+    system_id INT UNSIGNED PRIMARY KEY,
+    constellation_id INT UNSIGNED NOT NULL,
+    region_id INT UNSIGNED NOT NULL,
+    system_name VARCHAR(120) NOT NULL,
+    security DECIMAL(5,3) NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_constellation_id (constellation_id),
+    KEY idx_region_id (region_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ref_npc_stations (
+    station_id INT UNSIGNED PRIMARY KEY,
+    station_name VARCHAR(190) NOT NULL,
+    system_id INT UNSIGNED NOT NULL,
+    constellation_id INT UNSIGNED NOT NULL,
+    region_id INT UNSIGNED NOT NULL,
+    station_type_id INT UNSIGNED DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_system_id (system_id),
+    KEY idx_region_id (region_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ref_market_groups (
+    market_group_id INT UNSIGNED PRIMARY KEY,
+    parent_group_id INT UNSIGNED DEFAULT NULL,
+    market_group_name VARCHAR(190) NOT NULL,
+    description TEXT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_parent_group_id (parent_group_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ref_item_types (
+    type_id INT UNSIGNED PRIMARY KEY,
+    group_id INT UNSIGNED NOT NULL,
+    market_group_id INT UNSIGNED DEFAULT NULL,
+    type_name VARCHAR(255) NOT NULL,
+    description TEXT DEFAULT NULL,
+    published TINYINT(1) NOT NULL DEFAULT 0,
+    volume DECIMAL(20,6) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_group_id (group_id),
+    KEY idx_market_group_id (market_group_id),
+    KEY idx_published (published)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 INSERT INTO trading_stations (station_name, station_type) VALUES
     ('Jita IV - Moon 4 - Caldari Navy Assembly Plant', 'market'),
     ('Amarr VIII (Oris) - Emperor Family Academy', 'market'),
@@ -201,6 +286,7 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('incremental_strategy', 'watermark_upsert'),
     ('incremental_delete_policy', 'reconcile'),
     ('incremental_chunk_size', '1000'),
+    ('static_data_source_url', 'https://www.fuzzwork.co.uk/dump/sqlite-latest.sqlite.bz2'),
     ('alliance_current_backfill_start_date', ''),
     ('alliance_history_backfill_start_date', ''),
     ('hub_history_backfill_start_date', ''),

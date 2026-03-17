@@ -894,3 +894,114 @@ function db_sync_schedule_force_due_by_job_keys(array $jobKeys): int
 
     return (int) $stmt->rowCount();
 }
+
+function db_static_data_import_state_get(string $sourceKey): ?array
+{
+    return db_select_one(
+        'SELECT id, source_key, source_url, remote_build_id, imported_build_id, imported_mode, status, last_checked_at, last_import_started_at, last_import_finished_at, last_error_message, metadata_json
+         FROM static_data_import_state
+         WHERE source_key = ?
+         LIMIT 1',
+        [$sourceKey]
+    );
+}
+
+function db_static_data_import_state_upsert(
+    string $sourceKey,
+    string $sourceUrl,
+    ?string $remoteBuildId,
+    ?string $importedBuildId,
+    ?string $importedMode,
+    string $status,
+    ?string $lastCheckedAt,
+    ?string $lastImportStartedAt,
+    ?string $lastImportFinishedAt,
+    ?string $lastErrorMessage,
+    ?string $metadataJson
+): bool {
+    $safeStatus = in_array($status, ['idle', 'running', 'success', 'failed'], true) ? $status : 'idle';
+    $safeMode = in_array((string) $importedMode, ['full', 'incremental'], true) ? $importedMode : null;
+
+    return db_execute(
+        'INSERT INTO static_data_import_state (
+            source_key,
+            source_url,
+            remote_build_id,
+            imported_build_id,
+            imported_mode,
+            status,
+            last_checked_at,
+            last_import_started_at,
+            last_import_finished_at,
+            last_error_message,
+            metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+            source_url = VALUES(source_url),
+            remote_build_id = VALUES(remote_build_id),
+            imported_build_id = VALUES(imported_build_id),
+            imported_mode = VALUES(imported_mode),
+            status = VALUES(status),
+            last_checked_at = VALUES(last_checked_at),
+            last_import_started_at = VALUES(last_import_started_at),
+            last_import_finished_at = VALUES(last_import_finished_at),
+            last_error_message = VALUES(last_error_message),
+            metadata_json = VALUES(metadata_json),
+            updated_at = CURRENT_TIMESTAMP',
+        [
+            $sourceKey,
+            $sourceUrl,
+            $remoteBuildId,
+            $importedBuildId,
+            $safeMode,
+            $safeStatus,
+            $lastCheckedAt,
+            $lastImportStartedAt,
+            $lastImportFinishedAt,
+            $lastErrorMessage !== null ? mb_substr($lastErrorMessage, 0, 500) : null,
+            $metadataJson,
+        ]
+    );
+}
+
+function db_reference_data_truncate_all(): void
+{
+    db_transaction(static function (): void {
+        db_execute('TRUNCATE TABLE ref_item_types');
+        db_execute('TRUNCATE TABLE ref_market_groups');
+        db_execute('TRUNCATE TABLE ref_npc_stations');
+        db_execute('TRUNCATE TABLE ref_systems');
+        db_execute('TRUNCATE TABLE ref_constellations');
+        db_execute('TRUNCATE TABLE ref_regions');
+    });
+}
+
+function db_ref_regions_bulk_upsert(array $rows, ?int $chunkSize = null): int
+{
+    return db_bulk_insert_or_upsert('ref_regions', ['region_id', 'region_name'], $rows, ['region_name'], $chunkSize);
+}
+
+function db_ref_constellations_bulk_upsert(array $rows, ?int $chunkSize = null): int
+{
+    return db_bulk_insert_or_upsert('ref_constellations', ['constellation_id', 'region_id', 'constellation_name'], $rows, ['region_id', 'constellation_name'], $chunkSize);
+}
+
+function db_ref_systems_bulk_upsert(array $rows, ?int $chunkSize = null): int
+{
+    return db_bulk_insert_or_upsert('ref_systems', ['system_id', 'constellation_id', 'region_id', 'system_name', 'security'], $rows, ['constellation_id', 'region_id', 'system_name', 'security'], $chunkSize);
+}
+
+function db_ref_npc_stations_bulk_upsert(array $rows, ?int $chunkSize = null): int
+{
+    return db_bulk_insert_or_upsert('ref_npc_stations', ['station_id', 'station_name', 'system_id', 'constellation_id', 'region_id', 'station_type_id'], $rows, ['station_name', 'system_id', 'constellation_id', 'region_id', 'station_type_id'], $chunkSize);
+}
+
+function db_ref_market_groups_bulk_upsert(array $rows, ?int $chunkSize = null): int
+{
+    return db_bulk_insert_or_upsert('ref_market_groups', ['market_group_id', 'parent_group_id', 'market_group_name', 'description'], $rows, ['parent_group_id', 'market_group_name', 'description'], $chunkSize);
+}
+
+function db_ref_item_types_bulk_upsert(array $rows, ?int $chunkSize = null): int
+{
+    return db_bulk_insert_or_upsert('ref_item_types', ['type_id', 'group_id', 'market_group_id', 'type_name', 'description', 'published', 'volume'], $rows, ['group_id', 'market_group_id', 'type_name', 'description', 'published', 'volume'], $chunkSize);
+}

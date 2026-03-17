@@ -1925,3 +1925,311 @@ function runner_lock_release(string $lockName): bool
 {
     return db_runner_lock_release($lockName);
 }
+
+function static_data_source_key(): string
+{
+    return 'fuzzwork.sqlite';
+}
+
+function static_data_source_url(): string
+{
+    $configured = trim((string) get_setting('static_data_source_url', 'https://www.fuzzwork.co.uk/dump/sqlite-latest.sqlite.bz2'));
+
+    return $configured !== '' ? $configured : 'https://www.fuzzwork.co.uk/dump/sqlite-latest.sqlite.bz2';
+}
+
+function static_data_import_mode(string $requestedMode = 'auto'): string
+{
+    $normalized = trim(mb_strtolower($requestedMode));
+    $incrementalEnabled = get_setting('incremental_updates_enabled', '1') === '1';
+
+    if ($normalized === 'full') {
+        return 'full';
+    }
+
+    if ($normalized === 'incremental') {
+        return $incrementalEnabled ? 'incremental' : 'full';
+    }
+
+    return $incrementalEnabled ? 'incremental' : 'full';
+}
+
+function static_data_fetch_remote_build_info(string $sourceUrl): array
+{
+    $headers = @get_headers($sourceUrl, true);
+    if ($headers === false) {
+        throw new RuntimeException('Unable to fetch static-data headers from source URL.');
+    }
+
+    $lastModified = '';
+    $etag = '';
+
+    if (is_array($headers['Last-Modified'] ?? null)) {
+        $lastModified = (string) end($headers['Last-Modified']);
+    } elseif (isset($headers['Last-Modified'])) {
+        $lastModified = (string) $headers['Last-Modified'];
+    }
+
+    if (is_array($headers['ETag'] ?? null)) {
+        $etag = (string) end($headers['ETag']);
+    } elseif (isset($headers['ETag'])) {
+        $etag = (string) $headers['ETag'];
+    }
+
+    $buildId = sha1($sourceUrl . '|' . trim($etag, '"') . '|' . $lastModified);
+
+    return [
+        'build_id' => $buildId,
+        'etag' => trim((string) $etag, '"'),
+        'last_modified' => $lastModified,
+    ];
+}
+
+function static_data_storage_paths(string $buildId): array
+{
+    $baseDir = dirname(__DIR__) . '/storage/static-data';
+
+    return [
+        'base_dir' => $baseDir,
+        'archive_path' => $baseDir . '/' . $buildId . '.sqlite.bz2',
+        'sqlite_path' => $baseDir . '/' . $buildId . '.sqlite',
+    ];
+}
+
+function static_data_ensure_local_sqlite(string $sourceUrl, string $buildId): string
+{
+    $paths = static_data_storage_paths($buildId);
+    if (!is_dir($paths['base_dir']) && !mkdir($paths['base_dir'], 0775, true) && !is_dir($paths['base_dir'])) {
+        throw new RuntimeException('Unable to create static-data storage directory.');
+    }
+
+    if (!is_file($paths['archive_path'])) {
+        $context = stream_context_create(['http' => ['timeout' => 120]]);
+        $payload = @file_get_contents($sourceUrl, false, $context);
+        if ($payload === false) {
+            throw new RuntimeException('Failed to download static-data package.');
+        }
+
+        if (file_put_contents($paths['archive_path'], $payload) === false) {
+            throw new RuntimeException('Failed to write static-data archive to local storage.');
+        }
+    }
+
+    if (!is_file($paths['sqlite_path'])) {
+        $input = bzopen($paths['archive_path'], 'r');
+        if ($input === false) {
+            throw new RuntimeException('Failed to open compressed static-data archive.');
+        }
+
+        $output = fopen($paths['sqlite_path'], 'wb');
+        if ($output === false) {
+            bzclose($input);
+            throw new RuntimeException('Failed to create local static-data sqlite file.');
+        }
+
+        while (!feof($input)) {
+            $chunk = bzread($input, 1024 * 1024);
+            if ($chunk === false) {
+                fclose($output);
+                bzclose($input);
+                throw new RuntimeException('Failed while decompressing static-data archive.');
+            }
+
+            if ($chunk === '') {
+                continue;
+            }
+
+            fwrite($output, $chunk);
+        }
+
+        fclose($output);
+        bzclose($input);
+    }
+
+    return $paths['sqlite_path'];
+}
+
+function static_data_sqlite_query(SQLite3 $sqlite, string $sql): array
+{
+    $result = $sqlite->query($sql);
+    if (!$result instanceof SQLite3Result) {
+        return [];
+    }
+
+    $rows = [];
+    while (($row = $result->fetchArray(SQLITE3_ASSOC)) !== false) {
+        $rows[] = $row;
+    }
+
+    return $rows;
+}
+
+function static_data_import_reference_data(string $requestedMode = 'auto', bool $force = false): array
+{
+    $sourceKey = static_data_source_key();
+    $sourceUrl = static_data_source_url();
+    $state = db_static_data_import_state_get($sourceKey);
+    $mode = static_data_import_mode($requestedMode);
+    $checkedAt = gmdate('Y-m-d H:i:s');
+
+    $remote = static_data_fetch_remote_build_info($sourceUrl);
+    $remoteBuildId = (string) $remote['build_id'];
+    $importedBuildId = (string) ($state['imported_build_id'] ?? '');
+
+    if (!$force && $remoteBuildId === $importedBuildId) {
+        db_static_data_import_state_upsert(
+            $sourceKey,
+            $sourceUrl,
+            $remoteBuildId,
+            $importedBuildId === '' ? null : $importedBuildId,
+            $state['imported_mode'] ?? null,
+            'success',
+            $checkedAt,
+            $state['last_import_started_at'] ?? null,
+            $state['last_import_finished_at'] ?? null,
+            null,
+            json_encode(['remote' => $remote, 'note' => 'Already up to date.'], JSON_THROW_ON_ERROR)
+        );
+
+        return ['ok' => true, 'changed' => false, 'build_id' => $remoteBuildId, 'rows_written' => 0, 'mode' => $mode];
+    }
+
+    $startedAt = gmdate('Y-m-d H:i:s');
+    db_static_data_import_state_upsert(
+        $sourceKey,
+        $sourceUrl,
+        $remoteBuildId,
+        $importedBuildId === '' ? null : $importedBuildId,
+        $mode,
+        'running',
+        $checkedAt,
+        $startedAt,
+        null,
+        null,
+        json_encode(['remote' => $remote], JSON_THROW_ON_ERROR)
+    );
+
+    try {
+        $sqlitePath = static_data_ensure_local_sqlite($sourceUrl, $remoteBuildId);
+        $sqlite = new SQLite3($sqlitePath, SQLITE3_OPEN_READONLY);
+
+        $regions = [];
+        foreach (static_data_sqlite_query($sqlite, 'SELECT regionID, regionName FROM mapRegions') as $row) {
+            $regions[] = ['region_id' => (int) $row['regionID'], 'region_name' => (string) ($row['regionName'] ?? '')];
+        }
+
+        $constellations = [];
+        foreach (static_data_sqlite_query($sqlite, 'SELECT constellationID, regionID, constellationName FROM mapConstellations') as $row) {
+            $constellations[] = [
+                'constellation_id' => (int) $row['constellationID'],
+                'region_id' => (int) $row['regionID'],
+                'constellation_name' => (string) ($row['constellationName'] ?? ''),
+            ];
+        }
+
+        $systems = [];
+        foreach (static_data_sqlite_query($sqlite, 'SELECT solarSystemID, constellationID, regionID, solarSystemName, security FROM mapSolarSystems') as $row) {
+            $systems[] = [
+                'system_id' => (int) $row['solarSystemID'],
+                'constellation_id' => (int) $row['constellationID'],
+                'region_id' => (int) $row['regionID'],
+                'system_name' => (string) ($row['solarSystemName'] ?? ''),
+                'security' => (float) ($row['security'] ?? 0),
+            ];
+        }
+
+        $stations = [];
+        foreach (static_data_sqlite_query($sqlite, 'SELECT stationID, stationName, solarSystemID, constellationID, regionID, stationTypeID FROM staStations') as $row) {
+            $stations[] = [
+                'station_id' => (int) $row['stationID'],
+                'station_name' => (string) ($row['stationName'] ?? ''),
+                'system_id' => (int) $row['solarSystemID'],
+                'constellation_id' => (int) $row['constellationID'],
+                'region_id' => (int) $row['regionID'],
+                'station_type_id' => isset($row['stationTypeID']) ? (int) $row['stationTypeID'] : null,
+            ];
+        }
+
+        $marketGroups = [];
+        foreach (static_data_sqlite_query($sqlite, 'SELECT marketGroupID, parentGroupID, marketGroupName, description FROM invMarketGroups') as $row) {
+            $marketGroups[] = [
+                'market_group_id' => (int) $row['marketGroupID'],
+                'parent_group_id' => isset($row['parentGroupID']) ? (int) $row['parentGroupID'] : null,
+                'market_group_name' => (string) ($row['marketGroupName'] ?? ''),
+                'description' => isset($row['description']) ? (string) $row['description'] : null,
+            ];
+        }
+
+        $types = [];
+        foreach (static_data_sqlite_query($sqlite, 'SELECT typeID, groupID, marketGroupID, typeName, description, published, volume FROM invTypes') as $row) {
+            $types[] = [
+                'type_id' => (int) $row['typeID'],
+                'group_id' => (int) $row['groupID'],
+                'market_group_id' => isset($row['marketGroupID']) ? (int) $row['marketGroupID'] : null,
+                'type_name' => (string) ($row['typeName'] ?? ''),
+                'description' => isset($row['description']) ? (string) $row['description'] : null,
+                'published' => (int) ($row['published'] ?? 0) === 1 ? 1 : 0,
+                'volume' => isset($row['volume']) ? (float) $row['volume'] : null,
+            ];
+        }
+
+        $rowsWritten = db_transaction(static function () use ($mode, $regions, $constellations, $systems, $stations, $marketGroups, $types): int {
+            if ($mode === 'full') {
+                db_reference_data_truncate_all();
+            }
+
+            $written = 0;
+            $written += db_ref_regions_bulk_upsert($regions);
+            $written += db_ref_constellations_bulk_upsert($constellations);
+            $written += db_ref_systems_bulk_upsert($systems);
+            $written += db_ref_npc_stations_bulk_upsert($stations);
+            $written += db_ref_market_groups_bulk_upsert($marketGroups);
+            $written += db_ref_item_types_bulk_upsert($types);
+
+            return $written;
+        });
+
+        $finishedAt = gmdate('Y-m-d H:i:s');
+        db_static_data_import_state_upsert(
+            $sourceKey,
+            $sourceUrl,
+            $remoteBuildId,
+            $remoteBuildId,
+            $mode,
+            'success',
+            $checkedAt,
+            $startedAt,
+            $finishedAt,
+            null,
+            json_encode([
+                'remote' => $remote,
+                'dataset_counts' => [
+                    'regions' => count($regions),
+                    'constellations' => count($constellations),
+                    'systems' => count($systems),
+                    'npc_stations' => count($stations),
+                    'market_groups' => count($marketGroups),
+                    'item_types' => count($types),
+                ],
+            ], JSON_THROW_ON_ERROR)
+        );
+
+        return ['ok' => true, 'changed' => true, 'build_id' => $remoteBuildId, 'rows_written' => $rowsWritten, 'mode' => $mode];
+    } catch (Throwable $exception) {
+        db_static_data_import_state_upsert(
+            $sourceKey,
+            $sourceUrl,
+            $remoteBuildId,
+            $importedBuildId === '' ? null : $importedBuildId,
+            $mode,
+            'failed',
+            $checkedAt,
+            $startedAt,
+            gmdate('Y-m-d H:i:s'),
+            $exception->getMessage(),
+            json_encode(['remote' => $remote], JSON_THROW_ON_ERROR)
+        );
+
+        throw $exception;
+    }
+}

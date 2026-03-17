@@ -204,3 +204,43 @@ If you previously had one cron line per pipeline/job, remove those entries and k
 - ESI OAuth flow with callback endpoint and token persistence
 - Add sync job queue + import workers
 - Split section UI blocks into dedicated templates/components as settings grow
+
+## EVE Static Data Import Pipeline
+
+EveMarket includes a local reference-data pipeline for EVE static data exports.
+
+### What it does
+
+- Checks the current upstream static-data build from `static_data_source_url`
+- Compares upstream build metadata with `static_data_import_state.imported_build_id`
+- Downloads and caches the static package in `storage/static-data/`
+- Imports selected **reference-only** datasets into MySQL tables:
+  - `ref_regions`
+  - `ref_constellations`
+  - `ref_systems`
+  - `ref_npc_stations`
+  - `ref_market_groups`
+  - `ref_item_types`
+- Tracks import status, mode, and build in `static_data_import_state`
+
+### Import modes
+
+- **Full refresh**: truncates reference tables then reloads from current build.
+- **Build-aware incremental**: compares build IDs and upserts rows when a new build is detected.
+  - If `incremental_updates_enabled=0`, imports automatically use full refresh behavior.
+
+### Run options
+
+- Web UI: **Settings → Data Sync → Import EVE Static Data**
+- CLI:
+
+```bash
+php bin/static_data_import.php --mode=auto
+php bin/static_data_import.php --mode=full --force
+php bin/static_data_import.php --mode=incremental
+```
+
+### Data-boundary policy
+
+Static data is used only for non-live, non-authenticated reference metadata.
+Do **not** use static data as a source for token-scoped character data, alliance structure auth state, live market feeds, or account-level real-time information.
