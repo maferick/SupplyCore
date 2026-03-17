@@ -11,7 +11,7 @@ RewriteRule ^callback/?$ callback/index.php [L,QSA]
 
 RewriteRule ^market-status/?$ market-status/current-alliance.php [L,QSA]
 RewriteRule ^market-status/current-alliance/?$ market-status/current-alliance.php [L,QSA]
-RewriteRule ^market-status/jita-comparison/?$ market-status/jita-comparison.php [L,QSA]
+RewriteRule ^market-status/reference-comparison/?$ market-status/reference-comparison.php [L,QSA]
 RewriteRule ^market-status/missing-items/?$ market-status/missing-items.php [L,QSA]
 RewriteRule ^market-status/price-deviations/?$ market-status/price-deviations.php [L,QSA]
 
