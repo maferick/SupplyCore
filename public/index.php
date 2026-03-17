@@ -110,6 +110,6 @@ include __DIR__ . '/../src/views/partials/header.php';
 </section>
 
 <section class="mt-6 rounded-xl border border-border bg-card p-4 text-sm text-muted">
-    <p>Database: <?= htmlspecialchars($dbStatus['connected'] ? 'Connected' : 'Unavailable', ENT_QUOTES) ?><?php if (!$dbStatus['connected'] && isset($dbStatus['error'])): ?> · <?= htmlspecialchars((string) $dbStatus['error'], ENT_QUOTES) ?><?php endif; ?></p>
+    <p>Database: <?= htmlspecialchars($dbStatus['ok'] ? 'Connected' : 'Unavailable', ENT_QUOTES) ?><?php if (!$dbStatus['ok'] && isset($dbStatus['message'])): ?> · <?= htmlspecialchars((string) $dbStatus['message'], ENT_QUOTES) ?><?php endif; ?></p>
 </section>
 <?php include __DIR__ . '/../src/views/partials/footer.php'; ?>
