@@ -306,7 +306,22 @@ function selected_station_name(string $settingKey): ?string
         }
 
         if ($npcStation !== null) {
-            return (string) ($npcStation['station_name'] ?? ('Station #' . $stationId));
+            $npcStationName = trim((string) ($npcStation['station_name'] ?? ''));
+            if ($npcStationName !== '' && !is_placeholder_station_name($npcStationName, $stationId)) {
+                return $npcStationName;
+            }
+
+            try {
+                $metadata = esi_npc_station_metadata($stationId);
+            } catch (Throwable) {
+                $metadata = null;
+            }
+
+            if ($metadata !== null && trim((string) ($metadata['name'] ?? '')) !== '') {
+                return trim((string) $metadata['name']);
+            }
+
+            return $npcStationName !== '' ? $npcStationName : ('Station #' . $stationId);
         }
 
         try {
@@ -327,7 +342,10 @@ function selected_station_name(string $settingKey): ?string
     }
 
     if ($station !== null) {
-        return (string) ($station['station_name'] ?? ('Station #' . $stationId));
+        $stationName = trim((string) ($station['station_name'] ?? ''));
+        if ($stationName !== '' && !is_placeholder_station_name($stationName, $stationId)) {
+            return $stationName;
+        }
     }
 
     try {
@@ -341,6 +359,18 @@ function selected_station_name(string $settingKey): ?string
     }
 
     return null;
+}
+
+function is_placeholder_station_name(string $stationName, int $stationId): bool
+{
+    $normalized = trim($stationName);
+    if ($normalized === '') {
+        return true;
+    }
+
+    $stationIdString = (string) $stationId;
+
+    return preg_match('/^Station\s*#?\s*' . preg_quote($stationIdString, '/') . '$/i', $normalized) === 1;
 }
 
 function grouped_station_options(): array
