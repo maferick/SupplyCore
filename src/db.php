@@ -253,6 +253,28 @@ function db_import_sql_dump_into_database(string $databaseName, string $sqlPath)
     }
 }
 
+function db_import_sql_dump_into_current_database(string $sqlPath): void
+{
+    if (!is_file($sqlPath)) {
+        throw new RuntimeException('Static-data SQL dump is missing.');
+    }
+
+    $command = sprintf(
+        'mysql --host=%s --port=%d --user=%s --password=%s --default-character-set=utf8mb4 %s < %s 2>&1',
+        escapeshellarg((string) config('db.host')),
+        (int) config('db.port'),
+        escapeshellarg((string) config('db.username')),
+        escapeshellarg((string) config('db.password')),
+        escapeshellarg((string) config('db.database')),
+        escapeshellarg($sqlPath)
+    );
+
+    exec($command, $output, $exitCode);
+    if ($exitCode !== 0) {
+        throw new RuntimeException('Failed to import static-data SQL dump into primary database: ' . trim(implode('\n', $output)));
+    }
+}
+
 function db_drop_database_if_exists(string $databaseName): void
 {
     db_execute('DROP DATABASE IF EXISTS ' . db_validate_identifier($databaseName));
@@ -285,6 +307,48 @@ function db_select_from_database(string $databaseName, string $sql, array $param
     $stmt->execute($params);
 
     return $stmt->fetchAll();
+}
+
+function db_list_tables(?string $databaseName = null): array
+{
+    if ($databaseName !== null) {
+        db_validate_identifier($databaseName);
+        $rows = db_select_from_database($databaseName, 'SHOW TABLES');
+    } else {
+        $rows = db_fetch_all('SHOW TABLES');
+    }
+
+    $tables = [];
+    foreach ($rows as $row) {
+        $table = (string) array_values($row)[0];
+        if ($table !== '') {
+            $tables[] = $table;
+        }
+    }
+
+    sort($tables);
+
+    return $tables;
+}
+
+function db_drop_tables(array $tables): void
+{
+    $safeTables = array_values(array_unique(array_filter(array_map(
+        static fn (mixed $table): string => trim((string) $table),
+        $tables
+    ), static fn (string $table): bool => $table !== '')));
+
+    if ($safeTables === []) {
+        return;
+    }
+
+    $quotedTables = array_map(static fn (string $table): string => db_validate_identifier($table), $safeTables);
+    db_execute('SET FOREIGN_KEY_CHECKS = 0');
+    try {
+        db_execute('DROP TABLE IF EXISTS ' . implode(', ', $quotedTables));
+    } finally {
+        db_execute('SET FOREIGN_KEY_CHECKS = 1');
+    }
 }
 
 function db_upsert_esi_oauth_token(array $token): bool

@@ -2241,12 +2241,43 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
     );
 
     $stagingDatabase = 'evemarket_static_' . substr($remoteBuildId, 0, 16);
+    $fallbackImportIntoPrimary = false;
 
     try {
         $sqlPath = static_data_ensure_local_sql_dump($sourceUrl, $remoteBuildId);
-        db_import_sql_dump_into_database($stagingDatabase, $sqlPath);
 
-        $dataset = static_data_extract_reference_rows_from_database($stagingDatabase);
+        try {
+            db_import_sql_dump_into_database($stagingDatabase, $sqlPath);
+            $dataset = static_data_extract_reference_rows_from_database($stagingDatabase);
+        } catch (Throwable $stagingImportException) {
+            $errorMessage = strtolower($stagingImportException->getMessage());
+            $accessDenied = str_contains($errorMessage, 'access denied') || str_contains($errorMessage, 'sqlstate[42000]');
+
+            if (!$accessDenied) {
+                throw $stagingImportException;
+            }
+
+            $fallbackImportIntoPrimary = true;
+            $expectedTables = ['invMarketGroups', 'invTypes', 'mapRegions', 'mapConstellations', 'mapSolarSystems', 'staStations'];
+            $existingTables = db_list_tables();
+            $backupTables = array_values(array_intersect($existingTables, $expectedTables));
+
+            if ($backupTables !== []) {
+                throw new RuntimeException(
+                    'Unable to create dedicated staging database with current MySQL privileges, and fallback import into the primary database is unsafe because required staging table names already exist: '
+                    . implode(', ', $backupTables)
+                    . '. Grant CREATE/DROP privileges for temporary staging databases or clean conflicting tables and retry.',
+                    previous: $stagingImportException
+                );
+            }
+
+            db_import_sql_dump_into_current_database($sqlPath);
+            try {
+                $dataset = static_data_extract_reference_rows_from_database((string) config('db.database'));
+            } finally {
+                db_drop_tables($expectedTables);
+            }
+        }
         $regions = $dataset['regions'];
         $constellations = $dataset['constellations'];
         $systems = $dataset['systems'];
@@ -2295,11 +2326,15 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
             ], JSON_THROW_ON_ERROR)
         );
 
-        db_drop_database_if_exists($stagingDatabase);
+        if (!$fallbackImportIntoPrimary) {
+            db_drop_database_if_exists($stagingDatabase);
+        }
 
         return ['ok' => true, 'changed' => true, 'build_id' => $remoteBuildId, 'rows_written' => $rowsWritten, 'mode' => $mode];
     } catch (Throwable $exception) {
-        db_drop_database_if_exists($stagingDatabase);
+        if (!$fallbackImportIntoPrimary) {
+            db_drop_database_if_exists($stagingDatabase);
+        }
 
         db_static_data_import_state_upsert(
             $sourceKey,
