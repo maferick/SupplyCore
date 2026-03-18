@@ -692,7 +692,18 @@ function db_market_hub_local_history_daily_normalize_spread_percent(mixed $value
         return null;
     }
 
-    return round((float) $value, 4);
+    $spreadPercent = (float) $value;
+    if (!is_finite($spreadPercent)) {
+        return null;
+    }
+
+    $spreadPercent = round($spreadPercent, 4);
+    $maxAbsValue = 9999999999999999.9999;
+    if (abs($spreadPercent) > $maxAbsValue) {
+        return null;
+    }
+
+    return $spreadPercent;
 }
 
 function db_market_hub_local_history_daily_normalize_row(array $row): array
