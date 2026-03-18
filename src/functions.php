@@ -2709,8 +2709,8 @@ function market_hub_current_snapshot_finalize_metric(array $metric): ?array
         return null;
     }
 
-    $sellPrice = isset($metric['best_sell_price']) && $metric['best_sell_price'] !== null ? (float) $metric['best_sell_price'] : null;
-    $buyPrice = isset($metric['best_buy_price']) && $metric['best_buy_price'] !== null ? (float) $metric['best_buy_price'] : null;
+    $sellPrice = isset($metric['best_sell_price']) && $metric['best_sell_price'] !== null ? round((float) $metric['best_sell_price'], 2) : null;
+    $buyPrice = isset($metric['best_buy_price']) && $metric['best_buy_price'] !== null ? round((float) $metric['best_buy_price'], 2) : null;
     $closePrice = $sellPrice ?? $buyPrice;
     if ($closePrice === null) {
         return null;
