@@ -64,6 +64,14 @@ function nav_items(): array
             ],
         ],
         [
+            'label' => 'Killmail Intelligence',
+            'path' => '/killmail-intelligence',
+            'icon' => '💥',
+            'children' => [
+                ['label' => 'Recent Killmails', 'path' => '/killmail-intelligence'],
+            ],
+        ],
+        [
             'label' => 'Settings',
             'path' => '/settings',
             'icon' => '⚙️',
@@ -1388,6 +1396,236 @@ function current_alliance_market_status_data(): array
             'showing_from' => $totalItems > 0 ? $offset + 1 : 0,
             'showing_to' => min($offset + $pageSize, $totalItems),
         ],
+    ];
+}
+
+function killmail_format_datetime(?string $value): string
+{
+    $trimmed = trim((string) $value);
+    if ($trimmed === '') {
+        return '—';
+    }
+
+    try {
+        $date = new DateTimeImmutable($trimmed, new DateTimeZone('UTC'));
+        $timezone = new DateTimeZone(app_timezone());
+
+        return $date->setTimezone($timezone)->format('Y-m-d H:i:s T');
+    } catch (Throwable) {
+        return $trimmed;
+    }
+}
+
+function killmail_relative_datetime(?string $value): string
+{
+    $trimmed = trim((string) $value);
+    if ($trimmed === '') {
+        return 'Never';
+    }
+
+    try {
+        $date = new DateTimeImmutable($trimmed, new DateTimeZone('UTC'));
+        $age = time() - $date->getTimestamp();
+
+        return $age <= 0 ? 'just now' : (human_duration_ago($age) . ' ago');
+    } catch (Throwable) {
+        return 'Unknown';
+    }
+}
+
+function killmail_last_sync_outcome_label(?array $latestRun): string
+{
+    if (!is_array($latestRun) || $latestRun === []) {
+        return 'No sync runs yet';
+    }
+
+    $status = (string) ($latestRun['run_status'] ?? 'unknown');
+    if ($status !== 'success') {
+        return 'Failed';
+    }
+
+    $writtenRows = (int) ($latestRun['written_rows'] ?? 0);
+    if ($writtenRows > 0) {
+        return 'Inserted ' . number_format($writtenRows) . ' new killmail' . ($writtenRows === 1 ? '' : 's');
+    }
+
+    return 'No-op';
+}
+
+function killmail_match_sources(array $row): array
+{
+    $sources = [];
+
+    if ((int) ($row['matches_victim_alliance'] ?? 0) === 1) {
+        $sources[] = 'victim alliance';
+    }
+
+    if ((int) ($row['matches_victim_corporation'] ?? 0) === 1) {
+        $sources[] = 'victim corporation';
+    }
+
+    if ((int) ($row['matches_attacker_alliance'] ?? 0) === 1) {
+        $sources[] = 'attacker alliance';
+    }
+
+    if ((int) ($row['matches_attacker_corporation'] ?? 0) === 1) {
+        $sources[] = 'attacker corporation';
+    }
+
+    return $sources;
+}
+
+function killmail_overview_data(): array
+{
+    $recentHours = 24;
+    $allowedPageSizes = [25, 50, 100];
+    $pageSize = (int) ($_GET['page_size'] ?? 25);
+    if (!in_array($pageSize, $allowedPageSizes, true)) {
+        $pageSize = 25;
+    }
+
+    $filters = [
+        'search' => trim((string) ($_GET['q'] ?? '')),
+        'alliance_id' => max(0, (int) ($_GET['alliance_id'] ?? 0)),
+        'corporation_id' => max(0, (int) ($_GET['corporation_id'] ?? 0)),
+        'tracked_only' => sanitize_enabled_flag($_GET['tracked_only'] ?? '0') === '1',
+        'page' => max(1, (int) ($_GET['page'] ?? 1)),
+        'page_size' => $pageSize,
+    ];
+
+    try {
+        $summaryRow = db_killmail_overview_summary($recentHours);
+        $status = db_killmail_ingestion_status();
+        $options = db_killmail_overview_filter_options();
+        $listing = db_killmail_overview_page($filters);
+    } catch (Throwable $exception) {
+        return [
+            'error' => $exception->getMessage(),
+            'summary' => [],
+            'status' => [
+                'ingestion_enabled' => killmail_ingestion_enabled(),
+                'last_sync_outcome' => 'Unavailable',
+            ],
+            'rows' => [],
+            'filters' => $filters + [
+                'page_size_options' => $allowedPageSizes,
+                'alliance_options' => ['0' => 'All alliances'],
+                'corporation_options' => ['0' => 'All corporations'],
+            ],
+            'pagination' => [
+                'page' => 1,
+                'page_size' => $pageSize,
+                'page_size_options' => $allowedPageSizes,
+                'total_pages' => 1,
+                'total_items' => 0,
+                'showing_from' => 0,
+                'showing_to' => 0,
+            ],
+            'empty_message' => 'Killmail overview is unavailable because the database query failed.',
+        ];
+    }
+
+    $totalCount = (int) ($summaryRow['total_count'] ?? 0);
+    $recentCount = (int) ($summaryRow['recent_count'] ?? 0);
+    $trackedMatchCount = (int) ($summaryRow['tracked_match_count'] ?? 0);
+    $maxSequenceId = (int) ($summaryRow['max_sequence_id'] ?? ($status['max_sequence_id'] ?? 0));
+    $state = is_array($status['state'] ?? null) ? $status['state'] : [];
+    $latestRun = is_array($status['latest_run'] ?? null) ? $status['latest_run'] : null;
+    $lastSuccessAt = isset($state['last_success_at']) ? (string) $state['last_success_at'] : null;
+    $lastIngestedAt = isset($summaryRow['last_ingested_at']) ? (string) $summaryRow['last_ingested_at'] : null;
+    $latestUploadedAt = isset($summaryRow['latest_uploaded_at']) ? (string) $summaryRow['latest_uploaded_at'] : null;
+    $cursor = isset($state['last_cursor']) ? trim((string) $state['last_cursor']) : '';
+
+    $allianceOptions = ['0' => 'All alliances'];
+    foreach ((array) ($options['alliances'] ?? []) as $row) {
+        $id = (int) ($row['entity_id'] ?? 0);
+        if ($id <= 0) {
+            continue;
+        }
+
+        $allianceOptions[(string) $id] = (string) ($row['entity_label'] ?? ('Alliance #' . $id));
+    }
+
+    $corporationOptions = ['0' => 'All corporations'];
+    foreach ((array) ($options['corporations'] ?? []) as $row) {
+        $id = (int) ($row['entity_id'] ?? 0);
+        if ($id <= 0) {
+            continue;
+        }
+
+        $corporationOptions[(string) $id] = (string) ($row['entity_label'] ?? ('Corporation #' . $id));
+    }
+
+    $rows = array_map(static function (array $row): array {
+        $matchSources = killmail_match_sources($row);
+        $allianceLabel = trim((string) ($row['victim_alliance_label'] ?? ''));
+        $corporationLabel = trim((string) ($row['victim_corporation_label'] ?? ''));
+        $shipType = trim((string) ($row['ship_type_name'] ?? ''));
+        $system = trim((string) ($row['system_name'] ?? ''));
+        $region = trim((string) ($row['region_name'] ?? ''));
+
+        return [
+            'sequence_id' => (int) ($row['sequence_id'] ?? 0),
+            'killmail_id' => (int) ($row['killmail_id'] ?? 0),
+            'killmail_time_display' => killmail_format_datetime(isset($row['killmail_time']) ? (string) $row['killmail_time'] : null),
+            'uploaded_at_display' => killmail_format_datetime(isset($row['uploaded_at']) ? (string) $row['uploaded_at'] : null),
+            'created_at_display' => killmail_format_datetime(isset($row['created_at']) ? (string) $row['created_at'] : null),
+            'victim_alliance' => $allianceLabel !== '' ? $allianceLabel : 'Alliance unavailable',
+            'victim_corporation' => $corporationLabel !== '' ? $corporationLabel : 'Corporation unavailable',
+            'ship_type' => $shipType !== '' ? $shipType : 'Ship type unavailable',
+            'system' => $system !== '' ? $system : 'System unavailable',
+            'region' => $region !== '' ? $region : 'Region unavailable',
+            'matched_tracked' => (int) ($row['matched_tracked'] ?? 0) === 1,
+            'match_context' => $matchSources === [] ? 'No current tracked-entity match.' : ('Matched on ' . implode(', ', $matchSources) . '.'),
+        ];
+    }, (array) ($listing['rows'] ?? []));
+
+    $emptyMessage = $totalCount === 0
+        ? 'No killmails have been stored yet. Enable killmail ingestion, run the sync worker, and this view will populate as local killmails arrive.'
+        : 'No killmails matched the current filters. Try clearing search or filter controls.';
+
+    return [
+        'error' => null,
+        'summary' => [
+            ['label' => 'Total Ingested', 'value' => number_format($totalCount), 'context' => 'Killmails stored locally'],
+            ['label' => 'Recent Ingestion', 'value' => number_format($recentCount), 'context' => 'Stored in the last ' . $recentHours . ' hours'],
+            ['label' => 'Tracked Matches', 'value' => number_format($trackedMatchCount), 'context' => 'Rows matching current tracked entities'],
+            ['label' => 'Last Processed Sequence', 'value' => $maxSequenceId > 0 ? number_format($maxSequenceId) : '—', 'context' => $cursor !== '' ? ('Cursor ' . $cursor) : 'Cursor not recorded yet'],
+            ['label' => 'Sync Freshness', 'value' => killmail_relative_datetime($lastSuccessAt), 'context' => $lastSuccessAt !== null ? ('Last success ' . killmail_format_datetime($lastSuccessAt)) : 'No successful sync recorded'],
+        ],
+        'status' => [
+            'ingestion_enabled' => killmail_ingestion_enabled(),
+            'current_cursor' => $cursor !== '' ? $cursor : 'Unavailable',
+            'last_sync_outcome' => killmail_last_sync_outcome_label($latestRun),
+            'last_success_at' => killmail_format_datetime($lastSuccessAt),
+            'last_sync_relative' => killmail_relative_datetime($lastSuccessAt),
+            'last_uploaded_at' => killmail_format_datetime($latestUploadedAt),
+            'last_ingested_at' => killmail_format_datetime($lastIngestedAt),
+            'tracked_alliance_count' => (int) ($status['tracked_alliance_count'] ?? 0),
+            'tracked_corporation_count' => (int) ($status['tracked_corporation_count'] ?? 0),
+            'sync_status' => (string) ($state['status'] ?? 'idle'),
+            'last_run_status' => (string) ($latestRun['run_status'] ?? 'not_run'),
+            'last_run_source_rows' => (int) ($latestRun['source_rows'] ?? 0),
+            'last_run_written_rows' => (int) ($latestRun['written_rows'] ?? 0),
+            'last_run_finished_at' => killmail_format_datetime(isset($latestRun['finished_at']) ? (string) $latestRun['finished_at'] : null),
+            'last_error' => trim((string) ($state['last_error_message'] ?? '')),
+        ],
+        'rows' => $rows,
+        'filters' => $filters + [
+            'page_size_options' => $allowedPageSizes,
+            'alliance_options' => $allianceOptions,
+            'corporation_options' => $corporationOptions,
+        ],
+        'pagination' => [
+            'page' => (int) ($listing['page'] ?? 1),
+            'page_size' => (int) ($listing['page_size'] ?? $pageSize),
+            'page_size_options' => $allowedPageSizes,
+            'total_pages' => (int) ($listing['total_pages'] ?? 1),
+            'total_items' => (int) ($listing['total_items'] ?? 0),
+            'showing_from' => (int) ($listing['showing_from'] ?? 0),
+            'showing_to' => (int) ($listing['showing_to'] ?? 0),
+        ],
+        'empty_message' => $emptyMessage,
     ];
 }
 
