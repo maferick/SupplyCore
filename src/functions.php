@@ -4178,6 +4178,15 @@ function esi_valid_access_token(int $refreshWindowSeconds = 120): string
     return $accessToken;
 }
 
+function esi_user_agent(): string
+{
+    $configured = trim((string) get_setting('app_name', 'EveMarket'));
+
+    return $configured !== ''
+        ? $configured . ' eve-market/1.0 (+https://github.com/cvweiss/evemarket)'
+        : 'EveMarket eve-market/1.0 (+https://github.com/cvweiss/evemarket)';
+}
+
 function esi_lookup_context(array $requiredScopes = []): array
 {
     $enabled = get_setting('esi_enabled', '0') === '1';
@@ -4221,6 +4230,126 @@ function esi_structure_result_shape(array $structure): array
     }
 
     return $result;
+}
+
+
+function esi_entity_result_shape(array $entity): array
+{
+    return [
+        'id' => (int) ($entity['id'] ?? 0),
+        'name' => (string) ($entity['name'] ?? ''),
+        'type' => (string) ($entity['type'] ?? ''),
+    ];
+}
+
+function esi_universe_names_lookup(array $ids): array
+{
+    $queryIds = array_values(array_unique(array_map(static fn (mixed $id): int => (int) $id, $ids)));
+    $queryIds = array_values(array_filter($queryIds, static fn (int $id): bool => $id > 0));
+    if ($queryIds === []) {
+        return [];
+    }
+
+    $ch = curl_init('https://esi.evetech.net/latest/universe/names/?datasource=tranquility');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 25,
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => ['Accept: application/json', 'Content-Type: application/json', 'User-Agent: ' . esi_user_agent()],
+        CURLOPT_POSTFIELDS => json_encode($queryIds, JSON_THROW_ON_ERROR),
+    ]);
+
+    $body = curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    if ($body === false) {
+        throw new RuntimeException('Failed resolving entity IDs from ESI: ' . $error);
+    }
+
+    if ($status !== 200) {
+        throw new RuntimeException('Failed resolving entity IDs from ESI. HTTP status=' . $status);
+    }
+
+    $decoded = json_decode($body, true);
+
+    return is_array($decoded) ? $decoded : [];
+}
+
+function esi_alliance_and_corporation_search(string $query, array $tokenContext): array
+{
+    $term = trim($query);
+    if ($term === '') {
+        return [];
+    }
+
+    $characterId = (int) ($tokenContext['character_id'] ?? 0);
+    if ($characterId <= 0) {
+        return [];
+    }
+
+    $accessToken = esi_valid_access_token();
+    $searchResponse = http_get_json(
+        'https://esi.evetech.net/latest/characters/' . $characterId . '/search/?categories=alliance,corporation&strict=false&search=' . rawurlencode($term),
+        [
+            'Authorization: Bearer ' . $accessToken,
+            'Accept: application/json',
+            'User-Agent: ' . esi_user_agent(),
+        ]
+    );
+
+    if (($searchResponse['status'] ?? 500) >= 400) {
+        throw new RuntimeException('Failed to search alliances and corporations from ESI.');
+    }
+
+    $ids = [];
+    $entityTypesById = [];
+    foreach (['alliance' => 'Alliance', 'corporation' => 'Corporation'] as $category => $label) {
+        foreach ((array) ($searchResponse['json'][$category] ?? []) as $rawId) {
+            $id = (int) $rawId;
+            if ($id <= 0) {
+                continue;
+            }
+
+            $ids[] = $id;
+            $entityTypesById[$id] = $label;
+        }
+    }
+
+    $results = [];
+    foreach (esi_universe_names_lookup($ids) as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $id = (int) ($row['id'] ?? 0);
+        $name = trim((string) ($row['name'] ?? ''));
+        if ($id <= 0 || $name === '' || !isset($entityTypesById[$id])) {
+            continue;
+        }
+
+        if (mb_stripos($name, $term) === false) {
+            continue;
+        }
+
+        $results[$id] = esi_entity_result_shape([
+            'id' => $id,
+            'name' => $name,
+            'type' => $entityTypesById[$id],
+        ]);
+    }
+
+    usort($results, static function (array $a, array $b): int {
+        $typeCompare = strcasecmp((string) ($a['type'] ?? ''), (string) ($b['type'] ?? ''));
+        if ($typeCompare !== 0) {
+            return $typeCompare;
+        }
+
+        return strcasecmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
+    });
+
+    return array_slice(array_values($results), 0, 20);
 }
 
 
@@ -4990,10 +5119,10 @@ function killmail_parse_entity_name_lines(string $text): array
             continue;
         }
 
-        $names[$name] = true;
+        $names[(string) $name] = (string) $name;
     }
 
-    return array_keys($names);
+    return array_values($names);
 }
 
 function killmail_universe_ids_lookup(array $names): array
@@ -5008,7 +5137,7 @@ function killmail_universe_ids_lookup(array $names): array
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => 25,
         CURLOPT_POST => true,
-        CURLOPT_HTTPHEADER => ['Accept: application/json', 'Content-Type: application/json'],
+        CURLOPT_HTTPHEADER => ['Accept: application/json', 'Content-Type: application/json', 'User-Agent: ' . esi_user_agent()],
         CURLOPT_POSTFIELDS => json_encode($queryNames, JSON_UNESCAPED_SLASHES),
     ]);
 
@@ -5034,14 +5163,39 @@ function killmail_resolve_tracked_entities(string $allianceText, string $corpora
 {
     $allianceLines = killmail_parse_entity_name_lines($allianceText);
     $corporationLines = killmail_parse_entity_name_lines($corporationText);
+    $parsedAllianceRows = killmail_parse_entity_lines($allianceText);
+    $parsedCorporationRows = killmail_parse_entity_lines($corporationText);
 
     $allianceById = [];
     $corporationById = [];
     $lookupNames = [];
 
+    foreach ($parsedAllianceRows as $row) {
+        $id = (int) ($row['id'] ?? 0);
+        if ($id <= 0) {
+            continue;
+        }
+
+        $allianceById[$id] = [
+            'id' => $id,
+            'label' => isset($row['label']) && trim((string) $row['label']) !== '' ? trim((string) $row['label']) : null,
+        ];
+    }
+
+    foreach ($parsedCorporationRows as $row) {
+        $id = (int) ($row['id'] ?? 0);
+        if ($id <= 0) {
+            continue;
+        }
+
+        $corporationById[$id] = [
+            'id' => $id,
+            'label' => isset($row['label']) && trim((string) $row['label']) !== '' ? trim((string) $row['label']) : null,
+        ];
+    }
+
     foreach ($allianceLines as $line) {
-        if (preg_match('/^[1-9][0-9]{1,20}$/', $line) === 1) {
-            $allianceById[(int) $line] = ['id' => (int) $line, 'label' => null];
+        if (preg_match('/^[1-9][0-9]{1,20}(?:\s*[|,:-]\s*.+)?$/', $line) === 1) {
             continue;
         }
 
@@ -5049,8 +5203,7 @@ function killmail_resolve_tracked_entities(string $allianceText, string $corpora
     }
 
     foreach ($corporationLines as $line) {
-        if (preg_match('/^[1-9][0-9]{1,20}$/', $line) === 1) {
-            $corporationById[(int) $line] = ['id' => (int) $line, 'label' => null];
+        if (preg_match('/^[1-9][0-9]{1,20}(?:\s*[|,:-]\s*.+)?$/', $line) === 1) {
             continue;
         }
 
@@ -5060,31 +5213,35 @@ function killmail_resolve_tracked_entities(string $allianceText, string $corpora
     $unresolved = [];
 
     if ($lookupNames !== []) {
-        $resolved = killmail_universe_ids_lookup(array_keys($lookupNames));
+        try {
+            $resolved = killmail_universe_ids_lookup(array_keys($lookupNames));
 
-        foreach ((array) ($resolved['alliances'] ?? []) as $row) {
-            $name = trim((string) ($row['name'] ?? ''));
-            $id = (int) ($row['id'] ?? 0);
-            if ($id <= 0 || $name === '' || !in_array($name, $allianceLines, true)) {
-                continue;
+            foreach ((array) ($resolved['alliances'] ?? []) as $row) {
+                $name = trim((string) ($row['name'] ?? ''));
+                $id = (int) ($row['id'] ?? 0);
+                if ($id <= 0 || $name === '' || !in_array($name, $allianceLines, true)) {
+                    continue;
+                }
+
+                $allianceById[$id] = ['id' => $id, 'label' => $name];
             }
 
-            $allianceById[$id] = ['id' => $id, 'label' => $name];
-        }
+            foreach ((array) ($resolved['corporations'] ?? []) as $row) {
+                $name = trim((string) ($row['name'] ?? ''));
+                $id = (int) ($row['id'] ?? 0);
+                if ($id <= 0 || $name === '' || !in_array($name, $corporationLines, true)) {
+                    continue;
+                }
 
-        foreach ((array) ($resolved['corporations'] ?? []) as $row) {
-            $name = trim((string) ($row['name'] ?? ''));
-            $id = (int) ($row['id'] ?? 0);
-            if ($id <= 0 || $name === '' || !in_array($name, $corporationLines, true)) {
-                continue;
+                $corporationById[$id] = ['id' => $id, 'label' => $name];
             }
-
-            $corporationById[$id] = ['id' => $id, 'label' => $name];
+        } catch (Throwable $exception) {
+            $unresolved[] = 'Unable to resolve names from ESI right now; use the lookup field or numeric IDs. ' . $exception->getMessage();
         }
     }
 
     foreach ($allianceLines as $line) {
-        if (preg_match('/^[1-9][0-9]{1,20}$/', $line) === 1) {
+        if (preg_match('/^[1-9][0-9]{1,20}(?:\s*[|,:-]\s*.+)?$/', $line) === 1) {
             continue;
         }
 
@@ -5102,7 +5259,7 @@ function killmail_resolve_tracked_entities(string $allianceText, string $corpora
     }
 
     foreach ($corporationLines as $line) {
-        if (preg_match('/^[1-9][0-9]{1,20}$/', $line) === 1) {
+        if (preg_match('/^[1-9][0-9]{1,20}(?:\s*[|,:-]\s*.+)?$/', $line) === 1) {
             continue;
         }
 
@@ -5118,6 +5275,9 @@ function killmail_resolve_tracked_entities(string $allianceText, string $corpora
             $unresolved[] = 'Corporation not found: ' . $line;
         }
     }
+
+    ksort($allianceById);
+    ksort($corporationById);
 
     return [
         'alliances' => array_values($allianceById),
@@ -5242,7 +5402,9 @@ function killmail_event_matches_tracked_entities(array $event, array $attackers,
 
 function killmail_transform_r2z2_payload(array $payload): array
 {
-    $killmail = is_array($payload['killmail'] ?? null) ? $payload['killmail'] : [];
+    $killmail = is_array($payload['esi'] ?? null)
+        ? $payload['esi']
+        : (is_array($payload['killmail'] ?? null) ? $payload['killmail'] : []);
     $victim = is_array($killmail['victim'] ?? null) ? $killmail['victim'] : [];
     $zkb = is_array($payload['zkb'] ?? null) ? $payload['zkb'] : [];
     $sequenceId = (int) ($payload['sequence_id'] ?? 0);
