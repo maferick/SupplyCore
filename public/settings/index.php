@@ -455,10 +455,20 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </script>
         <?php elseif ($section === 'killmail-intelligence'): ?>
             <?php
+                $trackedAllianceSelections = array_values(array_map(static fn (array $row): array => [
+                    'id' => (int) ($row['alliance_id'] ?? 0),
+                    'name' => (string) ($row['label'] ?? ('Alliance #' . (int) ($row['alliance_id'] ?? 0))),
+                    'type' => 'Alliance',
+                ], array_filter($trackedAlliances, static fn (array $row): bool => (int) ($row['alliance_id'] ?? 0) > 0)));
+                $trackedCorporationSelections = array_values(array_map(static fn (array $row): array => [
+                    'id' => (int) ($row['corporation_id'] ?? 0),
+                    'name' => (string) ($row['label'] ?? ('Corporation #' . (int) ($row['corporation_id'] ?? 0))),
+                    'type' => 'Corporation',
+                ], array_filter($trackedCorporations, static fn (array $row): bool => (int) ($row['corporation_id'] ?? 0) > 0)));
                 $alliancesText = implode("
-", array_map(static fn (array $row): string => (string) ($row['label'] ?? $row['alliance_id']), $trackedAlliances));
+", array_map(static fn (array $row): string => (string) $row['id'] . ' | ' . (string) $row['name'], $trackedAllianceSelections));
                 $corporationsText = implode("
-", array_map(static fn (array $row): string => (string) ($row['label'] ?? $row['corporation_id']), $trackedCorporations));
+", array_map(static fn (array $row): string => (string) $row['id'] . ' | ' . (string) $row['name'], $trackedCorporationSelections));
                 $statusState = is_array($killmailStatus['state'] ?? null) ? $killmailStatus['state'] : [];
             ?>
             <form class="mt-6 space-y-4" method="post">
@@ -482,20 +492,263 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </label>
                 </div>
 
-                <label class="block space-y-2">
-                    <span class="text-sm text-muted">Tracked Alliances (one per line, by name; numeric IDs still supported)</span>
-                    <textarea name="tracked_alliance_names" rows="6" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"><?= htmlspecialchars($alliancesText, ENT_QUOTES) ?></textarea>
-                </label>
+                <div class="grid gap-4 lg:grid-cols-2">
+                    <label class="block space-y-2" id="killmail-alliance-search-field">
+                        <span class="text-sm text-muted">Tracked Alliances</span>
+                        <textarea name="tracked_alliance_names" id="tracked_alliance_names" rows="4" class="hidden"><?= htmlspecialchars($alliancesText, ENT_QUOTES) ?></textarea>
+                        <input
+                            type="text"
+                            id="tracked_alliance_search"
+                            autocomplete="off"
+                            placeholder="Search alliances to add to the zKill filter"
+                            class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
+                        />
+                        <p id="tracked_alliance_status" class="text-xs text-muted">
+                            <?= htmlspecialchars($trackedAllianceSelections === []
+                                ? 'Type at least 2 characters to search alliances.'
+                                : ('Tracking ' . count($trackedAllianceSelections) . ' alliance' . (count($trackedAllianceSelections) === 1 ? '' : 's') . '.'), ENT_QUOTES) ?>
+                        </p>
+                        <ul id="tracked_alliance_results" class="hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-black/40"></ul>
+                        <div id="tracked_alliance_selected" class="flex flex-wrap gap-2"></div>
+                    </label>
 
-                <label class="block space-y-2">
-                    <span class="text-sm text-muted">Tracked Corporations (one per line, by name; numeric IDs still supported)</span>
-                    <textarea name="tracked_corporation_names" rows="6" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"><?= htmlspecialchars($corporationsText, ENT_QUOTES) ?></textarea>
-                </label>
-
-
-                <div class="rounded-lg border border-border bg-black/20 p-3 text-sm text-muted">
-                    Enter exact alliance/corporation names (for example: <span class="text-slate-100">Goonswarm Federation</span> or <span class="text-slate-100">KarmaFleet</span>). Names are resolved to IDs using ESI and stored locally.
+                    <label class="block space-y-2" id="killmail-corporation-search-field">
+                        <span class="text-sm text-muted">Tracked Corporations</span>
+                        <textarea name="tracked_corporation_names" id="tracked_corporation_names" rows="4" class="hidden"><?= htmlspecialchars($corporationsText, ENT_QUOTES) ?></textarea>
+                        <input
+                            type="text"
+                            id="tracked_corporation_search"
+                            autocomplete="off"
+                            placeholder="Search corporations to add to the zKill filter"
+                            class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
+                        />
+                        <p id="tracked_corporation_status" class="text-xs text-muted">
+                            <?= htmlspecialchars($trackedCorporationSelections === []
+                                ? 'Type at least 2 characters to search corporations.'
+                                : ('Tracking ' . count($trackedCorporationSelections) . ' corporation' . (count($trackedCorporationSelections) === 1 ? '' : 's') . '.'), ENT_QUOTES) ?>
+                        </p>
+                        <ul id="tracked_corporation_results" class="hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-black/40"></ul>
+                        <div id="tracked_corporation_selected" class="flex flex-wrap gap-2"></div>
+                    </label>
                 </div>
+
+                <div class="rounded-lg border border-border bg-black/20 p-3 text-sm text-muted space-y-2">
+                    <p>Use the lookup fields to add the same way you pick the market hub or structure destination. Selections are stored locally as ID + name pairs for reliable zKill filtering.</p>
+                    <p>If needed, you can still paste raw numeric IDs before saving.</p>
+                </div>
+
+                <script>
+                    (() => {
+                        const createTrackedEntityPicker = ({
+                            inputId,
+                            hiddenId,
+                            resultsId,
+                            statusId,
+                            selectedId,
+                            allowedType,
+                            initialItems,
+                        }) => {
+                            const input = document.getElementById(inputId);
+                            const hidden = document.getElementById(hiddenId);
+                            const results = document.getElementById(resultsId);
+                            const status = document.getElementById(statusId);
+                            const selected = document.getElementById(selectedId);
+
+                            if (!input || !hidden || !results || !status || !selected) {
+                                return;
+                            }
+
+                            const items = new Map();
+                            let debounceTimer = null;
+
+                            const escapeHtml = (value) => {
+                                const div = document.createElement('div');
+                                div.textContent = value;
+                                return div.innerHTML;
+                            };
+
+                            const syncHiddenField = () => {
+                                hidden.value = Array.from(items.values())
+                                    .map((item) => String(item.id) + ' | ' + item.name)
+                                    .join('
+');
+                            };
+
+                            const updateStatus = (message = null) => {
+                                if (message !== null) {
+                                    status.textContent = message;
+                                    return;
+                                }
+
+                                status.textContent = items.size === 0
+                                    ? 'Type at least 2 characters to search ' + allowedType.toLowerCase() + 's.'
+                                    : 'Tracking ' + items.size + ' ' + allowedType.toLowerCase() + (items.size === 1 ? '' : 's') + '.';
+                            };
+
+                            const clearResults = () => {
+                                results.innerHTML = '';
+                                results.classList.add('hidden');
+                            };
+
+                            const renderSelected = () => {
+                                selected.innerHTML = '';
+
+                                if (items.size === 0) {
+                                    const empty = document.createElement('p');
+                                    empty.className = 'text-xs text-muted';
+                                    empty.textContent = 'No ' + allowedType.toLowerCase() + 's selected yet.';
+                                    selected.appendChild(empty);
+                                    syncHiddenField();
+                                    updateStatus();
+                                    return;
+                                }
+
+                                Array.from(items.values())
+                                    .sort((a, b) => a.name.localeCompare(b.name))
+                                    .forEach((item) => {
+                                        const chip = document.createElement('span');
+                                        chip.className = 'inline-flex items-center gap-2 rounded-full border border-border bg-black/20 px-3 py-1 text-xs text-slate-100';
+                                        chip.innerHTML = '<span>' + escapeHtml(item.name) + ' <span class="text-muted">(#' + item.id + ')</span></span>';
+
+                                        const remove = document.createElement('button');
+                                        remove.type = 'button';
+                                        remove.className = 'rounded-full px-1 text-muted hover:bg-white/10 hover:text-slate-100';
+                                        remove.setAttribute('aria-label', 'Remove ' + item.name);
+                                        remove.textContent = '×';
+                                        remove.addEventListener('click', () => {
+                                            items.delete(String(item.id));
+                                            renderSelected();
+                                        });
+
+                                        chip.appendChild(remove);
+                                        selected.appendChild(chip);
+                                    });
+
+                                syncHiddenField();
+                                updateStatus();
+                            };
+
+                            const addItem = (item) => {
+                                if (!item || String(item.type || '') !== allowedType) {
+                                    return;
+                                }
+
+                                const id = Number(item.id || 0);
+                                const name = String(item.name || '').trim();
+                                if (!Number.isFinite(id) || id <= 0 || name === '') {
+                                    return;
+                                }
+
+                                items.set(String(id), { id, name, type: allowedType });
+                                input.value = '';
+                                clearResults();
+                                renderSelected();
+                            };
+
+                            const renderResults = (rows) => {
+                                clearResults();
+
+                                const options = Array.isArray(rows)
+                                    ? rows.filter((row) => String(row.type || '') === allowedType && !items.has(String(row.id || '')))
+                                    : [];
+
+                                if (options.length === 0) {
+                                    updateStatus('No matching ' + allowedType.toLowerCase() + 's found.');
+                                    return;
+                                }
+
+                                const fragment = document.createDocumentFragment();
+                                options.forEach((item) => {
+                                    const row = document.createElement('li');
+                                    const button = document.createElement('button');
+                                    button.type = 'button';
+                                    button.className = 'flex w-full flex-col items-start gap-1 px-3 py-2 text-left text-sm hover:bg-white/5';
+                                    button.innerHTML = '<span class="text-slate-100"></span><span class="text-xs text-muted"></span>';
+                                    button.querySelector('span').textContent = item.name;
+                                    button.querySelectorAll('span')[1].textContent = item.type + ' · #' + item.id;
+                                    button.addEventListener('click', () => addItem(item));
+                                    row.appendChild(button);
+                                    fragment.appendChild(row);
+                                });
+
+                                results.appendChild(fragment);
+                                results.classList.remove('hidden');
+                                updateStatus('Select a ' + allowedType.toLowerCase() + ' from the list.');
+                            };
+
+                            input.addEventListener('input', () => {
+                                const query = input.value.trim();
+
+                                if (debounceTimer !== null) {
+                                    clearTimeout(debounceTimer);
+                                }
+
+                                if (query.length < 2) {
+                                    clearResults();
+                                    updateStatus();
+                                    return;
+                                }
+
+                                debounceTimer = window.setTimeout(async () => {
+                                    updateStatus('Searching…');
+
+                                    try {
+                                        const response = await fetch('/settings/killmail-entities.php?q=' + encodeURIComponent(query), {
+                                            headers: { 'Accept': 'application/json' },
+                                        });
+                                        const payload = await response.json();
+                                        if (!response.ok) {
+                                            throw new Error(payload.error || 'Lookup failed.');
+                                        }
+
+                                        renderResults(payload.results || []);
+                                    } catch (error) {
+                                        clearResults();
+                                        updateStatus(error instanceof Error ? error.message : 'Lookup failed.');
+                                    }
+                                }, 250);
+                            });
+
+                            document.addEventListener('click', (event) => {
+                                if (!results.contains(event.target) && event.target !== input) {
+                                    clearResults();
+                                }
+                            });
+
+                            initialItems.forEach((item) => {
+                                const id = Number(item.id || 0);
+                                const name = String(item.name || '').trim();
+                                if (!Number.isFinite(id) || id <= 0 || name === '') {
+                                    return;
+                                }
+
+                                items.set(String(id), { id, name, type: allowedType });
+                            });
+
+                            renderSelected();
+                        };
+
+                        createTrackedEntityPicker({
+                            inputId: 'tracked_alliance_search',
+                            hiddenId: 'tracked_alliance_names',
+                            resultsId: 'tracked_alliance_results',
+                            statusId: 'tracked_alliance_status',
+                            selectedId: 'tracked_alliance_selected',
+                            allowedType: 'Alliance',
+                            initialItems: <?= json_encode($trackedAllianceSelections, JSON_THROW_ON_ERROR) ?>,
+                        });
+
+                        createTrackedEntityPicker({
+                            inputId: 'tracked_corporation_search',
+                            hiddenId: 'tracked_corporation_names',
+                            resultsId: 'tracked_corporation_results',
+                            statusId: 'tracked_corporation_status',
+                            selectedId: 'tracked_corporation_selected',
+                            allowedType: 'Corporation',
+                            initialItems: <?= json_encode($trackedCorporationSelections, JSON_THROW_ON_ERROR) ?>,
+                        });
+                    })();
+                </script>
 
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Demand Prediction Mode (future-facing)</span>
