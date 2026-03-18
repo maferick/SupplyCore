@@ -1394,7 +1394,7 @@ function dashboard_intelligence_data(): array
     usort($risks, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['stock_score'] ?? 0) <=> ($a['stock_score'] ?? 0)));
 
     $marketHubRef = market_hub_setting_reference();
-    $allianceStructureId = selected_alliance_structure_id();
+    $allianceStructureId = configured_alliance_structure_id();
     $allianceSync = $allianceStructureId !== null
         ? sync_status_for_dataset_keys([sync_dataset_key_alliance_structure_orders_current($allianceStructureId)])
         : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
