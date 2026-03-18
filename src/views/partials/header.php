@@ -41,3 +41,12 @@ $notice = flash('success');
         <?php if ($notice): ?>
             <div class="mb-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/12 px-4 py-3 text-sm text-emerald-100 shadow-[0_0_24px_rgba(34,197,94,0.08)]"><?= htmlspecialchars($notice, ENT_QUOTES) ?></div>
         <?php endif; ?>
+        <?php if (is_array($pageFreshness ?? null) && $pageFreshness !== []): ?>
+            <div class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-sm shadow-[0_0_24px_rgba(15,23,42,0.14)] <?= htmlspecialchars((string) ($pageFreshness['tone'] ?? 'border-amber-400/20 bg-amber-500/10 text-amber-100'), ENT_QUOTES) ?>">
+                <div>
+                    <p class="font-medium"><?= htmlspecialchars((string) ($pageFreshness['message'] ?? 'Summary freshness unavailable.'), ENT_QUOTES) ?></p>
+                    <p class="mt-1 text-xs opacity-80">Last computed <?= htmlspecialchars((string) ($pageFreshness['computed_relative'] ?? 'Never'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($pageFreshness['computed_at'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+                </div>
+                <span class="rounded-full border border-current/20 px-3 py-1 text-[11px] uppercase tracking-[0.14em]"><?= htmlspecialchars((string) ($pageFreshness['label'] ?? 'Unknown'), ENT_QUOTES) ?></span>
+            </div>
+        <?php endif; ?>

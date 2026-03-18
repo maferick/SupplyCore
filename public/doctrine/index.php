@@ -13,6 +13,7 @@ $topMissingItems = $data['top_missing_items'] ?? [];
 $topBottlenecks = $data['top_bottlenecks'] ?? [];
 $highestPriorityRestockItems = $data['highest_priority_restock_items'] ?? [];
 $ungroupedFits = $data['ungrouped_fits'] ?? [];
+$pageFreshness = supplycore_page_freshness_view_model((array) ($data['freshness'] ?? []));
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validate_csrf($_POST['_token'] ?? null)) {
@@ -25,7 +26,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     try {
         $groupId = db_doctrine_group_create($groupName, $description);
-        doctrine_refresh_intelligence('group-create');
+        doctrine_schedule_intelligence_refresh('group-create');
         flash('success', 'Doctrine group saved successfully.');
         header('Location: /doctrine/group?group_id=' . $groupId);
         exit;

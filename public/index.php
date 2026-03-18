@@ -8,6 +8,7 @@ $title = 'Command Dashboard';
 $dbStatus = db_connection_status();
 $intel = dashboard_intelligence_data();
 $doctrine = $intel['doctrine'] ?? doctrine_groups_overview_data();
+$pageFreshness = supplycore_page_freshness_view_model((array) ($intel['_freshness'] ?? []));
 
 include __DIR__ . '/../src/views/partials/header.php';
 ?>

@@ -36,7 +36,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         try {
             db_doctrine_fit_delete($fitId);
-            doctrine_refresh_intelligence('fit-delete');
+            doctrine_schedule_intelligence_refresh('fit-delete');
             flash('success', 'Doctrine fit deleted successfully.');
             header('Location: /doctrine');
             exit;
@@ -49,6 +49,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $data = doctrine_fit_detail_view_model($fitId);
+$pageFreshness = supplycore_page_freshness_view_model((array) ($data['freshness'] ?? []));
 $fit = $data['fit'] ?? null;
 $categories = $data['categories'] ?? [];
 $summary = $data['summary'] ?? [];

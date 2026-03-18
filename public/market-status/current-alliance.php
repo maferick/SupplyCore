@@ -21,6 +21,7 @@ $highlights = $data['highlights'] ?? [];
 $tableRows = $data['rows'] ?? [];
 $tableControls = $data['pagination'] ?? [];
 $emptyMessage = 'No alliance structure listings available.';
+$pageFreshness = supplycore_page_freshness_view_model((array) ($data['freshness'] ?? []));
 
 include __DIR__ . '/../../src/views/partials/header.php';
 include __DIR__ . '/../../src/views/partials/module-page.php';
