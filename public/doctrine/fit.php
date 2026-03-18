@@ -58,6 +58,7 @@ $showDeleteConfirm = isset($_GET['confirm_delete']) && $_GET['confirm_delete'] =
 
 if ($fit !== null && $editDraft === null) {
     $items = $data['items'] ?? [];
+    $hullItem = doctrine_find_hull_item((array) $items);
     $editDraft = [
         'fit' => [
             'fit_name' => (string) ($fit['fit_name'] ?? ''),
@@ -68,12 +69,15 @@ if ($fit !== null && $editDraft === null) {
         'item_lines_text' => doctrine_render_editable_item_lines((array) $items),
         'group_ids' => (array) ($fit['group_ids'] ?? []),
         'unresolved' => [],
+        'hull_is_stock_tracked' => !is_array($hullItem) || !array_key_exists('is_stock_tracked', $hullItem) || (bool) $hullItem['is_stock_tracked'],
+        'hull_tracking_default_reason' => (string) ($fit['supply']['hull_tracking_note'] ?? ''),
     ];
 }
 
 $statusTone = static function (string $status): string {
     return match ($status) {
         'ok' => 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100',
+        'external' => 'border-cyan-400/20 bg-cyan-500/10 text-cyan-100',
         'low' => 'border-amber-400/20 bg-amber-500/10 text-amber-100',
         default => 'border-rose-400/20 bg-rose-500/10 text-rose-200',
     };
@@ -190,6 +194,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <div class="mt-2 flex flex-wrap items-center gap-3">
                             <h2 class="section-title"><?= htmlspecialchars((string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?></h2>
                             <span class="badge <?= htmlspecialchars(doctrine_supply_status_tone((string) ($supply['status'] ?? 'critical')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($supply['status_label'] ?? 'Supply gap'), ENT_QUOTES) ?></span>
+                            <?php if (!empty($supply['externally_managed'])): ?>
+                                <span class="badge border-cyan-400/20 bg-cyan-500/10 text-cyan-100">Excluded from stocking</span>
+                            <?php endif; ?>
                         </div>
                         <p class="mt-2 text-sm text-slate-400"><?= htmlspecialchars((string) ($fit['fit_name'] ?? ''), ENT_QUOTES) ?></p>
                     </div>
@@ -213,13 +220,18 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($supply['constraint_label'] ?? ''), ENT_QUOTES) ?></p>
                     </div>
                     <div class="surface-tertiary">
+                        <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Hull stocking mode</p>
+                        <p class="mt-2 font-semibold text-slate-100"><?= !empty($supply['externally_managed']) ? 'Externally managed' : 'Tracked by SupplyCore' ?></p>
+                        <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($supply['hull_tracking_note'] ?? ''), ENT_QUOTES) ?></p>
+                    </div>
+                    <div class="surface-tertiary">
                         <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Target fit count</p>
                         <p class="mt-2 font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($supply['recommended_target_fit_count'] ?? 0)) ?></p>
-                        <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($supply['gap_to_target_fit_count'] ?? 0)) ?> fits short of target</p>
+                        <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($supply['gap_to_target_fit_count'] ?? 0)) ?> fits short of target<?= !empty($supply['externally_managed']) ? ' (readiness-only; no hull restock urgency)' : '' ?></p>
                     </div>
                     <div class="surface-tertiary border <?= htmlspecialchars(doctrine_supply_status_tone((string) ($supply['status'] ?? 'critical')), ENT_QUOTES) ?>">
                         <p class="text-xs uppercase tracking-[0.16em]">Operational outcome</p>
-                        <p class="mt-2 text-sm <?= ($supply['likely_enough_based_on_recent_losses'] ?? false) ? 'text-emerald-100' : 'text-rose-100' ?>"><?= htmlspecialchars((string) ($supply['planning_context'] ?? 'Operational recommendation unavailable.'), ENT_QUOTES) ?></p>
+                        <p class="mt-2 text-sm <?= !empty($supply['externally_managed']) || ($supply['likely_enough_based_on_recent_losses'] ?? false) ? 'text-emerald-100' : 'text-rose-100' ?>"><?= htmlspecialchars((string) ($supply['planning_context'] ?? 'Operational recommendation unavailable.'), ENT_QUOTES) ?></p>
                         <p class="mt-2 text-xs text-slate-300">Trend: <?= htmlspecialchars((string) ($supply['readiness_trend'] ?? 'Trend unavailable'), ENT_QUOTES) ?> · Restock: <?= htmlspecialchars((string) ($supply['restock_trend'] ?? 'Unavailable'), ENT_QUOTES) ?> · Depletion: <?= htmlspecialchars((string) ucfirst((string) ($supply['depletion_state'] ?? 'stable')), ENT_QUOTES) ?> · 7d hull losses: <?= doctrine_format_quantity((int) ($supply['recent_hull_losses_7d'] ?? 0)) ?>.</p>
                     </div>
                     <div class="flex gap-3">
@@ -277,6 +289,17 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <?php endforeach; ?>
                         </div>
                     </div>
+                    <label class="flex items-start gap-3 rounded-[1.2rem] border border-white/8 bg-slate-950/50 p-4 text-sm text-slate-300">
+                        <input type="hidden" name="hull_stock_tracked" value="0">
+                        <input type="checkbox" name="hull_stock_tracked" value="1" class="mt-1" <?= !empty($editDraft['hull_is_stock_tracked']) ? 'checked' : '' ?>>
+                        <span>
+                            <span class="font-semibold text-slate-100">Track hull for stocking</span>
+                            <span class="mt-1 block text-xs text-slate-400">Disable this for externally managed or specialty hulls. The hull will still cap complete fits and readiness, but it will stop affecting restock urgency, spend, and missing-item lists.</span>
+                            <?php if (!empty($editDraft['hull_tracking_default_reason'])): ?>
+                                <span class="mt-2 block text-xs <?= !empty($editDraft['hull_is_stock_tracked']) ? 'text-cyan-100' : 'text-amber-100' ?>"><?= htmlspecialchars((string) ($editDraft['hull_tracking_default_reason'] ?? ''), ENT_QUOTES) ?></span>
+                            <?php endif; ?>
+                        </span>
+                    </label>
                     <label class="block">
                         <span class="mb-2 block field-label">Raw import text</span>
                         <textarea name="import_body" class="field-input font-mono text-sm" style="min-height: 12rem;" spellcheck="false"><?= htmlspecialchars((string) (($editDraft['fit']['import_body'] ?? '')), ENT_QUOTES) ?></textarea>
@@ -324,9 +347,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
             <div class="mb-6 grid gap-4 xl:grid-cols-2">
                 <div class="surface-tertiary">
-                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Bottleneck item</p>
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500"><?= htmlspecialchars((string) ($supply['bottleneck_label'] ?? 'Bottleneck item'), ENT_QUOTES) ?></p>
                     <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($supply['bottleneck_item_name'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
                     <p class="mt-1 text-sm text-slate-400"><?= doctrine_format_quantity((int) ($supply['bottleneck_quantity'] ?? 0)) ?> local units for <?= doctrine_format_quantity((int) ($supply['bottleneck_required_quantity'] ?? 0)) ?> required per fit · minimum stock constraint <?= doctrine_format_quantity((int) ($supply['minimum_stock_constraint'] ?? 0)) ?> complete fits.</p>
+                    <?php if (!empty($supply['external_bottleneck'])): ?>
+                        <p class="mt-2 text-xs text-cyan-100">This bottleneck is externally managed, so it does not create restock urgency.</p>
+                    <?php endif; ?>
                 </div>
                 <div class="surface-tertiary">
                     <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Loss-aware planning</p>
@@ -390,18 +416,24 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <tbody>
                                         <?php foreach ($rows as $row): ?>
                                             <?php $isBottleneck = (int) ($row['type_id'] ?? 0) > 0 && (int) ($row['type_id'] ?? 0) === (int) ($supply['bottleneck_type_id'] ?? 0); ?>
-                                            <tr class="<?= ((int) ($row['missing_qty'] ?? 0) > 0) ? 'bg-rose-900/10' : ($isBottleneck ? 'bg-amber-900/10' : '') ?>">
-                                                <td class="font-semibold text-slate-50"><?= htmlspecialchars((string) ($row['item_name'] ?? ''), ENT_QUOTES) ?></td>
+                                            <?php $rowIsExternallyManaged = !($row['is_stock_tracked'] ?? true); ?>
+                                            <tr class="<?= $rowIsExternallyManaged ? 'bg-cyan-900/10' : (((int) ($row['missing_qty'] ?? 0) > 0) ? 'bg-rose-900/10' : ($isBottleneck ? 'bg-amber-900/10' : '')) ?>">
+                                                <td class="font-semibold text-slate-50">
+                                                    <?= htmlspecialchars((string) ($row['item_name'] ?? ''), ENT_QUOTES) ?>
+                                                    <?php if ($rowIsExternallyManaged): ?>
+                                                        <span class="ml-2 rounded-full border border-cyan-400/20 bg-cyan-500/10 px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] text-cyan-100">Externally managed</span>
+                                                    <?php endif; ?>
+                                                </td>
                                                 <td class="text-right tabular-nums"><?= htmlspecialchars((string) ($row['required_qty_label'] ?? '0'), ENT_QUOTES) ?></td>
                                                 <td class="text-right tabular-nums"><?= htmlspecialchars((string) ($row['local_available_qty_label'] ?? '0'), ENT_QUOTES) ?></td>
                                                 <td class="text-right tabular-nums <?= $isBottleneck ? 'text-amber-100' : 'text-slate-200' ?>"><?= doctrine_format_quantity(intdiv(max(0, (int) ($row['local_available_qty'] ?? 0)), max(1, (int) ($row['quantity'] ?? 1)))) ?></td>
-                                                <td class="text-right tabular-nums <?= ((int) ($row['missing_qty'] ?? 0) > 0) ? 'text-rose-200' : '' ?>"><?= htmlspecialchars((string) ($row['missing_qty_label'] ?? '0'), ENT_QUOTES) ?></td>
+                                                <td class="text-right tabular-nums <?= (!$rowIsExternallyManaged && (int) ($row['missing_qty'] ?? 0) > 0) ? 'text-rose-200' : ($rowIsExternallyManaged ? 'text-cyan-100' : '') ?>"><?= htmlspecialchars((string) ($row['missing_qty_label'] ?? '0'), ENT_QUOTES) ?></td>
                                                 <td class="text-right tabular-nums text-sky-300"><?= htmlspecialchars((string) ($row['hub_price_label'] ?? '—'), ENT_QUOTES) ?></td>
                                                 <td class="text-right tabular-nums text-sky-300"><?= htmlspecialchars((string) ($row['local_price_label'] ?? '—'), ENT_QUOTES) ?></td>
-                                                <td class="text-right tabular-nums text-sky-100"><?= htmlspecialchars((string) ($row['restock_gap_label'] ?? '—'), ENT_QUOTES) ?></td>
+                                                <td class="text-right tabular-nums <?= $rowIsExternallyManaged ? 'text-cyan-100' : 'text-sky-100' ?>"><?= htmlspecialchars((string) ($row['restock_gap_label'] ?? '—'), ENT_QUOTES) ?></td>
                                                 <td>
                                                     <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= $statusTone((string) ($row['market_status'] ?? 'missing')) ?>">
-                                                        <?= htmlspecialchars((string) ($isBottleneck ? 'Bottleneck' : ($row['market_label'] ?? 'Missing')), ENT_QUOTES) ?>
+                                                        <?= htmlspecialchars((string) ($rowIsExternallyManaged && $isBottleneck ? 'External bottleneck' : ($isBottleneck ? 'Bottleneck' : ($row['market_label'] ?? 'Missing'))), ENT_QUOTES) ?>
                                                     </span>
                                                 </td>
                                             </tr>

@@ -21,6 +21,7 @@ $formValues = [
     'source_format' => 'buyall',
     'import_body' => '',
     'item_lines_text' => '',
+    'hull_stock_tracked' => '1',
 ];
 $previewDraft = null;
 $errorMessage = null;
@@ -41,6 +42,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'source_format' => (string) ($_POST['source_format'] ?? 'buyall'),
         'import_body' => (string) ($_POST['import_body'] ?? ''),
         'item_lines_text' => (string) ($_POST['item_lines_text'] ?? ''),
+        'hull_stock_tracked' => in_array((string) ($_POST['hull_stock_tracked'] ?? '0'), ['1', 'true', 'on', 'yes'], true) ? '1' : '0',
     ];
 
     if (($_POST['action'] ?? 'preview') === 'save') {
@@ -62,6 +64,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $formValues['import_body'] = (string) ($previewDraft['fit']['import_body'] ?? $formValues['fit_payload']);
             $formValues['item_lines_text'] = (string) ($previewDraft['item_lines_text'] ?? '');
             $formValues['group_ids'] = (array) ($previewDraft['group_ids'] ?? $formValues['group_ids']);
+            $formValues['hull_stock_tracked'] = !empty($previewDraft['hull_is_stock_tracked']) ? '1' : '0';
         } catch (Throwable $exception) {
             $errorMessage = $exception->getMessage();
         }
@@ -211,6 +214,19 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <span class="mb-2 block field-label">New group description</span>
                         <input type="text" name="new_group_description" class="field-input" maxlength="1000" value="<?= htmlspecialchars((string) $formValues['new_group_description'], ENT_QUOTES) ?>">
                     </label>
+                    <div class="surface-tertiary text-sm text-slate-300">
+                        <label class="flex items-start gap-3 rounded-[1rem] border border-white/8 bg-slate-950/40 p-3">
+                            <input type="hidden" name="hull_stock_tracked" value="0">
+                            <input type="checkbox" name="hull_stock_tracked" value="1" class="mt-1" <?= !empty($previewDraft['hull_is_stock_tracked']) ? 'checked' : '' ?>>
+                            <span>
+                                <span class="font-semibold text-slate-100">Track hull for stocking</span>
+                                <span class="mt-1 block text-xs text-slate-400">Disable this for specialty or externally managed hulls so they still cap readiness without driving spend, missing-item lists, or urgency.</span>
+                            </span>
+                        </label>
+                        <p class="mt-3 text-xs <?= !empty($previewDraft['hull_is_stock_tracked']) ? 'text-cyan-100' : 'text-amber-100' ?>">
+                            <?= htmlspecialchars((string) ($previewDraft['hull_tracking_default_reason'] ?? ''), ENT_QUOTES) ?>
+                        </p>
+                    </div>
                     <div class="surface-tertiary text-sm text-slate-300">
                         <?php if (($previewDraft['unresolved'] ?? []) !== []): ?>
                             <p class="font-semibold text-amber-100">Resolve these names before saving:</p>

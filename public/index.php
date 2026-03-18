@@ -184,7 +184,7 @@ $statusThemes = [
                         <a href="/doctrine/fit?fit_id=<?= (int) ($fit['id'] ?? 0) ?>" class="intelligence-row group">
                             <div class="min-w-0 flex-1">
                                 <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($fit['fit_name'] ?? ''), ENT_QUOTES) ?></p>
-                                <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars(implode(', ', (array) ($fit['group_names'] ?? [])) ?: (string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars(implode(', ', (array) ($fit['group_names'] ?? [])) ?: (string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?><?= !empty($fit['supply']['externally_managed']) ? ' · Externally managed hull' : '' ?></p>
                             </div>
                             <div class="text-right">
                                 <p class="text-sm font-semibold text-rose-200"><?= doctrine_format_quantity((int) (($fit['supply']['missing_lines'] ?? 0))) ?> lines</p>
@@ -239,7 +239,7 @@ $statusThemes = [
                         <div class="intelligence-row">
                             <div class="min-w-0 flex-1">
                                 <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($row['type_name'] ?? ''), ENT_QUOTES) ?></p>
-                                <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($row['doctrine_fit_count'] ?? 0)) ?> doctrine fits impacted</p>
+                                <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($row['doctrine_fit_count'] ?? 0)) ?> doctrine fits impacted<?= !empty($row['is_external_bottleneck']) ? ' · External bottleneck' : '' ?></p>
                             </div>
                             <div class="text-right">
                                 <p class="text-sm font-semibold text-rose-100"><?= htmlspecialchars((string) ($row['priority_score'] ?? 0), ENT_QUOTES) ?></p>
