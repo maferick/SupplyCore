@@ -503,6 +503,45 @@ function db_market_orders_history_prune_before(string $cutoffObservedAt): int
     return $stmt->rowCount();
 }
 
+function db_market_orders_current_latest_snapshot_rows(string $sourceType, int $sourceId): array
+{
+    $safeSourceType = trim($sourceType);
+    $safeSourceId = max(0, $sourceId);
+
+    if ($safeSourceType === '' || $safeSourceId <= 0) {
+        return [];
+    }
+
+    return db_select(
+        'SELECT
+            source_type,
+            source_id,
+            type_id,
+            order_id,
+            is_buy_order,
+            price,
+            volume_remain,
+            volume_total,
+            min_volume,
+            `range`,
+            duration,
+            issued,
+            expires,
+            observed_at
+         FROM market_orders_current
+         WHERE source_type = ?
+           AND source_id = ?
+           AND observed_at = (
+                SELECT MAX(observed_at)
+                FROM market_orders_current
+                WHERE source_type = ?
+                  AND source_id = ?
+           )
+         ORDER BY type_id ASC, is_buy_order ASC, price ASC, order_id ASC',
+        [$safeSourceType, $safeSourceId, $safeSourceType, $safeSourceId]
+    );
+}
+
 function db_market_history_daily_bulk_upsert(array $historyRows, ?int $chunkSize = null): int
 {
     return db_bulk_insert_or_upsert(
@@ -672,6 +711,9 @@ function db_market_hub_local_history_daily_normalize_result_row(array $row): arr
         'type_id' => (int) ($row['type_id'] ?? 0),
         'type_name' => (string) ($row['type_name'] ?? ''),
         'trade_date' => (string) ($row['trade_date'] ?? ''),
+        'open_price' => isset($row['open_price']) ? (float) $row['open_price'] : 0.0,
+        'high_price' => isset($row['high_price']) ? (float) $row['high_price'] : 0.0,
+        'low_price' => isset($row['low_price']) ? (float) $row['low_price'] : 0.0,
         'close_price' => isset($row['close_price']) ? (float) $row['close_price'] : 0.0,
         'buy_price' => isset($row['buy_price']) && $row['buy_price'] !== null ? (float) $row['buy_price'] : null,
         'sell_price' => isset($row['sell_price']) && $row['sell_price'] !== null ? (float) $row['sell_price'] : null,
@@ -682,6 +724,43 @@ function db_market_hub_local_history_daily_normalize_result_row(array $row): arr
         'sell_order_count' => (int) ($row['sell_order_count'] ?? 0),
         'observed_at' => (string) ($row['observed_at'] ?? ''),
     ];
+}
+
+function db_market_hub_local_history_daily_by_trade_date(string $source, int $sourceId, string $tradeDate): array
+{
+    $safeSource = trim($source);
+    $safeSourceId = max(0, $sourceId);
+    $safeTradeDate = trim($tradeDate);
+
+    if ($safeSource === '' || $safeSourceId <= 0 || $safeTradeDate === '') {
+        return [];
+    }
+
+    $rows = db_select(
+        'SELECT
+            type_id,
+            trade_date,
+            open_price,
+            high_price,
+            low_price,
+            close_price,
+            buy_price,
+            sell_price,
+            spread_value,
+            spread_percent,
+            volume,
+            buy_order_count,
+            sell_order_count,
+            captured_at AS observed_at
+         FROM market_hub_local_history_daily
+         WHERE source = ?
+           AND source_id = ?
+           AND trade_date = ?
+         ORDER BY type_id ASC',
+        [$safeSource, $safeSourceId, $safeTradeDate]
+    );
+
+    return array_map('db_market_hub_local_history_daily_normalize_result_row', $rows);
 }
 
 function db_market_hub_local_history_daily_recent_window(string $source, int $sourceId, int $days = 8, int $typeLimit = 120): array
