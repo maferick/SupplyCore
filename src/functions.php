@@ -4275,6 +4275,197 @@ function http_get_json_with_backoff(string $url, array $headers = [], int $maxAt
     throw new RuntimeException('HTTP request failed after retries.', 0, $lastException);
 }
 
+function http_get_json_multi(array $requests, int $timeoutSeconds = 25): array
+{
+    if ($requests === []) {
+        return [];
+    }
+
+    $multiHandle = curl_multi_init();
+    if ($multiHandle === false) {
+        throw new RuntimeException('Unable to initialize concurrent HTTP client.');
+    }
+
+    $handles = [];
+    $responseHeadersByKey = [];
+
+    try {
+        foreach ($requests as $key => $request) {
+            $requestKey = (string) $key;
+            $url = trim((string) ($request['url'] ?? ''));
+            if ($url === '') {
+                continue;
+            }
+
+            $responseHeadersByKey[$requestKey] = [];
+            $handle = curl_init($url);
+            curl_setopt_array($handle, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_HTTPHEADER => is_array($request['headers'] ?? null) ? $request['headers'] : [],
+                CURLOPT_TIMEOUT => max(1, $timeoutSeconds),
+                CURLOPT_HEADERFUNCTION => static function ($curl, string $headerLine) use (&$responseHeadersByKey, $requestKey): int {
+                    $trimmed = trim($headerLine);
+                    if ($trimmed === '' || !str_contains($trimmed, ':')) {
+                        return strlen($headerLine);
+                    }
+
+                    [$name, $value] = explode(':', $trimmed, 2);
+                    $normalizedName = mb_strtolower(trim($name));
+                    $normalizedValue = trim($value);
+                    if (!array_key_exists($normalizedName, $responseHeadersByKey[$requestKey])) {
+                        $responseHeadersByKey[$requestKey][$normalizedName] = $normalizedValue;
+
+                        return strlen($headerLine);
+                    }
+
+                    $existing = $responseHeadersByKey[$requestKey][$normalizedName];
+                    if (is_array($existing)) {
+                        $existing[] = $normalizedValue;
+                        $responseHeadersByKey[$requestKey][$normalizedName] = $existing;
+
+                        return strlen($headerLine);
+                    }
+
+                    $responseHeadersByKey[$requestKey][$normalizedName] = [$existing, $normalizedValue];
+
+                    return strlen($headerLine);
+                },
+            ]);
+
+            curl_multi_add_handle($multiHandle, $handle);
+            $handles[$requestKey] = [
+                'handle' => $handle,
+                'url' => $url,
+            ];
+        }
+
+        do {
+            $status = curl_multi_exec($multiHandle, $active);
+            if ($status > CURLM_OK) {
+                break;
+            }
+
+            if ($active) {
+                $selected = curl_multi_select($multiHandle, 1.0);
+                if ($selected === -1) {
+                    usleep(10000);
+                }
+            }
+        } while ($active);
+
+        $responses = [];
+
+        foreach ($handles as $key => $entry) {
+            $handle = $entry['handle'];
+            $body = curl_multi_getcontent($handle);
+            $status = (int) curl_getinfo($handle, CURLINFO_HTTP_CODE);
+            $error = curl_error($handle);
+            $decoded = null;
+            $errorMessage = null;
+
+            if ($body === false || $error !== '') {
+                $errorMessage = 'HTTP request failed: ' . ($error !== '' ? $error : ('Unable to fetch ' . $entry['url']));
+            } else {
+                $decoded = json_decode($body, true);
+                if (!is_array($decoded)) {
+                    $errorMessage = 'Invalid JSON response from ' . $entry['url'];
+                }
+            }
+
+            $responses[$key] = [
+                'status' => $status,
+                'json' => $decoded,
+                'headers' => $responseHeadersByKey[$key] ?? [],
+                'error' => $errorMessage,
+            ];
+
+            curl_multi_remove_handle($multiHandle, $handle);
+            curl_close($handle);
+        }
+
+        return $responses;
+    } finally {
+        curl_multi_close($multiHandle);
+    }
+}
+
+function http_get_json_multi_with_backoff(array $requests, int $maxAttempts = 4, int $baseDelayMs = 250, int $timeoutSeconds = 25): array
+{
+    if ($requests === []) {
+        return [];
+    }
+
+    $attempts = max(1, $maxAttempts);
+    $delayMs = max(50, $baseDelayMs);
+    $pending = $requests;
+    $resolved = [];
+
+    for ($attempt = 1; $attempt <= $attempts; $attempt++) {
+        $responses = http_get_json_multi($pending, $timeoutSeconds);
+        $retry = [];
+
+        foreach ($pending as $key => $request) {
+            $response = $responses[(string) $key] ?? null;
+            if (!is_array($response)) {
+                $retry[$key] = $request;
+                continue;
+            }
+
+            $status = (int) ($response['status'] ?? 500);
+            $hasError = trim((string) ($response['error'] ?? '')) !== '';
+            $shouldRetry = $hasError || in_array($status, sync_http_retryable_status_codes(), true);
+
+            if ($shouldRetry && $attempt < $attempts) {
+                $retry[$key] = $request;
+                continue;
+            }
+
+            $resolved[(string) $key] = $response;
+        }
+
+        if ($retry === []) {
+            return $resolved;
+        }
+
+        $pending = $retry;
+        usleep((int) (($delayMs * (2 ** ($attempt - 1))) * 1000));
+    }
+
+    return $resolved;
+}
+
+function market_order_page_canonical_rows(
+    array $payload,
+    int $sourceId,
+    string $observedAt,
+    string $sourceType,
+    ?int $locationIdFilter = null
+): array {
+    $rowsSeen = 0;
+    $canonicalRows = [];
+
+    foreach ($payload as $order) {
+        if (!is_array($order)) {
+            continue;
+        }
+
+        if ($locationIdFilter !== null && (int) ($order['location_id'] ?? 0) !== $locationIdFilter) {
+            continue;
+        }
+
+        $rowsSeen++;
+        $mapped = canonicalize_esi_market_order($order, $sourceId, $observedAt, $sourceType);
+        if ($mapped !== null) {
+            $canonicalRows[] = $mapped;
+        }
+    }
+
+    return [
+        'rows_seen' => $rowsSeen,
+        'rows' => $canonicalRows,
+    ];
+}
+
 function sync_result_shape(): array
 {
     return [
@@ -5232,46 +5423,74 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
             }
 
             $accessToken = (string) ($context['token']['access_token'] ?? '');
+            $requestHeaders = esi_market_request_headers([
+                'Authorization: Bearer ' . $accessToken,
+            ]);
+            $parallelPagesPerBatch = 6;
+
+            $endpoint = 'https://esi.evetech.net/latest/markets/structures/' . $structureId . '/?page=' . $page;
+            $response = http_get_json_with_backoff($endpoint, $requestHeaders);
+            $status = (int) ($response['status'] ?? 500);
+
+            if ($status >= 400) {
+                throw new RuntimeException('ESI structure market sync failed on page ' . $page . ' with status ' . $status . '.');
+            }
+
+            $payload = $response['json'] ?? [];
+            if (!is_array($payload)) {
+                throw new RuntimeException('ESI structure market page ' . $page . ' returned a non-array payload.');
+            }
+
+            $pagesProcessed++;
+            $processedPage = market_order_page_canonical_rows($payload, $sourceId, $observedAt, 'market_hub');
+            $result['rows_seen'] += (int) ($processedPage['rows_seen'] ?? 0);
+            $canonicalRows = array_merge($canonicalRows, $processedPage['rows'] ?? []);
+
+            $pagesHeader = $response['headers']['x-pages'] ?? '1';
+            if (is_array($pagesHeader)) {
+                $pagesHeader = end($pagesHeader);
+            }
+
+            $maxPages = max(1, (int) $pagesHeader);
+            $page++;
 
             while ($page <= $maxPages) {
-                $endpoint = 'https://esi.evetech.net/latest/markets/structures/' . $structureId . '/?page=' . $page;
-                $response = http_get_json_with_backoff(
-                    $endpoint,
-                    esi_market_request_headers([
-                        'Authorization: Bearer ' . $accessToken,
-                    ])
-                );
-                $status = (int) ($response['status'] ?? 500);
+                $batchEndPage = min($maxPages, $page + $parallelPagesPerBatch - 1);
+                $requests = [];
 
-                if ($status >= 400) {
-                    throw new RuntimeException('ESI structure market sync failed on page ' . $page . ' with status ' . $status . '.');
+                for ($batchPage = $page; $batchPage <= $batchEndPage; $batchPage++) {
+                    $requests[$batchPage] = [
+                        'url' => 'https://esi.evetech.net/latest/markets/structures/' . $structureId . '/?page=' . $batchPage,
+                        'headers' => $requestHeaders,
+                    ];
                 }
 
-                $payload = $response['json'] ?? [];
-                if (!is_array($payload)) {
-                    throw new RuntimeException('ESI structure market page ' . $page . ' returned a non-array payload.');
-                }
+                $responses = http_get_json_multi_with_backoff($requests);
+                ksort($responses, SORT_NUMERIC);
 
-                $pagesProcessed++;
-                foreach ($payload as $order) {
-                    if (!is_array($order)) {
-                        continue;
+                foreach ($responses as $batchPage => $batchResponse) {
+                    $batchStatus = (int) ($batchResponse['status'] ?? 500);
+                    $batchError = trim((string) ($batchResponse['error'] ?? ''));
+                    if ($batchError !== '') {
+                        throw new RuntimeException('ESI structure market sync failed on page ' . $batchPage . ': ' . $batchError);
                     }
 
-                    $result['rows_seen']++;
-                    $mapped = canonicalize_esi_market_order($order, $sourceId, $observedAt, 'market_hub');
-                    if ($mapped !== null) {
-                        $canonicalRows[] = $mapped;
+                    if ($batchStatus >= 400) {
+                        throw new RuntimeException('ESI structure market sync failed on page ' . $batchPage . ' with status ' . $batchStatus . '.');
                     }
+
+                    $batchPayload = $batchResponse['json'] ?? [];
+                    if (!is_array($batchPayload)) {
+                        throw new RuntimeException('ESI structure market page ' . $batchPage . ' returned a non-array payload.');
+                    }
+
+                    $pagesProcessed++;
+                    $processedPage = market_order_page_canonical_rows($batchPayload, $sourceId, $observedAt, 'market_hub');
+                    $result['rows_seen'] += (int) ($processedPage['rows_seen'] ?? 0);
+                    $canonicalRows = array_merge($canonicalRows, $processedPage['rows'] ?? []);
                 }
 
-                $pagesHeader = $response['headers']['x-pages'] ?? '1';
-                if (is_array($pagesHeader)) {
-                    $pagesHeader = end($pagesHeader);
-                }
-
-                $maxPages = max(1, (int) $pagesHeader);
-                $page++;
+                $page = $batchEndPage + 1;
             }
 
             $result['cursor'] = 'observed_at:' . $observedAt . ';source:structure;id:' . $structureId . ';page:' . max(1, $page - 1);
@@ -5283,45 +5502,72 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
                 throw new RuntimeException('Missing station→system→region mapping (selected_hub_id=' . $stationId . ', system_id=' . $systemId . ', resolved_region_id=' . $regionId . ').');
             }
             $resolvedRegionId = $regionId;
+            $requestHeaders = esi_market_request_headers();
+            $parallelPagesPerBatch = 6;
+
+            $endpoint = 'https://esi.evetech.net/latest/markets/' . $regionId . '/orders/?order_type=all&page=' . $page;
+            $response = http_get_json_with_backoff($endpoint, $requestHeaders);
+            $status = (int) ($response['status'] ?? 500);
+
+            if ($status >= 400) {
+                throw new RuntimeException('ESI region market sync failed on page ' . $page . ' with status ' . $status . '.');
+            }
+
+            $payload = $response['json'] ?? [];
+            if (!is_array($payload)) {
+                throw new RuntimeException('ESI region market page ' . $page . ' returned a non-array payload.');
+            }
+
+            $pagesProcessed++;
+            $processedPage = market_order_page_canonical_rows($payload, $sourceId, $observedAt, 'market_hub', $stationId);
+            $result['rows_seen'] += (int) ($processedPage['rows_seen'] ?? 0);
+            $canonicalRows = array_merge($canonicalRows, $processedPage['rows'] ?? []);
+
+            $pagesHeader = $response['headers']['x-pages'] ?? '1';
+            if (is_array($pagesHeader)) {
+                $pagesHeader = end($pagesHeader);
+            }
+
+            $maxPages = max(1, (int) $pagesHeader);
+            $page++;
 
             while ($page <= $maxPages) {
-                $endpoint = 'https://esi.evetech.net/latest/markets/' . $regionId . '/orders/?order_type=all&page=' . $page;
-                $response = http_get_json_with_backoff($endpoint, esi_market_request_headers());
-                $status = (int) ($response['status'] ?? 500);
+                $batchEndPage = min($maxPages, $page + $parallelPagesPerBatch - 1);
+                $requests = [];
 
-                if ($status >= 400) {
-                    throw new RuntimeException('ESI region market sync failed on page ' . $page . ' with status ' . $status . '.');
+                for ($batchPage = $page; $batchPage <= $batchEndPage; $batchPage++) {
+                    $requests[$batchPage] = [
+                        'url' => 'https://esi.evetech.net/latest/markets/' . $regionId . '/orders/?order_type=all&page=' . $batchPage,
+                        'headers' => $requestHeaders,
+                    ];
                 }
 
-                $payload = $response['json'] ?? [];
-                if (!is_array($payload)) {
-                    throw new RuntimeException('ESI region market page ' . $page . ' returned a non-array payload.');
-                }
+                $responses = http_get_json_multi_with_backoff($requests);
+                ksort($responses, SORT_NUMERIC);
 
-                $pagesProcessed++;
-                foreach ($payload as $order) {
-                    if (!is_array($order)) {
-                        continue;
+                foreach ($responses as $batchPage => $batchResponse) {
+                    $batchStatus = (int) ($batchResponse['status'] ?? 500);
+                    $batchError = trim((string) ($batchResponse['error'] ?? ''));
+                    if ($batchError !== '') {
+                        throw new RuntimeException('ESI region market sync failed on page ' . $batchPage . ': ' . $batchError);
                     }
 
-                    if ((int) ($order['location_id'] ?? 0) !== $stationId) {
-                        continue;
+                    if ($batchStatus >= 400) {
+                        throw new RuntimeException('ESI region market sync failed on page ' . $batchPage . ' with status ' . $batchStatus . '.');
                     }
 
-                    $result['rows_seen']++;
-                    $mapped = canonicalize_esi_market_order($order, $sourceId, $observedAt, 'market_hub');
-                    if ($mapped !== null) {
-                        $canonicalRows[] = $mapped;
+                    $batchPayload = $batchResponse['json'] ?? [];
+                    if (!is_array($batchPayload)) {
+                        throw new RuntimeException('ESI region market page ' . $batchPage . ' returned a non-array payload.');
                     }
+
+                    $pagesProcessed++;
+                    $processedPage = market_order_page_canonical_rows($batchPayload, $sourceId, $observedAt, 'market_hub', $stationId);
+                    $result['rows_seen'] += (int) ($processedPage['rows_seen'] ?? 0);
+                    $canonicalRows = array_merge($canonicalRows, $processedPage['rows'] ?? []);
                 }
 
-                $pagesHeader = $response['headers']['x-pages'] ?? '1';
-                if (is_array($pagesHeader)) {
-                    $pagesHeader = end($pagesHeader);
-                }
-
-                $maxPages = max(1, (int) $pagesHeader);
-                $page++;
+                $page = $batchEndPage + 1;
             }
 
             $result['cursor'] = 'observed_at:' . $observedAt . ';source:region;id:' . $regionId . ';page:' . max(1, $page - 1);
