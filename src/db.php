@@ -1570,6 +1570,77 @@ function db_esi_structure_search_cache_put(int $characterId, string $query, stri
     return db_esi_cache_put('cache.esi.structures.search', $cacheKey, $payloadJson, null, $expiresAt);
 }
 
+function db_intelligence_snapshot_get(string $snapshotKey): ?array
+{
+    return db_select_one(
+        'SELECT snapshot_key, snapshot_status, payload_json, metadata_json, computed_at, refresh_started_at, expires_at, created_at, updated_at
+         FROM intelligence_snapshots
+         WHERE snapshot_key = ?
+         LIMIT 1',
+        [$snapshotKey]
+    );
+}
+
+function db_intelligence_snapshots_get_many(array $snapshotKeys): array
+{
+    $normalized = array_values(array_unique(array_filter(array_map(
+        static fn (mixed $snapshotKey): string => trim((string) $snapshotKey),
+        $snapshotKeys
+    ), static fn (string $snapshotKey): bool => $snapshotKey !== '')));
+
+    if ($normalized === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($normalized), '?'));
+
+    return db_select(
+        "SELECT snapshot_key, snapshot_status, payload_json, metadata_json, computed_at, refresh_started_at, expires_at, created_at, updated_at
+         FROM intelligence_snapshots
+         WHERE snapshot_key IN ({$placeholders})",
+        $normalized
+    );
+}
+
+function db_intelligence_snapshot_upsert(
+    string $snapshotKey,
+    string $status,
+    ?string $payloadJson,
+    ?string $metadataJson,
+    ?string $computedAt,
+    ?string $refreshStartedAt,
+    ?string $expiresAt
+): bool {
+    return db_execute(
+        'INSERT INTO intelligence_snapshots (snapshot_key, snapshot_status, payload_json, metadata_json, computed_at, refresh_started_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+            snapshot_status = VALUES(snapshot_status),
+            payload_json = VALUES(payload_json),
+            metadata_json = VALUES(metadata_json),
+            computed_at = VALUES(computed_at),
+            refresh_started_at = VALUES(refresh_started_at),
+            expires_at = VALUES(expires_at),
+            updated_at = CURRENT_TIMESTAMP',
+        [$snapshotKey, $status, $payloadJson, $metadataJson, $computedAt, $refreshStartedAt, $expiresAt]
+    );
+}
+
+function db_intelligence_snapshot_mark_updating(string $snapshotKey, ?string $metadataJson = null, ?string $expiresAt = null): bool
+{
+    return db_execute(
+        'INSERT INTO intelligence_snapshots (snapshot_key, snapshot_status, metadata_json, refresh_started_at, expires_at)
+         VALUES (?, ?, ?, UTC_TIMESTAMP(), ?)
+         ON DUPLICATE KEY UPDATE
+            snapshot_status = VALUES(snapshot_status),
+            metadata_json = COALESCE(VALUES(metadata_json), metadata_json),
+            refresh_started_at = UTC_TIMESTAMP(),
+            expires_at = COALESCE(VALUES(expires_at), expires_at),
+            updated_at = CURRENT_TIMESTAMP',
+        [$snapshotKey, 'updating', $metadataJson, $expiresAt]
+    );
+}
+
 function db_runner_lock_acquire(string $lockName, int $timeoutSeconds = 0): bool
 {
     $row = db_select_one('SELECT GET_LOCK(?, ?) AS lock_acquired', [$lockName, max(0, $timeoutSeconds)]);

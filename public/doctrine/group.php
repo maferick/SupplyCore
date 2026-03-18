@@ -19,7 +19,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 doctrine_sanitize_group_name((string) ($_POST['group_name'] ?? '')),
                 doctrine_sanitize_description($_POST['description'] ?? null)
             );
-            doctrine_refresh_intelligence('group-update');
+            doctrine_schedule_intelligence_refresh('group-update');
             flash('success', 'Doctrine group updated successfully.');
         } catch (Throwable $exception) {
             flash('success', 'Doctrine group update failed: ' . $exception->getMessage());
@@ -37,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         try {
             $result = db_doctrine_group_delete($groupId);
-            doctrine_refresh_intelligence('group-delete');
+            doctrine_schedule_intelligence_refresh('group-delete');
             flash('success', 'Doctrine group deleted. Removed ' . doctrine_format_quantity((int) ($result['removed_memberships'] ?? 0)) . ' memberships; ' . doctrine_format_quantity((int) ($result['orphaned_fits'] ?? 0)) . ' fits remain as ungrouped records.');
             header('Location: /doctrine');
             exit;
@@ -54,6 +54,7 @@ $group = $data['group'] ?? null;
 $fits = $data['fits'] ?? [];
 $title = $group !== null ? ((string) ($group['group_name'] ?? 'Doctrine Group')) : 'Doctrine Group';
 $showDeleteConfirm = isset($_GET['confirm_delete']) && $_GET['confirm_delete'] === '1';
+$pageFreshness = supplycore_page_freshness_view_model((array) ($data['freshness'] ?? []));
 
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>

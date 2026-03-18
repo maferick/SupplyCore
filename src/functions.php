@@ -1980,7 +1980,7 @@ function data_sync_schedule_job_definitions(): array
             'enabled_key' => 'current_state_refresh_sync_enabled',
             'interval_value_key' => 'current_state_refresh_sync_interval_value',
             'interval_unit_key' => 'current_state_refresh_sync_interval_unit',
-            'default_interval_seconds' => 120,
+            'default_interval_seconds' => 300,
             'label' => 'Current-State Refresh',
         ],
         'market_hub_historical_sync' => [
@@ -2001,8 +2001,29 @@ function data_sync_schedule_job_definitions(): array
             'enabled_key' => 'doctrine_intelligence_sync_enabled',
             'interval_value_key' => 'doctrine_intelligence_sync_interval_value',
             'interval_unit_key' => 'doctrine_intelligence_sync_interval_unit',
-            'default_interval_seconds' => 900,
-            'label' => 'Medium Intelligence Batch',
+            'default_interval_seconds' => 300,
+            'label' => 'Doctrine Intelligence Batch',
+        ],
+        'market_comparison_summary_sync' => [
+            'enabled_key' => 'market_comparison_summary_sync_enabled',
+            'interval_value_key' => 'market_comparison_summary_sync_interval_value',
+            'interval_unit_key' => 'market_comparison_summary_sync_interval_unit',
+            'default_interval_seconds' => 300,
+            'label' => 'Market Comparison Batch',
+        ],
+        'loss_demand_summary_sync' => [
+            'enabled_key' => 'loss_demand_summary_sync_enabled',
+            'interval_value_key' => 'loss_demand_summary_sync_interval_value',
+            'interval_unit_key' => 'loss_demand_summary_sync_interval_unit',
+            'default_interval_seconds' => 300,
+            'label' => 'Loss-Demand Batch',
+        ],
+        'dashboard_summary_sync' => [
+            'enabled_key' => 'dashboard_summary_sync_enabled',
+            'interval_value_key' => 'dashboard_summary_sync_interval_value',
+            'interval_unit_key' => 'dashboard_summary_sync_interval_unit',
+            'default_interval_seconds' => 300,
+            'label' => 'Dashboard Summary Batch',
         ],
         'forecasting_ai_sync' => [
             'enabled_key' => 'forecasting_ai_sync_enabled',
@@ -2189,6 +2210,342 @@ function market_comparison_context(): array
     ];
 }
 
+function market_comparison_snapshot_key(): string
+{
+    return 'market_comparison_summaries';
+}
+
+function loss_demand_snapshot_key(): string
+{
+    return 'loss_demand_summaries';
+}
+
+function dashboard_snapshot_key(): string
+{
+    return 'dashboard_summaries';
+}
+
+function market_comparison_outcomes_build(array $typeIds = []): array
+{
+    $thresholds = market_compare_thresholds();
+    $evaluatedRows = [];
+
+    foreach (market_compare_aggregates($typeIds) as $row) {
+        $evaluatedRows[] = market_compare_evaluate_row($row, $thresholds);
+    }
+
+    $evaluatedRows = item_scope_filter_rows(
+        $evaluatedRows,
+        static fn (array $row): int => (int) ($row['type_id'] ?? 0)
+    );
+
+    return [
+        'thresholds' => $thresholds,
+        'rows' => array_values($evaluatedRows),
+        'in_both_markets' => array_values(array_filter($evaluatedRows, static fn (array $row): bool => (bool) $row['in_both_markets'])),
+        'missing_in_alliance' => array_values(array_filter($evaluatedRows, static fn (array $row): bool => (bool) $row['missing_in_alliance'])),
+        'overpriced_in_alliance' => array_values(array_filter($evaluatedRows, static fn (array $row): bool => (bool) $row['overpriced_in_alliance'])),
+        'underpriced_in_alliance' => array_values(array_filter($evaluatedRows, static fn (array $row): bool => (bool) $row['underpriced_in_alliance'])),
+        'weak_or_missing_alliance_stock' => array_values(array_filter($evaluatedRows, static fn (array $row): bool => (bool) ($row['weak_alliance_stock'] ?? false) || (bool) ($row['missing_in_alliance'] ?? false))),
+    ];
+}
+
+function market_comparison_snapshot_payload(): array
+{
+    return supplycore_materialized_snapshot_read_or_bootstrap(
+        market_comparison_snapshot_key(),
+        static fn (): array => market_comparison_outcomes_build(),
+        'market-comparison-bootstrap'
+    );
+}
+
+function market_comparison_refresh_summary(string $reason = 'manual'): array
+{
+    supplycore_materialized_snapshot_mark_updating(market_comparison_snapshot_key(), $reason);
+    $snapshot = market_comparison_outcomes_build();
+
+    return supplycore_materialized_snapshot_store(market_comparison_snapshot_key(), $snapshot, [
+        'reason' => $reason,
+        'row_count' => count((array) ($snapshot['rows'] ?? [])),
+    ]);
+}
+
+function market_comparison_refresh_summary_job_result(string $reason = 'manual'): array
+{
+    $snapshot = market_comparison_refresh_summary($reason);
+    $rowCount = count((array) ($snapshot['rows'] ?? []));
+    $freshness = is_array($snapshot['_freshness'] ?? null) ? $snapshot['_freshness'] : [];
+
+    return sync_result_shape() + [
+        'rows_seen' => $rowCount,
+        'rows_written' => $rowCount,
+        'cursor' => 'market_comparison:' . gmdate('Y-m-d H:i:s'),
+        'checksum' => sync_checksum([
+            'rows' => $rowCount,
+            'computed_at' => (string) ($freshness['computed_at'] ?? gmdate(DATE_ATOM)),
+            'reason' => $reason,
+        ]),
+        'meta' => [
+            'outcome_reason' => 'Market comparison summaries were recomputed and written to materialized storage plus Redis.',
+            'snapshot_generated_at' => (string) ($freshness['computed_at'] ?? ''),
+        ],
+    ];
+}
+
+function loss_demand_summary_build(): array
+{
+    $marketSnapshot = market_comparison_snapshot_payload();
+    $marketRows = array_values((array) ($marketSnapshot['rows'] ?? []));
+    $typeLookup = [];
+
+    foreach ($marketRows as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId > 0) {
+            $typeLookup[$typeId] = $row;
+        }
+    }
+
+    if ($typeLookup === []) {
+        return [
+            'rows' => [],
+            'summary' => [
+                'tracked_type_count' => 0,
+                'active_loss_demand_count' => 0,
+                'losses_24h' => 0,
+                'losses_7d' => 0,
+            ],
+            'top_rows' => [],
+        ];
+    }
+
+    try {
+        $lossRows = db_killmail_tracked_recent_item_losses(array_keys($typeLookup), 24 * 7);
+    } catch (Throwable) {
+        $lossRows = [];
+    }
+
+    $lossRows = item_scope_filter_rows(
+        $lossRows,
+        static fn (array $row): int => (int) ($row['type_id'] ?? 0)
+    );
+
+    $rows = [];
+    foreach ($lossRows as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId <= 0) {
+            continue;
+        }
+
+        $market = $typeLookup[$typeId] ?? [];
+        $quantity7d = max(0, (int) ($row['quantity_7d'] ?? 0));
+        $losses7d = max(0, (int) ($row['losses_7d'] ?? 0));
+        $referencePrice = isset($market['reference_best_sell_price']) ? (float) $market['reference_best_sell_price'] : null;
+        $estimatedRestock = $referencePrice !== null ? round($referencePrice * $quantity7d, 2) : 0.0;
+        $priorityScore = (int) min(100, round(($quantity7d * 1.2) + ($losses7d * 6.0) + max(0, (int) ($market['volume_score'] ?? 0) * 0.35)));
+
+        $rows[] = [
+            'type_id' => $typeId,
+            'type_name' => (string) (($market['type_name'] ?? $row['type_name']) ?? ''),
+            'quantity_24h' => max(0, (int) ($row['quantity_24h'] ?? 0)),
+            'quantity_7d' => $quantity7d,
+            'losses_24h' => max(0, (int) ($row['losses_24h'] ?? 0)),
+            'losses_7d' => $losses7d,
+            'latest_loss_at' => $row['latest_loss_at'] ?? null,
+            'reference_best_sell_price' => $referencePrice,
+            'estimated_restock_isk' => $estimatedRestock,
+            'volume_score' => (int) ($market['volume_score'] ?? 0),
+            'priority_score' => $priorityScore,
+        ];
+    }
+
+    usort($rows, static fn (array $a, array $b): int => ((int) ($b['priority_score'] ?? 0) <=> (int) ($a['priority_score'] ?? 0)) ?: ((int) ($b['quantity_7d'] ?? 0) <=> (int) ($a['quantity_7d'] ?? 0)));
+
+    return [
+        'rows' => $rows,
+        'summary' => [
+            'tracked_type_count' => count($typeLookup),
+            'active_loss_demand_count' => count($rows),
+            'losses_24h' => array_sum(array_map(static fn (array $row): int => (int) ($row['quantity_24h'] ?? 0), $rows)),
+            'losses_7d' => array_sum(array_map(static fn (array $row): int => (int) ($row['quantity_7d'] ?? 0), $rows)),
+        ],
+        'top_rows' => array_slice($rows, 0, 12),
+    ];
+}
+
+function loss_demand_snapshot_payload(): array
+{
+    return supplycore_materialized_snapshot_read_or_bootstrap(
+        loss_demand_snapshot_key(),
+        static fn (): array => loss_demand_summary_build(),
+        'loss-demand-bootstrap'
+    );
+}
+
+function loss_demand_refresh_summary(string $reason = 'manual'): array
+{
+    supplycore_materialized_snapshot_mark_updating(loss_demand_snapshot_key(), $reason);
+    $snapshot = loss_demand_summary_build();
+
+    return supplycore_materialized_snapshot_store(loss_demand_snapshot_key(), $snapshot, [
+        'reason' => $reason,
+        'row_count' => count((array) ($snapshot['rows'] ?? [])),
+    ]);
+}
+
+function loss_demand_refresh_summary_job_result(string $reason = 'manual'): array
+{
+    $snapshot = loss_demand_refresh_summary($reason);
+    $rowCount = count((array) ($snapshot['rows'] ?? []));
+    $freshness = is_array($snapshot['_freshness'] ?? null) ? $snapshot['_freshness'] : [];
+
+    return sync_result_shape() + [
+        'rows_seen' => $rowCount,
+        'rows_written' => $rowCount,
+        'cursor' => 'loss_demand:' . gmdate('Y-m-d H:i:s'),
+        'checksum' => sync_checksum([
+            'rows' => $rowCount,
+            'computed_at' => (string) ($freshness['computed_at'] ?? gmdate(DATE_ATOM)),
+            'reason' => $reason,
+        ]),
+        'meta' => [
+            'outcome_reason' => 'Loss-demand summaries were recomputed from tracked killmail demand and written to materialized storage plus Redis.',
+            'snapshot_generated_at' => (string) ($freshness['computed_at'] ?? ''),
+        ],
+    ];
+}
+
+function dashboard_intelligence_data_build(): array
+{
+    $marketHubRef = market_hub_setting_reference();
+    $allianceStructureId = configured_alliance_structure_id();
+    $comparisonContext = market_comparison_context();
+    $outcomes = market_comparison_snapshot_payload();
+    $rows = array_values((array) ($outcomes['rows'] ?? []));
+    $rowCount = count($rows);
+    $inBothCount = count((array) ($outcomes['in_both_markets'] ?? []));
+    $coveragePercent = $rowCount > 0 ? ($inBothCount / $rowCount) * 100.0 : 0.0;
+
+    $opportunities = $rows;
+    usort($opportunities, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['volume_score'] ?? 0) <=> ($a['volume_score'] ?? 0)));
+    $risks = $rows;
+    usort($risks, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['stock_score'] ?? 0) <=> ($a['stock_score'] ?? 0)));
+
+    $allianceSync = $allianceStructureId !== null
+        ? sync_status_for_dataset_keys([sync_dataset_key_alliance_structure_orders_current($allianceStructureId)])
+        : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
+    $hubCurrentSync = $marketHubRef !== ''
+        ? sync_status_for_dataset_keys([sync_dataset_key_market_hub_current_orders($marketHubRef)])
+        : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
+    $historySync = $marketHubRef !== ''
+        ? sync_status_for_dataset_keys([sync_dataset_key_market_hub_local_history_daily($marketHubRef)])
+        : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
+
+    $referenceSourceId = sync_source_id_from_hub_ref($marketHubRef);
+    $trendHistory = dashboard_trend_history_dataset($marketHubRef, $referenceSourceId);
+    $historyRows = $trendHistory['rows'] ?? [];
+    $doctrineSnapshot = doctrine_snapshot_cache_payload();
+    if ($doctrineSnapshot === null) {
+        $doctrineSnapshot = doctrine_refresh_intelligence('dashboard-bootstrap');
+    }
+    $doctrine = doctrine_groups_overview_data();
+    $lossDemand = loss_demand_snapshot_payload();
+    $lossDemandTop = array_slice((array) ($lossDemand['top_rows'] ?? []), 0, 5);
+
+    $atRiskDoctrines = array_slice(array_values((array) ($doctrine['not_ready_fits'] ?? [])), 0, 5);
+    if ($atRiskDoctrines === []) {
+        $fits = array_values((array) ($doctrineSnapshot['fits'] ?? []));
+        $atRiskDoctrines = array_slice(array_values(array_filter($fits, static fn (array $fit): bool => (int) (($fit['supply']['gap_to_target_fit_count'] ?? 0)) > 0)), 0, 5);
+    }
+
+    return [
+        'kpis' => [
+            ['label' => 'Top Opportunities', 'value' => (string) count(array_filter($rows, static fn (array $row): bool => (int) ($row['opportunity_score'] ?? 0) >= 60)), 'context' => 'High-confidence import/reprice candidates'],
+            ['label' => 'Top Risks', 'value' => (string) count(array_filter($rows, static fn (array $row): bool => (int) ($row['risk_score'] ?? 0) >= 60)), 'context' => 'High-severity pricing or stock risk'],
+            ['label' => 'Missing Seed Targets', 'value' => (string) count((array) ($outcomes['missing_in_alliance'] ?? [])), 'context' => 'Items in ' . $comparisonContext['reference_hub'] . ' not listed in alliance'],
+            ['label' => 'Overlap Coverage', 'value' => market_format_percentage($coveragePercent), 'context' => $rowCount > 0 ? ($inBothCount . ' of ' . $rowCount . ' items in both markets') : 'No market overlap data yet'],
+        ],
+        'priority_queues' => [
+            'opportunities' => array_map(static fn (array $row): array => dashboard_priority_queue_item(
+                $row,
+                (bool) ($row['missing_in_alliance'] ?? false) ? 'Import seed candidate' : sprintf('%+.1f%% vs hub', (float) ($row['deviation_percent'] ?? 0.0)),
+                (int) ($row['opportunity_score'] ?? 0)
+            ), array_slice(array_values(array_filter($opportunities, static fn (array $row): bool => (int) ($row['opportunity_score'] ?? 0) > 0)), 0, 5)),
+            'risks' => array_map(static fn (array $row): array => dashboard_priority_queue_item(
+                $row,
+                (bool) ($row['overpriced_in_alliance'] ?? false) ? sprintf('%+.1f%% overpriced', (float) ($row['deviation_percent'] ?? 0.0)) : 'Stock or freshness risk',
+                (int) ($row['risk_score'] ?? 0)
+            ), array_slice(array_values(array_filter($risks, static fn (array $row): bool => (int) ($row['risk_score'] ?? 0) > 0)), 0, 5)),
+            'missing_items' => array_map(static fn (array $row): array => dashboard_priority_queue_item(
+                $row,
+                'Volume ' . (string) ($row['reference_total_sell_volume'] ?? 0) . ' · score ' . (string) ($row['opportunity_score'] ?? 0),
+                (int) ($row['opportunity_score'] ?? 0)
+            ), array_slice(array_values(array_filter($opportunities, static fn (array $row): bool => (bool) ($row['missing_in_alliance'] ?? false))), 0, 5)),
+        ],
+        'health_panels' => [
+            'alliance_freshness' => dashboard_sync_health_panel($allianceSync),
+            'sync_health' => dashboard_sync_health_panel($hubCurrentSync),
+            'data_completeness' => [
+                'status' => $rowCount > 0 ? 'Tracked' : 'Awaiting sync',
+                'rows_compared' => $rowCount,
+                'history_points' => count($historyRows),
+                'history_sync' => dashboard_sync_health_panel($historySync),
+            ],
+        ],
+        'trend_snippets' => dashboard_trend_snippets($historyRows),
+        'trend_snippets_message' => (string) ($trendHistory['message'] ?? ''),
+        'doctrine' => $doctrine,
+        'top_at_risk_doctrines' => $atRiskDoctrines,
+        'top_shortages' => array_slice((array) ($doctrine['top_missing_items'] ?? []), 0, 5),
+        'top_loss_demand_items' => $lossDemandTop,
+        'top_comparison_signals' => array_slice($risks, 0, 5),
+        'doctrine_readiness_rollups' => array_slice((array) ($doctrine['groups'] ?? []), 0, 8),
+    ];
+}
+
+function dashboard_snapshot_payload(): array
+{
+    return supplycore_materialized_snapshot_read_or_bootstrap(
+        dashboard_snapshot_key(),
+        static fn (): array => dashboard_intelligence_data_build(),
+        'dashboard-bootstrap'
+    );
+}
+
+function dashboard_refresh_summary(string $reason = 'manual'): array
+{
+    supplycore_materialized_snapshot_mark_updating(dashboard_snapshot_key(), $reason);
+    $snapshot = dashboard_intelligence_data_build();
+
+    return supplycore_materialized_snapshot_store(dashboard_snapshot_key(), $snapshot, [
+        'reason' => $reason,
+        'queue_count' => count((array) ($snapshot['priority_queues']['opportunities'] ?? []))
+            + count((array) ($snapshot['priority_queues']['risks'] ?? []))
+            + count((array) ($snapshot['priority_queues']['missing_items'] ?? [])),
+    ]);
+}
+
+function dashboard_refresh_summary_job_result(string $reason = 'manual'): array
+{
+    $snapshot = dashboard_refresh_summary($reason);
+    $rowCount = count((array) ($snapshot['top_comparison_signals'] ?? []));
+    $freshness = is_array($snapshot['_freshness'] ?? null) ? $snapshot['_freshness'] : [];
+
+    return sync_result_shape() + [
+        'rows_seen' => $rowCount,
+        'rows_written' => $rowCount,
+        'cursor' => 'dashboard_summary:' . gmdate('Y-m-d H:i:s'),
+        'checksum' => sync_checksum([
+            'rows' => $rowCount,
+            'computed_at' => (string) ($freshness['computed_at'] ?? gmdate(DATE_ATOM)),
+            'reason' => $reason,
+        ]),
+        'meta' => [
+            'outcome_reason' => 'Dashboard summaries were assembled from doctrine, market, and loss-demand materialized layers and written to Redis.',
+            'snapshot_generated_at' => (string) ($freshness['computed_at'] ?? ''),
+        ],
+    ];
+}
+
 function market_compare_aggregates(array $typeIds = []): array
 {
     $allianceStructureId = configured_structure_destination_id_for_esi_sync();
@@ -2349,26 +2706,26 @@ function market_signal_severity(int $score): string
 
 function market_comparison_outcomes(array $typeIds = []): array
 {
-    $thresholds = market_compare_thresholds();
-    $evaluatedRows = [];
+    $snapshot = market_comparison_snapshot_payload();
+    $allRows = array_values((array) ($snapshot['rows'] ?? []));
 
-    foreach (market_compare_aggregates($typeIds) as $row) {
-        $evaluatedRows[] = market_compare_evaluate_row($row, $thresholds);
+    if ($typeIds !== []) {
+        $allowedTypeIds = array_fill_keys(
+            array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0))),
+            true
+        );
+        $allRows = array_values(array_filter($allRows, static fn (array $row): bool => isset($allowedTypeIds[(int) ($row['type_id'] ?? 0)])));
     }
 
-    $evaluatedRows = item_scope_filter_rows(
-        $evaluatedRows,
-        static fn (array $row): int => (int) ($row['type_id'] ?? 0)
-    );
-
     return [
-        'thresholds' => $thresholds,
-        'rows' => $evaluatedRows,
-        'in_both_markets' => array_values(array_filter($evaluatedRows, static fn (array $row): bool => (bool) $row['in_both_markets'])),
-        'missing_in_alliance' => array_values(array_filter($evaluatedRows, static fn (array $row): bool => (bool) $row['missing_in_alliance'])),
-        'overpriced_in_alliance' => array_values(array_filter($evaluatedRows, static fn (array $row): bool => (bool) $row['overpriced_in_alliance'])),
-        'underpriced_in_alliance' => array_values(array_filter($evaluatedRows, static fn (array $row): bool => (bool) $row['underpriced_in_alliance'])),
-        'weak_or_missing_alliance_stock' => array_values(array_filter($evaluatedRows, static fn (array $row): bool => (bool) $row['weak_alliance_stock'] || (bool) $row['missing_in_alliance'])),
+        'thresholds' => is_array($snapshot['thresholds'] ?? null) ? $snapshot['thresholds'] : market_compare_thresholds(),
+        'rows' => $allRows,
+        'in_both_markets' => array_values(array_filter($allRows, static fn (array $row): bool => (bool) ($row['in_both_markets'] ?? false))),
+        'missing_in_alliance' => array_values(array_filter($allRows, static fn (array $row): bool => (bool) ($row['missing_in_alliance'] ?? false))),
+        'overpriced_in_alliance' => array_values(array_filter($allRows, static fn (array $row): bool => (bool) ($row['overpriced_in_alliance'] ?? false))),
+        'underpriced_in_alliance' => array_values(array_filter($allRows, static fn (array $row): bool => (bool) ($row['underpriced_in_alliance'] ?? false))),
+        'weak_or_missing_alliance_stock' => array_values(array_filter($allRows, static fn (array $row): bool => (bool) ($row['weak_alliance_stock'] ?? false) || (bool) ($row['missing_in_alliance'] ?? false))),
+        '_freshness' => is_array($snapshot['_freshness'] ?? null) ? $snapshot['_freshness'] : supplycore_snapshot_freshness(market_comparison_snapshot_key()),
     ];
 }
 
@@ -2615,89 +2972,7 @@ function dashboard_trend_history_dataset(string $marketHubRef, int $referenceSou
 
 function dashboard_intelligence_data(): array
 {
-    $marketHubRef = market_hub_setting_reference();
-    $allianceStructureId = configured_alliance_structure_id();
-    $allianceSync = $allianceStructureId !== null
-        ? sync_status_for_dataset_keys([sync_dataset_key_alliance_structure_orders_current($allianceStructureId)])
-        : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
-    $hubCurrentSync = $marketHubRef !== ''
-        ? sync_status_for_dataset_keys([sync_dataset_key_market_hub_current_orders($marketHubRef)])
-        : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
-    $historySync = $marketHubRef !== ''
-        ? sync_status_for_dataset_keys([sync_dataset_key_market_hub_local_history_daily($marketHubRef)])
-        : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
-
-    return supplycore_cache_aside('dashboard', [$marketHubRef, $allianceStructureId], supplycore_cache_ttl('dashboard'), static function () use ($marketHubRef, $allianceStructureId): array {
-        $comparisonContext = market_comparison_context();
-        $outcomes = market_comparison_outcomes();
-        $rows = $outcomes['rows'];
-
-        $rowCount = count($rows);
-        $inBothCount = count($outcomes['in_both_markets']);
-        $coveragePercent = $rowCount > 0 ? ($inBothCount / $rowCount) * 100.0 : 0.0;
-
-        $opportunities = $rows;
-        usort($opportunities, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['volume_score'] ?? 0) <=> ($a['volume_score'] ?? 0)));
-        $risks = $rows;
-        usort($risks, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['stock_score'] ?? 0) <=> ($a['stock_score'] ?? 0)));
-
-        $allianceSync = $allianceStructureId !== null
-            ? sync_status_for_dataset_keys([sync_dataset_key_alliance_structure_orders_current($allianceStructureId)])
-            : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
-        $hubCurrentSync = $marketHubRef !== ''
-            ? sync_status_for_dataset_keys([sync_dataset_key_market_hub_current_orders($marketHubRef)])
-            : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
-        $historySync = $marketHubRef !== ''
-            ? sync_status_for_dataset_keys([sync_dataset_key_market_hub_local_history_daily($marketHubRef)])
-            : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
-
-        $referenceSourceId = sync_source_id_from_hub_ref($marketHubRef);
-        $trendHistory = dashboard_trend_history_dataset($marketHubRef, $referenceSourceId);
-        $historyRows = $trendHistory['rows'] ?? [];
-        $doctrine = doctrine_groups_overview_data();
-
-        return [
-        'kpis' => [
-            ['label' => 'Top Opportunities', 'value' => (string) count(array_filter($rows, static fn (array $row): bool => (int) ($row['opportunity_score'] ?? 0) >= 60)), 'context' => 'High-confidence import/reprice candidates'],
-            ['label' => 'Top Risks', 'value' => (string) count(array_filter($rows, static fn (array $row): bool => (int) ($row['risk_score'] ?? 0) >= 60)), 'context' => 'High-severity pricing or stock risk'],
-            ['label' => 'Missing Seed Targets', 'value' => (string) count($outcomes['missing_in_alliance']), 'context' => 'Items in ' . $comparisonContext['reference_hub'] . ' not listed in alliance'],
-            ['label' => 'Overlap Coverage', 'value' => market_format_percentage($coveragePercent), 'context' => $rowCount > 0 ? ($inBothCount . ' of ' . $rowCount . ' items in both markets') : 'No market overlap data yet'],
-        ],
-        'priority_queues' => [
-            'opportunities' => array_map(static fn (array $row): array => dashboard_priority_queue_item(
-                $row,
-                (bool) ($row['missing_in_alliance'] ?? false) ? 'Import seed candidate' : sprintf('%+.1f%% vs hub', (float) ($row['deviation_percent'] ?? 0.0)),
-                (int) ($row['opportunity_score'] ?? 0)
-            ), array_slice(array_values(array_filter($opportunities, static fn (array $row): bool => (int) ($row['opportunity_score'] ?? 0) > 0)), 0, 5)),
-            'risks' => array_map(static fn (array $row): array => dashboard_priority_queue_item(
-                $row,
-                (bool) ($row['overpriced_in_alliance'] ?? false) ? sprintf('%+.1f%% overpriced', (float) ($row['deviation_percent'] ?? 0.0)) : 'Stock or freshness risk',
-                (int) ($row['risk_score'] ?? 0)
-            ), array_slice(array_values(array_filter($risks, static fn (array $row): bool => (int) ($row['risk_score'] ?? 0) > 0)), 0, 5)),
-            'missing_items' => array_map(static fn (array $row): array => dashboard_priority_queue_item(
-                $row,
-                'Volume ' . (string) ($row['reference_total_sell_volume'] ?? 0) . ' · score ' . (string) ($row['opportunity_score'] ?? 0),
-                (int) ($row['opportunity_score'] ?? 0)
-            ), array_slice(array_values(array_filter($opportunities, static fn (array $row): bool => (bool) ($row['missing_in_alliance'] ?? false))), 0, 5)),
-        ],
-        'health_panels' => [
-            'alliance_freshness' => dashboard_sync_health_panel($allianceSync),
-            'sync_health' => dashboard_sync_health_panel($hubCurrentSync),
-            'data_completeness' => [
-                'status' => $rowCount > 0 ? 'Tracked' : 'Awaiting sync',
-                'rows_compared' => $rowCount,
-                'history_points' => count($historyRows),
-                'history_sync' => dashboard_sync_health_panel($historySync),
-            ],
-        ],
-        'trend_snippets' => dashboard_trend_snippets($historyRows),
-        'trend_snippets_message' => (string) ($trendHistory['message'] ?? ''),
-        'doctrine' => $doctrine,
-        ];
-    }, [
-        'dependencies' => ['dashboard', 'market_compare', 'doctrine'],
-        'lock_ttl' => 20,
-    ]);
+    return dashboard_snapshot_payload();
 }
 
 function dashboard_priority_queue_item(array $row, string $signal, int $score): array
@@ -2806,6 +3081,7 @@ function current_alliance_market_status_data(): array
                 'row_tone' => $riskScore >= 75 ? 'risk_high' : ($riskScore >= 45 ? 'risk_medium' : 'risk_low'),
             ];
         }, $pagedRows),
+        'freshness' => $outcomes['_freshness'] ?? supplycore_snapshot_freshness(market_comparison_snapshot_key()),
         'pagination' => [
             'search' => $search,
             'sort' => $sort,
@@ -4724,6 +5000,7 @@ function reference_hub_comparison_data(): array
             ], $top),
         ],
         'rows' => $rows,
+        'freshness' => $outcomes['_freshness'] ?? supplycore_snapshot_freshness(market_comparison_snapshot_key()),
         ];
     }, [
         'dependencies' => ['market_compare'],
@@ -4755,6 +5032,7 @@ function missing_items_data(): array
                 'score' => (int) ($row['opportunity_score'] ?? 0),
             ], $topRows),
         ],
+        'freshness' => $outcomes['_freshness'] ?? supplycore_snapshot_freshness(market_comparison_snapshot_key()),
         'rows' => array_map(static function (array $row): array {
             return [
                 'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
@@ -4812,6 +5090,7 @@ function price_deviations_data(): array
             ['label' => 'Noise', 'value' => (string) count($noise), 'context' => 'Low relevance, monitor only'],
         ],
         'rows' => $rows,
+        'freshness' => $outcomes['_freshness'] ?? supplycore_snapshot_freshness(market_comparison_snapshot_key()),
         ];
     }, [
         'dependencies' => ['market_compare'],
@@ -5302,6 +5581,27 @@ function scheduler_job_definitions(): array
                 return doctrine_refresh_intelligence_job_result('scheduler');
             },
         ],
+        'market_comparison_summary_sync' => [
+            'timeout_seconds' => 180,
+            'lock_ttl_seconds' => 300,
+            'handler' => static function (): array {
+                return market_comparison_refresh_summary_job_result('scheduler');
+            },
+        ],
+        'loss_demand_summary_sync' => [
+            'timeout_seconds' => 180,
+            'lock_ttl_seconds' => 300,
+            'handler' => static function (): array {
+                return loss_demand_refresh_summary_job_result('scheduler');
+            },
+        ],
+        'dashboard_summary_sync' => [
+            'timeout_seconds' => 180,
+            'lock_ttl_seconds' => 300,
+            'handler' => static function (): array {
+                return dashboard_refresh_summary_job_result('scheduler');
+            },
+        ],
         'forecasting_ai_sync' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
@@ -5330,6 +5630,9 @@ function scheduler_job_type(string $jobKey): string
         'alliance_current_sync', 'market_hub_current_sync', 'current_state_refresh_sync' => 'sync.current',
         'alliance_historical_sync', 'market_hub_historical_sync', 'market_hub_local_history_sync' => 'sync.history',
         'doctrine_intelligence_sync' => 'sync.doctrine',
+        'market_comparison_summary_sync' => 'sync.market_summary',
+        'loss_demand_summary_sync' => 'sync.loss_demand',
+        'dashboard_summary_sync' => 'sync.dashboard',
         'forecasting_ai_sync' => 'sync.forecasting',
         'killmail_r2z2_sync' => 'sync.killmail',
         default => 'sync.generic',
@@ -10286,7 +10589,7 @@ function doctrine_import_fit_from_request(array $post): array
         return ['ok' => false, 'message' => 'Doctrine fit import failed: ' . $exception->getMessage(), 'draft' => $draft];
     }
 
-    doctrine_refresh_intelligence('fit-import');
+    doctrine_schedule_intelligence_refresh('fit-import');
 
     return [
         'ok' => true,
@@ -10318,7 +10621,7 @@ function doctrine_update_fit_from_request(int $fitId, array $post): array
         return ['ok' => false, 'message' => 'Doctrine fit update failed: ' . $exception->getMessage(), 'draft' => $draft];
     }
 
-    doctrine_refresh_intelligence('fit-update');
+    doctrine_schedule_intelligence_refresh('fit-update');
 
     return ['ok' => true, 'message' => 'Doctrine fit updated successfully.', 'draft' => $draft];
 }
@@ -11844,72 +12147,340 @@ function doctrine_operational_snapshot(): array
     ]);
 }
 
-function doctrine_snapshot_setting_key(): string
+function supplycore_summary_refresh_interval_seconds(): int
 {
-    return 'doctrine_intelligence_snapshot_v1';
+    $configured = (int) get_setting('summary_refresh_interval_seconds', '300');
+
+    return max(60, min(3600, $configured > 0 ? $configured : 300));
 }
 
-function doctrine_snapshot_metadata_setting_key(): string
+function supplycore_summary_stale_after_seconds(): int
 {
-    return 'doctrine_intelligence_snapshot_meta_v1';
+    return max(600, supplycore_summary_refresh_interval_seconds() * 3);
+}
+
+function supplycore_materialized_snapshot_keys(): array
+{
+    return [
+        'doctrine_fit_intelligence',
+        'doctrine_group_intelligence',
+        'market_comparison_summaries',
+        'loss_demand_summaries',
+        'dashboard_summaries',
+    ];
+}
+
+function supplycore_materialized_snapshot_redis_key(string $snapshotKey): string
+{
+    return 'intelligence_snapshot:' . trim($snapshotKey);
+}
+
+function supplycore_materialized_snapshot_normalize_meta(string $snapshotKey, array $meta = []): array
+{
+    $intervalSeconds = max(60, (int) ($meta['refresh_interval_seconds'] ?? supplycore_summary_refresh_interval_seconds()));
+    $staleAfterSeconds = max($intervalSeconds, (int) ($meta['stale_after_seconds'] ?? supplycore_summary_stale_after_seconds()));
+    $computedAt = trim((string) ($meta['computed_at'] ?? ($meta['generated_at'] ?? '')));
+    $status = trim((string) ($meta['status'] ?? 'ready'));
+    if ($status === '') {
+        $status = 'ready';
+    }
+
+    $computedUnix = $computedAt !== '' ? strtotime($computedAt) : false;
+    $ageSeconds = $computedUnix !== false ? max(0, time() - $computedUnix) : null;
+    $freshnessState = 'stale';
+    if ($status === 'updating') {
+        $freshnessState = 'updating';
+    } elseif ($ageSeconds !== null && $ageSeconds <= (int) ceil($intervalSeconds * 1.5)) {
+        $freshnessState = 'fresh';
+    }
+
+    return $meta + [
+        'snapshot_key' => $snapshotKey,
+        'status' => $status,
+        'computed_at' => $computedAt !== '' ? $computedAt : null,
+        'refresh_interval_seconds' => $intervalSeconds,
+        'stale_after_seconds' => $staleAfterSeconds,
+        'age_seconds' => $ageSeconds,
+        'freshness_state' => $freshnessState,
+        'freshness_label' => match ($freshnessState) {
+            'fresh' => 'Fresh',
+            'updating' => 'Updating',
+            default => 'Stale',
+        },
+    ];
+}
+
+function supplycore_materialized_snapshot_fetch(string $snapshotKey): ?array
+{
+    $redisPayload = supplycore_redis_get_json(supplycore_materialized_snapshot_redis_key($snapshotKey));
+    if (is_array($redisPayload) && isset($redisPayload['payload']) && is_array($redisPayload['payload'])) {
+        $meta = supplycore_materialized_snapshot_normalize_meta($snapshotKey, is_array($redisPayload['meta'] ?? null) ? $redisPayload['meta'] : []);
+
+        return [
+            'payload' => $redisPayload['payload'],
+            'meta' => $meta,
+            'source' => 'redis',
+        ];
+    }
+
+    try {
+        $row = db_intelligence_snapshot_get($snapshotKey);
+    } catch (Throwable) {
+        $row = null;
+    }
+
+    if (!is_array($row)) {
+        return null;
+    }
+
+    $payload = json_decode((string) ($row['payload_json'] ?? ''), true);
+    if (!is_array($payload)) {
+        $payload = [];
+    }
+
+    $storedMeta = json_decode((string) ($row['metadata_json'] ?? ''), true);
+    $meta = supplycore_materialized_snapshot_normalize_meta($snapshotKey, is_array($storedMeta) ? $storedMeta : []);
+    if (($row['computed_at'] ?? null) !== null) {
+        $meta['computed_at'] = (string) $row['computed_at'];
+    }
+    if (($row['refresh_started_at'] ?? null) !== null) {
+        $meta['refresh_started_at'] = (string) $row['refresh_started_at'];
+    }
+    if (($row['expires_at'] ?? null) !== null) {
+        $meta['expires_at'] = (string) $row['expires_at'];
+    }
+    $meta['status'] = (string) ($row['snapshot_status'] ?? ($meta['status'] ?? 'ready'));
+    $meta = supplycore_materialized_snapshot_normalize_meta($snapshotKey, $meta);
+
+    $ttlSeconds = max(60, $meta['stale_after_seconds']);
+    supplycore_redis_set_json(supplycore_materialized_snapshot_redis_key($snapshotKey), [
+        'payload' => $payload,
+        'meta' => $meta,
+    ], $ttlSeconds);
+
+    return [
+        'payload' => $payload,
+        'meta' => $meta,
+        'source' => 'db',
+    ];
+}
+
+function supplycore_materialized_snapshot_attach_meta(array $payload, array $meta): array
+{
+    $payload['_freshness'] = supplycore_materialized_snapshot_normalize_meta((string) ($meta['snapshot_key'] ?? 'snapshot'), $meta);
+
+    return $payload;
+}
+
+function supplycore_materialized_snapshot_store(string $snapshotKey, array $payload, array $meta = []): array
+{
+    $computedAt = gmdate(DATE_ATOM);
+    $normalizedMeta = supplycore_materialized_snapshot_normalize_meta($snapshotKey, $meta + [
+        'snapshot_key' => $snapshotKey,
+        'status' => 'ready',
+        'computed_at' => $computedAt,
+        'generated_at' => $computedAt,
+    ]);
+    $payloadJson = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    $metaJson = json_encode($normalizedMeta, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    $expiresAt = gmdate('Y-m-d H:i:s', time() + max(60, (int) $normalizedMeta['stale_after_seconds']));
+
+    db_intelligence_snapshot_upsert(
+        $snapshotKey,
+        'ready',
+        is_string($payloadJson) ? $payloadJson : null,
+        is_string($metaJson) ? $metaJson : null,
+        gmdate('Y-m-d H:i:s'),
+        $normalizedMeta['refresh_started_at'] ?? null,
+        $expiresAt
+    );
+
+    supplycore_redis_set_json(supplycore_materialized_snapshot_redis_key($snapshotKey), [
+        'payload' => $payload,
+        'meta' => $normalizedMeta + ['expires_at' => $expiresAt],
+    ], max(60, (int) $normalizedMeta['stale_after_seconds']));
+
+    return supplycore_materialized_snapshot_attach_meta($payload, $normalizedMeta + ['expires_at' => $expiresAt]);
+}
+
+function supplycore_materialized_snapshot_mark_updating(string $snapshotKey, string $reason): void
+{
+    $existing = supplycore_materialized_snapshot_fetch($snapshotKey);
+    $payload = is_array($existing['payload'] ?? null) ? $existing['payload'] : [];
+    $meta = supplycore_materialized_snapshot_normalize_meta($snapshotKey, is_array($existing['meta'] ?? null) ? $existing['meta'] : []);
+    $meta['status'] = 'updating';
+    $meta['reason'] = $reason;
+    $meta['refresh_started_at'] = gmdate(DATE_ATOM);
+    $metaJson = json_encode($meta, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    $expiresAt = gmdate('Y-m-d H:i:s', time() + max(60, (int) $meta['stale_after_seconds']));
+
+    db_intelligence_snapshot_mark_updating($snapshotKey, is_string($metaJson) ? $metaJson : null, $expiresAt);
+
+    if ($payload !== []) {
+        supplycore_redis_set_json(supplycore_materialized_snapshot_redis_key($snapshotKey), [
+            'payload' => $payload,
+            'meta' => $meta + ['expires_at' => $expiresAt],
+        ], max(60, (int) $meta['stale_after_seconds']));
+    }
+}
+
+function supplycore_materialized_snapshot_read_or_bootstrap(string $snapshotKey, callable $builder, string $reason): array
+{
+    $snapshot = supplycore_materialized_snapshot_fetch($snapshotKey);
+    if ($snapshot !== null && is_array($snapshot['payload'] ?? null) && $snapshot['payload'] !== []) {
+        return supplycore_materialized_snapshot_attach_meta($snapshot['payload'], is_array($snapshot['meta'] ?? null) ? $snapshot['meta'] : []);
+    }
+
+    $payload = $builder();
+    if (!is_array($payload)) {
+        $payload = [];
+    }
+
+    return supplycore_materialized_snapshot_store($snapshotKey, $payload, [
+        'reason' => $reason,
+        'status' => 'ready',
+    ]);
+}
+
+function supplycore_snapshot_freshness(string $snapshotKey): array
+{
+    $snapshot = supplycore_materialized_snapshot_fetch($snapshotKey);
+
+    return is_array($snapshot['meta'] ?? null)
+        ? supplycore_materialized_snapshot_normalize_meta($snapshotKey, $snapshot['meta'])
+        : supplycore_materialized_snapshot_normalize_meta($snapshotKey, []);
+}
+
+function supplycore_format_datetime(?string $value): string
+{
+    if ($value === null) {
+        return 'Unavailable';
+    }
+
+    $timestamp = strtotime($value);
+    if ($timestamp === false) {
+        return 'Unavailable';
+    }
+
+    return gmdate('Y-m-d H:i:s \U\T\C', $timestamp);
+}
+
+function supplycore_relative_datetime(?string $value): string
+{
+    if ($value === null) {
+        return 'Never';
+    }
+
+    $timestamp = strtotime($value);
+    if ($timestamp === false) {
+        return 'Unknown';
+    }
+
+    $seconds = max(0, time() - $timestamp);
+
+    return human_duration_ago($seconds) . ' ago';
+}
+
+function supplycore_page_freshness_view_model(array $freshness): array
+{
+    $computedAt = isset($freshness['computed_at']) ? (string) $freshness['computed_at'] : null;
+    $state = (string) ($freshness['freshness_state'] ?? 'stale');
+
+    return [
+        'state' => $state,
+        'label' => (string) ($freshness['freshness_label'] ?? ucfirst($state)),
+        'computed_at' => supplycore_format_datetime($computedAt),
+        'computed_relative' => supplycore_relative_datetime($computedAt),
+        'reason' => (string) ($freshness['reason'] ?? ''),
+        'tone' => match ($state) {
+            'fresh' => 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100',
+            'updating' => 'border-sky-400/20 bg-sky-500/10 text-sky-100',
+            default => 'border-amber-400/20 bg-amber-500/10 text-amber-100',
+        },
+        'message' => match ($state) {
+            'fresh' => 'Background summaries are current.',
+            'updating' => 'A background refresh is currently rebuilding this view.',
+            default => 'Displayed results are older than the target refresh cadence.',
+        },
+    ];
+}
+
+function doctrine_fit_snapshot_key(): string
+{
+    return 'doctrine_fit_intelligence';
+}
+
+function doctrine_group_snapshot_key(): string
+{
+    return 'doctrine_group_intelligence';
 }
 
 function doctrine_snapshot_cache_payload(): ?array
 {
-    $raw = trim((string) get_setting(doctrine_snapshot_setting_key(), ''));
-    if ($raw === '') {
+    $fitSnapshot = supplycore_materialized_snapshot_fetch(doctrine_fit_snapshot_key());
+    $groupSnapshot = supplycore_materialized_snapshot_fetch(doctrine_group_snapshot_key());
+
+    if (!is_array($fitSnapshot) || !is_array($groupSnapshot)) {
         return null;
     }
 
-    $decoded = json_decode($raw, true);
-    if (!is_array($decoded)) {
-        return null;
+    $fitPayload = is_array($fitSnapshot['payload'] ?? null) ? $fitSnapshot['payload'] : [];
+    $groupPayload = is_array($groupSnapshot['payload'] ?? null) ? $groupSnapshot['payload'] : [];
+    $fitMeta = is_array($fitSnapshot['meta'] ?? null) ? $fitSnapshot['meta'] : [];
+    $groupMeta = is_array($groupSnapshot['meta'] ?? null) ? $groupSnapshot['meta'] : [];
+    $freshness = $fitMeta;
+
+    if (($groupMeta['computed_at'] ?? null) !== null && strtotime((string) $groupMeta['computed_at']) > strtotime((string) ($fitMeta['computed_at'] ?? '1970-01-01T00:00:00+00:00'))) {
+        $freshness = $groupMeta;
     }
 
-    return [
-        'groups' => array_values((array) ($decoded['groups'] ?? [])),
-        'fits' => array_values((array) ($decoded['fits'] ?? [])),
-        'ungrouped_fits' => array_values((array) ($decoded['ungrouped_fits'] ?? [])),
-        'top_missing_items' => array_values((array) ($decoded['top_missing_items'] ?? [])),
-        'global_layer' => is_array($decoded['global_layer'] ?? null)
-            ? $decoded['global_layer']
+    return supplycore_materialized_snapshot_attach_meta([
+        'groups' => array_values((array) ($groupPayload['groups'] ?? [])),
+        'fits' => array_values((array) ($fitPayload['fits'] ?? [])),
+        'ungrouped_fits' => array_values((array) ($fitPayload['ungrouped_fits'] ?? [])),
+        'top_missing_items' => array_values((array) ($fitPayload['top_missing_items'] ?? [])),
+        'global_layer' => is_array($fitPayload['global_layer'] ?? null)
+            ? $fitPayload['global_layer']
             : ['rows' => [], 'top_restock_items' => []],
-    ];
+    ], $freshness);
 }
 
 function doctrine_snapshot_metadata(): array
 {
-    $raw = trim((string) get_setting(doctrine_snapshot_metadata_setting_key(), ''));
-    if ($raw === '') {
-        return [];
-    }
-
-    $decoded = json_decode($raw, true);
-
-    return is_array($decoded) ? $decoded : [];
+    return supplycore_snapshot_freshness(doctrine_fit_snapshot_key());
 }
 
 function doctrine_store_snapshot(array $snapshot, string $reason): bool
 {
     $meta = [
-        'generated_at' => gmdate(DATE_ATOM),
         'reason' => $reason,
         'fit_count' => count((array) ($snapshot['fits'] ?? [])),
         'group_count' => count((array) ($snapshot['groups'] ?? [])),
         'top_missing_count' => count((array) ($snapshot['top_missing_items'] ?? [])),
     ];
 
-    return save_settings([
-        doctrine_snapshot_setting_key() => json_encode($snapshot, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
-        doctrine_snapshot_metadata_setting_key() => json_encode($meta, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
-    ]);
+    supplycore_materialized_snapshot_store(doctrine_fit_snapshot_key(), [
+        'fits' => array_values((array) ($snapshot['fits'] ?? [])),
+        'ungrouped_fits' => array_values((array) ($snapshot['ungrouped_fits'] ?? [])),
+        'top_missing_items' => array_values((array) ($snapshot['top_missing_items'] ?? [])),
+        'global_layer' => is_array($snapshot['global_layer'] ?? null)
+            ? $snapshot['global_layer']
+            : ['rows' => [], 'top_restock_items' => []],
+    ], $meta);
+    supplycore_materialized_snapshot_store(doctrine_group_snapshot_key(), [
+        'groups' => array_values((array) ($snapshot['groups'] ?? [])),
+    ], $meta);
+
+    return true;
 }
 
 function doctrine_refresh_intelligence_job_result(string $reason = 'manual'): array
 {
     $snapshot = doctrine_refresh_intelligence($reason);
     $fitCount = count((array) ($snapshot['fits'] ?? []));
-    $meta = doctrine_snapshot_metadata();
+    $meta = is_array($snapshot['_freshness'] ?? null)
+        ? $snapshot['_freshness']
+        : doctrine_snapshot_metadata();
 
     return sync_result_shape() + [
         'rows_seen' => $fitCount,
@@ -11917,12 +12488,12 @@ function doctrine_refresh_intelligence_job_result(string $reason = 'manual'): ar
         'cursor' => 'doctrine_snapshot:' . gmdate('Y-m-d H:i:s'),
         'checksum' => sync_checksum([
             'fit_count' => $fitCount,
-            'generated_at' => (string) ($meta['generated_at'] ?? gmdate(DATE_ATOM)),
+            'generated_at' => (string) ($meta['computed_at'] ?? gmdate(DATE_ATOM)),
             'reason' => $reason,
         ]),
         'meta' => [
-            'outcome_reason' => 'Medium intelligence snapshot refreshed from the latest ingested market, killmail, and doctrine data.',
-            'snapshot_generated_at' => (string) ($meta['generated_at'] ?? ''),
+            'outcome_reason' => 'Doctrine fit and doctrine group intelligence were refreshed into materialized summaries and Redis delivery cache.',
+            'snapshot_generated_at' => (string) ($meta['computed_at'] ?? ''),
             'snapshot_reason' => (string) ($meta['reason'] ?? $reason),
         ],
     ];
@@ -11930,42 +12501,61 @@ function doctrine_refresh_intelligence_job_result(string $reason = 'manual'): ar
 
 function doctrine_refresh_intelligence(string $reason = 'manual'): array
 {
+    supplycore_materialized_snapshot_mark_updating(doctrine_fit_snapshot_key(), $reason);
+    supplycore_materialized_snapshot_mark_updating(doctrine_group_snapshot_key(), $reason);
+
     $snapshot = doctrine_operational_snapshot_build(true, $reason);
     doctrine_store_snapshot($snapshot, $reason);
     supplycore_cache_bust(['doctrine', 'dashboard']);
 
-    return $snapshot;
+    return supplycore_materialized_snapshot_attach_meta($snapshot, doctrine_snapshot_metadata());
+}
+
+function doctrine_schedule_intelligence_refresh(string $reason = 'manual'): void
+{
+    foreach ([doctrine_fit_snapshot_key(), doctrine_group_snapshot_key(), market_comparison_snapshot_key(), loss_demand_snapshot_key(), dashboard_snapshot_key()] as $snapshotKey) {
+        supplycore_materialized_snapshot_mark_updating($snapshotKey, $reason);
+    }
+
+    try {
+        db_sync_schedule_force_due_by_job_keys(doctrine_refresh_trigger_job_keys());
+    } catch (Throwable) {
+    }
 }
 
 function doctrine_refresh_trigger_job_keys(): array
 {
-    return ['doctrine_intelligence_sync'];
+    return [
+        'doctrine_intelligence_sync',
+        'market_comparison_summary_sync',
+        'loss_demand_summary_sync',
+        'dashboard_summary_sync',
+    ];
 }
 
 function supplycore_refresh_current_state_cache(string $reason = 'manual'): array
 {
+    $market = market_comparison_refresh_summary($reason . ':market');
+    $lossDemand = loss_demand_refresh_summary($reason . ':loss-demand');
+    $dashboard = dashboard_refresh_summary($reason . ':dashboard');
     supplycore_cache_bust(['dashboard', 'market_compare']);
 
-    $context = market_comparison_context();
-    $outcomes = market_comparison_outcomes();
-    $dashboard = dashboard_intelligence_data();
-    $rows = count((array) ($outcomes['rows'] ?? []));
+    $rows = count((array) ($market['rows'] ?? []));
     $queues = count((array) ($dashboard['priority_queues']['opportunities'] ?? []))
         + count((array) ($dashboard['priority_queues']['risks'] ?? []))
         + count((array) ($dashboard['priority_queues']['missing_items'] ?? []));
 
     return sync_result_shape() + [
         'rows_seen' => $rows,
-        'rows_written' => $queues,
+        'rows_written' => $queues + count((array) ($lossDemand['rows'] ?? [])),
         'cursor' => 'current_state:' . gmdate('Y-m-d H:i:s'),
         'checksum' => sync_checksum([
             'reason' => $reason,
-            'reference_hub' => (string) ($context['reference_hub'] ?? ''),
             'rows' => $rows,
             'queues' => $queues,
         ]),
         'meta' => [
-            'outcome_reason' => 'Fast current-state cache refresh completed without recalculating higher-level recommendations.',
+            'outcome_reason' => 'Market comparison, loss-demand, and dashboard summaries were refreshed into materialized current-state layers.',
         ],
     ];
 }
@@ -12141,6 +12731,7 @@ function doctrine_groups_overview_data(): array
         'highest_priority_restock_items' => array_slice((array) ($globalLayer['top_restock_items'] ?? []), 0, 8),
         'global_layer' => $globalLayer,
         'ungrouped_fits' => $snapshot['ungrouped_fits'] ?? [],
+        'freshness' => $snapshot['_freshness'] ?? doctrine_snapshot_metadata(),
     ];
 }
 
@@ -12150,16 +12741,26 @@ function doctrine_group_detail_data(int $groupId): array
     $groups = $snapshot['groups'] ?? [];
     foreach ($groups as $group) {
         if ((int) ($group['id'] ?? 0) === $groupId) {
-            return ['group' => $group, 'fits' => (array) ($group['fits'] ?? [])];
+            return ['group' => $group, 'fits' => (array) ($group['fits'] ?? []), 'freshness' => $snapshot['_freshness'] ?? doctrine_snapshot_metadata()];
         }
     }
 
-    return ['group' => null, 'fits' => []];
+    return ['group' => null, 'fits' => [], 'freshness' => $snapshot['_freshness'] ?? doctrine_snapshot_metadata()];
 }
 
 function doctrine_fit_detail_view_model(int $fitId): array
 {
     return supplycore_cache_aside('doctrine', ['fit-detail', $fitId], supplycore_cache_ttl('doctrine_detail'), static function () use ($fitId): array {
+        $snapshot = doctrine_operational_snapshot();
+        $fitFromSnapshot = null;
+
+        foreach (array_values((array) ($snapshot['fits'] ?? [])) as $candidate) {
+            if ((int) ($candidate['id'] ?? 0) === $fitId) {
+                $fitFromSnapshot = $candidate;
+                break;
+            }
+        }
+
         try {
             $fit = db_doctrine_fit_by_id($fitId);
             $items = db_doctrine_fit_items_by_fit($fitId);
@@ -12169,7 +12770,11 @@ function doctrine_fit_detail_view_model(int $fitId): array
         }
 
         if ($fit === null) {
-            return ['fit' => null, 'categories' => [], 'summary' => [], 'items' => []];
+            return ['fit' => null, 'categories' => [], 'summary' => [], 'items' => [], 'freshness' => $snapshot['_freshness'] ?? []];
+        }
+
+        if (is_array($fitFromSnapshot)) {
+            $fit = array_replace($fit, $fitFromSnapshot);
         }
 
         $fit['group_ids'] = doctrine_parse_group_csv($fit['group_ids_csv'] ?? null);
@@ -12180,42 +12785,7 @@ function doctrine_fit_detail_view_model(int $fitId): array
             static fn (array $item): int => (int) ($item['type_id'] ?? 0)
         );
         $comparison = doctrine_market_lookup_by_type_ids(array_map(static fn (array $item): int => (int) ($item['type_id'] ?? 0), $items));
-        $typeIds = array_values(array_unique(array_filter(array_map(static fn (array $item): int => (int) ($item['type_id'] ?? 0), $items), static fn (int $typeId): bool => $typeId > 0)));
-        $localHistoryByTypeId = [];
-        $hubSourceId = sync_source_id_from_hub_ref(market_hub_setting_reference());
-        if ($hubSourceId > 0) {
-            try {
-                $localHistoryByTypeId = doctrine_local_history_index(
-                    db_market_hub_local_history_daily_window_by_type_ids(
-                        market_hub_local_history_source(),
-                        $hubSourceId,
-                        $typeIds,
-                        14
-                    )
-                );
-            } catch (Throwable) {
-                $localHistoryByTypeId = [];
-            }
-        }
-
-        $durableLossTypeIds = array_values(array_filter($typeIds, static fn (int $typeId): bool => item_scope_type_is_durable_loss_relevant($typeId)));
-        try {
-            $itemLossByType = doctrine_item_loss_index(db_killmail_tracked_recent_item_losses($durableLossTypeIds, 24 * 7));
-        } catch (Throwable) {
-            $itemLossByType = [];
-        }
-
-        try {
-            $trackedHullTypeIds = item_scope_is_type_id_in_scope((int) ($fit['ship_type_id'] ?? 0))
-                ? [(int) ($fit['ship_type_id'] ?? 0)]
-                : [];
-            $hullLossByType = doctrine_hull_loss_index(db_killmail_tracked_recent_hull_losses($trackedHullTypeIds, 24 * 7));
-        } catch (Throwable) {
-            $hullLossByType = [];
-        }
-
         $categories = doctrine_group_market_rows_by_category($items, $comparison);
-        $marketRows = [];
 
         foreach ($categories as &$rows) {
             foreach ($rows as &$row) {
@@ -12229,13 +12799,12 @@ function doctrine_fit_detail_view_model(int $fitId): array
                 $row['restock_gap_label'] = (($row['is_stock_tracked'] ?? true) === true)
                     ? market_format_isk(isset($row['restock_gap_isk']) ? (float) $row['restock_gap_isk'] : null)
                     : 'Externally managed';
-                $marketRows[] = $row;
             }
             unset($row);
         }
         unset($rows);
 
-        $supply = doctrine_operational_supply($marketRows, $items, $fit, $localHistoryByTypeId, $itemLossByType, $hullLossByType);
+        $supply = is_array($fit['supply'] ?? null) ? $fit['supply'] : [];
         $history = doctrine_snapshot_history_view_model($fitId, $supply);
         $fit['ship_image_url'] = doctrine_ship_image_url(isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null, 256);
         $fit['supply'] = $supply;
@@ -12248,10 +12817,11 @@ function doctrine_fit_detail_view_model(int $fitId): array
             'summary' => [
                 ['label' => 'Readiness', 'value' => (string) ($supply['readiness_label'] ?? $supply['status_label'] ?? 'Market ready'), 'context' => (string) ($supply['readiness_context'] ?? 'Operational readiness unavailable.')],
                 ['label' => 'Resupply Pressure', 'value' => (string) ($supply['resupply_pressure_label'] ?? 'Stable'), 'context' => (string) ($supply['resupply_pressure_context'] ?? 'Resupply pressure unavailable.')],
-                ['label' => 'Complete Fits', 'value' => doctrine_format_quantity((int) $supply['complete_fits_available']), 'context' => (string) ($supply['constraint_label'] ?? 'Current fleet-ready fit count unavailable.')],
-                ['label' => 'Fit Gap', 'value' => doctrine_format_quantity((int) $supply['gap_to_target_fit_count']), 'context' => market_format_isk((float) $supply['restock_gap_isk']) . ' estimated hub spend to close the doctrine gap'],
+                ['label' => 'Complete Fits', 'value' => doctrine_format_quantity((int) ($supply['complete_fits_available'] ?? 0)), 'context' => (string) ($supply['constraint_label'] ?? 'Current fleet-ready fit count unavailable.')],
+                ['label' => 'Fit Gap', 'value' => doctrine_format_quantity((int) ($supply['gap_to_target_fit_count'] ?? 0)), 'context' => market_format_isk((float) ($supply['restock_gap_isk'] ?? 0.0)) . ' estimated hub spend to close the doctrine gap'],
             ],
             'snapshot_history' => $history,
+            'freshness' => $snapshot['_freshness'] ?? [],
         ];
     }, [
         'dependencies' => ['doctrine', 'market_compare', 'killmail_overview'],

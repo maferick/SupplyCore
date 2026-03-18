@@ -234,6 +234,28 @@ function supplycore_redis_set(string $key, string $value, int $ttlSeconds): bool
     return $result === 'OK';
 }
 
+function supplycore_redis_get_json(string $key): ?array
+{
+    $payload = supplycore_redis_get($key);
+    if ($payload === null || $payload === '') {
+        return null;
+    }
+
+    $decoded = json_decode($payload, true);
+
+    return is_array($decoded) ? $decoded : null;
+}
+
+function supplycore_redis_set_json(string $key, array $value, int $ttlSeconds): bool
+{
+    $json = json_encode($value, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    if (!is_string($json) || $json === '') {
+        return false;
+    }
+
+    return supplycore_redis_set($key, $json, $ttlSeconds);
+}
+
 function supplycore_redis_set_nx(string $key, string $value, int $ttlSeconds): bool
 {
     $safeTtl = max(1, $ttlSeconds);
