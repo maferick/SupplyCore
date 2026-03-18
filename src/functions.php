@@ -2507,6 +2507,261 @@ function sync_source_id_from_hub_ref(string|int $hubRef): int
     return (int) sprintf('%u', crc32(mb_strtolower($hubString)));
 }
 
+function market_hub_local_history_source(): string
+{
+    return 'market_hub_current_sync';
+}
+
+function market_hub_current_sync_latest_dataset(string|int|null $hubRef = null): array
+{
+    $resolvedHubRef = trim((string) ($hubRef ?? market_hub_setting_reference()));
+    if ($resolvedHubRef === '') {
+        return [
+            'hub_ref' => '',
+            'source' => market_hub_local_history_source(),
+            'source_id' => 0,
+            'observed_at' => null,
+            'trade_date' => '',
+            'rows' => [],
+        ];
+    }
+
+    $sourceId = sync_source_id_from_hub_ref($resolvedHubRef);
+    $rows = db_market_orders_current_latest_snapshot_rows('market_hub', $sourceId);
+    $observedAt = $rows !== [] ? (string) ($rows[0]['observed_at'] ?? '') : '';
+
+    return [
+        'hub_ref' => $resolvedHubRef,
+        'source' => market_hub_local_history_source(),
+        'source_id' => $sourceId,
+        'observed_at' => $observedAt !== '' ? $observedAt : null,
+        'trade_date' => $observedAt !== '' ? market_hub_local_history_trade_date($observedAt) : '',
+        'rows' => $rows,
+    ];
+}
+
+function market_hub_current_snapshot_metric_seed(int $sourceId, int $typeId, string $observedAt): array
+{
+    return [
+        'source_id' => $sourceId,
+        'type_id' => $typeId,
+        'observed_at' => $observedAt,
+        'best_sell_price' => null,
+        'best_buy_price' => null,
+        'total_volume' => 0,
+        'buy_order_count' => 0,
+        'sell_order_count' => 0,
+    ];
+}
+
+function market_hub_current_snapshot_finalize_metric(array $metric): ?array
+{
+    $typeId = (int) ($metric['type_id'] ?? 0);
+    $sourceId = (int) ($metric['source_id'] ?? 0);
+    $observedAt = trim((string) ($metric['observed_at'] ?? ''));
+    if ($typeId <= 0 || $sourceId <= 0 || $observedAt === '') {
+        return null;
+    }
+
+    $sellPrice = isset($metric['best_sell_price']) && $metric['best_sell_price'] !== null ? (float) $metric['best_sell_price'] : null;
+    $buyPrice = isset($metric['best_buy_price']) && $metric['best_buy_price'] !== null ? (float) $metric['best_buy_price'] : null;
+    $closePrice = $sellPrice ?? $buyPrice;
+    if ($closePrice === null) {
+        return null;
+    }
+
+    $spreadValue = null;
+    $spreadPercent = null;
+    if ($sellPrice !== null && $buyPrice !== null) {
+        $spreadValue = round($sellPrice - $buyPrice, 2);
+        if ($buyPrice > 0) {
+            $spreadPercent = round(($spreadValue / $buyPrice) * 100, 4);
+        }
+    }
+
+    return [
+        'source' => market_hub_local_history_source(),
+        'source_id' => $sourceId,
+        'type_id' => $typeId,
+        'trade_date' => market_hub_local_history_trade_date($observedAt),
+        'close_price' => $closePrice,
+        'buy_price' => $buyPrice,
+        'sell_price' => $sellPrice,
+        'spread_value' => $spreadValue,
+        'spread_percent' => $spreadPercent,
+        'volume' => max(0, (int) ($metric['total_volume'] ?? 0)),
+        'buy_order_count' => max(0, (int) ($metric['buy_order_count'] ?? 0)),
+        'sell_order_count' => max(0, (int) ($metric['sell_order_count'] ?? 0)),
+        'captured_at' => $observedAt,
+    ];
+}
+
+function market_hub_current_snapshot_metrics_by_type(array $rows, ?int $sourceId = null): array
+{
+    $aggregates = [];
+
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId <= 0) {
+            continue;
+        }
+
+        $rowSourceId = max(0, (int) ($row['source_id'] ?? $sourceId ?? 0));
+        $observedAt = trim((string) ($row['observed_at'] ?? ''));
+        if ($rowSourceId <= 0 || $observedAt === '') {
+            continue;
+        }
+
+        if (!isset($aggregates[$typeId])) {
+            $aggregates[$typeId] = market_hub_current_snapshot_metric_seed($rowSourceId, $typeId, $observedAt);
+        }
+
+        $price = (float) ($row['price'] ?? 0);
+        $volumeRemain = max(0, (int) ($row['volume_remain'] ?? 0));
+        $isBuyOrder = (int) ($row['is_buy_order'] ?? 0) === 1;
+
+        $aggregates[$typeId]['total_volume'] += $volumeRemain;
+
+        if ($volumeRemain <= 0) {
+            continue;
+        }
+
+        if ($isBuyOrder) {
+            $aggregates[$typeId]['buy_order_count']++;
+            $currentBestBuy = $aggregates[$typeId]['best_buy_price'];
+            if ($currentBestBuy === null || $price > (float) $currentBestBuy) {
+                $aggregates[$typeId]['best_buy_price'] = $price;
+            }
+
+            continue;
+        }
+
+        $aggregates[$typeId]['sell_order_count']++;
+        $currentBestSell = $aggregates[$typeId]['best_sell_price'];
+        if ($currentBestSell === null || $price < (float) $currentBestSell) {
+            $aggregates[$typeId]['best_sell_price'] = $price;
+        }
+    }
+
+    $canonicalRows = [];
+    foreach ($aggregates as $typeId => $aggregate) {
+        $canonical = market_hub_current_snapshot_finalize_metric($aggregate);
+        if ($canonical === null) {
+            continue;
+        }
+
+        $canonicalRows[$typeId] = $canonical;
+    }
+
+    ksort($canonicalRows);
+
+    return array_values($canonicalRows);
+}
+
+function market_hub_local_history_trade_date(string $observedAt): string
+{
+    $raw = trim($observedAt);
+    if ($raw === '') {
+        return '';
+    }
+
+    try {
+        $utc = new DateTimeZone('UTC');
+        $appTz = new DateTimeZone(app_timezone());
+        $capturedAt = new DateTimeImmutable($raw, $utc);
+
+        return $capturedAt->setTimezone($appTz)->format('Y-m-d');
+    } catch (Throwable) {
+        return '';
+    }
+}
+
+function market_hub_local_history_daily_merge_row(array $snapshotRow, ?array $existingRow = null): array
+{
+    $effectiveSnapshot = $snapshotRow;
+    $closePrice = (float) ($snapshotRow['close_price'] ?? 0);
+    $capturedAt = trim((string) ($snapshotRow['captured_at'] ?? ''));
+    $existingCapturedAt = trim((string) (($existingRow['observed_at'] ?? $existingRow['captured_at'] ?? '')));
+
+    if ($existingRow !== null && $existingCapturedAt !== '' && $capturedAt !== '' && strcmp($existingCapturedAt, $capturedAt) > 0) {
+        $effectiveSnapshot = [
+            'source_id' => $snapshotRow['source_id'] ?? 0,
+            'type_id' => $snapshotRow['type_id'] ?? 0,
+            'trade_date' => $snapshotRow['trade_date'] ?? '',
+            'close_price' => $existingRow['close_price'] ?? $closePrice,
+            'buy_price' => $existingRow['buy_price'] ?? null,
+            'sell_price' => $existingRow['sell_price'] ?? null,
+            'spread_value' => $existingRow['spread_value'] ?? null,
+            'spread_percent' => $existingRow['spread_percent'] ?? null,
+            'volume' => $existingRow['volume'] ?? 0,
+            'buy_order_count' => $existingRow['buy_order_count'] ?? 0,
+            'sell_order_count' => $existingRow['sell_order_count'] ?? 0,
+            'captured_at' => $existingCapturedAt,
+        ];
+        $closePrice = (float) ($effectiveSnapshot['close_price'] ?? $closePrice);
+        $capturedAt = $existingCapturedAt;
+    }
+
+    $openPrice = $existingRow !== null ? (float) ($existingRow['open_price'] ?? $closePrice) : $closePrice;
+    $highBaseline = $existingRow !== null ? (float) ($existingRow['high_price'] ?? $closePrice) : $closePrice;
+    $lowBaseline = $existingRow !== null ? (float) ($existingRow['low_price'] ?? $closePrice) : $closePrice;
+
+    return [
+        'source' => market_hub_local_history_source(),
+        'source_id' => max(0, (int) ($snapshotRow['source_id'] ?? 0)),
+        'type_id' => max(0, (int) ($snapshotRow['type_id'] ?? 0)),
+        'trade_date' => (string) ($snapshotRow['trade_date'] ?? ''),
+        'open_price' => $openPrice,
+        'high_price' => max($highBaseline, $closePrice),
+        'low_price' => min($lowBaseline, $closePrice),
+        'close_price' => $closePrice,
+        'buy_price' => $effectiveSnapshot['buy_price'] ?? ($existingRow['buy_price'] ?? null),
+        'sell_price' => $effectiveSnapshot['sell_price'] ?? ($existingRow['sell_price'] ?? null),
+        'spread_value' => $effectiveSnapshot['spread_value'] ?? ($existingRow['spread_value'] ?? null),
+        'spread_percent' => $effectiveSnapshot['spread_percent'] ?? ($existingRow['spread_percent'] ?? null),
+        'volume' => max(0, (int) ($effectiveSnapshot['volume'] ?? 0)),
+        'buy_order_count' => max(0, (int) ($effectiveSnapshot['buy_order_count'] ?? 0)),
+        'sell_order_count' => max(0, (int) ($effectiveSnapshot['sell_order_count'] ?? 0)),
+        'captured_at' => $capturedAt,
+    ];
+}
+
+function market_hub_current_sync_daily_canonical_rows(string|int|null $hubRef = null): array
+{
+    $dataset = market_hub_current_sync_latest_dataset($hubRef);
+    $sourceId = (int) ($dataset['source_id'] ?? 0);
+    $tradeDate = (string) ($dataset['trade_date'] ?? '');
+    $snapshotRows = market_hub_current_snapshot_metrics_by_type($dataset['rows'] ?? [], $sourceId);
+
+    if ($sourceId <= 0 || $tradeDate === '' || $snapshotRows === []) {
+        return [];
+    }
+
+    $existingRows = [];
+    foreach (db_market_hub_local_history_daily_by_trade_date(market_hub_local_history_source(), $sourceId, $tradeDate) as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId > 0) {
+            $existingRows[$typeId] = $row;
+        }
+    }
+
+    $canonicalRows = [];
+    foreach ($snapshotRows as $snapshotRow) {
+        $typeId = (int) ($snapshotRow['type_id'] ?? 0);
+        if ($typeId <= 0) {
+            continue;
+        }
+
+        $canonicalRows[] = market_hub_local_history_daily_merge_row($snapshotRow, $existingRows[$typeId] ?? null);
+    }
+
+    return $canonicalRows;
+}
+
 function canonicalize_esi_market_order(array $order, int $sourceId, string $observedAt, string $sourceType = 'alliance_structure'): ?array
 {
     $orderId = (int) ($order['order_id'] ?? 0);
