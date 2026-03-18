@@ -21,7 +21,9 @@ This repository establishes a clean architecture that can scale from an initial 
 - ESI cache tables (`esi_cache_namespaces`, `esi_cache_entries`) for structured `cache.esi.*` namespaces
 - Incremental sync state tables (`sync_state`, `sync_runs`) for watermark/cursor tracking and run observability
 - Reusable entity metadata cache for human-readable killmail, market, and analytics surfaces
-- Doctrine fit import workflow with EFT/BuyAll parsing, item-name cache, doctrine group pages, alliance-vs-hub market mapping, and persistent doctrine intelligence snapshots
+- Doctrine fit import workflow with EFT/BuyAll parsing, item-name cache, doctrine group pages, alliance-vs-hub market mapping, and background-refreshed materialized intelligence snapshots
+- Materialized intelligence storage (`intelligence_snapshots`) for doctrine fit/group summaries, market comparison summaries, loss-demand summaries, and dashboard payloads
+- Redis delivery cache for the latest precomputed intelligence payloads with MySQL materialized-summary fallback
 - Secure CSRF-protected settings forms
 - Session-based flash messaging
 
@@ -169,9 +171,10 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 - The scheduler (`bin/cron_tick.php`) decides which jobs are due and dispatches `bin/sync_runner.php`.
 - Interval and enable/disable controls are configured in **Settings → Data Sync** (`/settings?section=data-sync`) via scheduler rows in `sync_schedules`.
 - SupplyCore now separates cadences by workload:
-  - **Fast ingestion**: `killmail_r2z2_sync`, `alliance_current_sync`, `market_hub_current_sync`, and `current_state_refresh_sync` keep raw data and lightweight current-state views fresh.
-  - **Medium intelligence**: `doctrine_intelligence_sync` recomputes snapshot-backed readiness, shortages, opportunities, loss pressure, depletion, and dashboard-facing doctrine summaries on a steadier batch cadence.
+  - **Fast ingestion**: `killmail_r2z2_sync`, `alliance_current_sync`, and `market_hub_current_sync` keep raw market and killmail inputs fresh.
+  - **Materialized intelligence refresh (target cadence: every 5 minutes)**: `doctrine_intelligence_sync`, `market_comparison_summary_sync`, `loss_demand_summary_sync`, `dashboard_summary_sync`, and `current_state_refresh_sync` recompute heavy current-summary layers from raw tables, then publish the latest payloads into Redis for fast reads.
   - **Slow forecasting / AI**: `forecasting_ai_sync` derives slower-moving target-adjustment, anomaly, briefing, and explanation layers from the latest medium snapshot instead of raw minute-by-minute ingestion.
+- UI pages now read Redis first and fall back to `intelligence_snapshots` if Redis is unavailable; each intelligence surface also exposes its last computed timestamp and freshness state to operators.
 - The hub-history scheduler jobs (`market_hub_historical_sync` and `market_hub_local_history_sync`) rebuild `market_history_daily` from SupplyCore’s own raw hub-order snapshots stored in MySQL for the configured market hub, using the recent window controlled by `raw_order_snapshot_retention_days` unless a CLI override is supplied.
 - **Trend Snippets** on the dashboard depend on that first-party snapshot history generation.
 - The **Run now** button in Settings → Data Sync includes the Hub Snapshot History job, forces the selected enabled schedule due immediately, and executes one scheduler tick.

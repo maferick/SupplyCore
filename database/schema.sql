@@ -116,6 +116,21 @@ CREATE TABLE IF NOT EXISTS sync_schedules (
     KEY idx_job_key (job_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS intelligence_snapshots (
+    snapshot_key VARCHAR(190) PRIMARY KEY,
+    snapshot_status ENUM('ready', 'updating', 'failed') NOT NULL DEFAULT 'ready',
+    payload_json LONGTEXT DEFAULT NULL,
+    metadata_json LONGTEXT DEFAULT NULL,
+    computed_at DATETIME DEFAULT NULL,
+    refresh_started_at DATETIME DEFAULT NULL,
+    expires_at DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_snapshot_status (snapshot_status),
+    KEY idx_snapshot_expires_at (expires_at),
+    KEY idx_snapshot_computed_at (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS killmail_events (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     sequence_id BIGINT UNSIGNED NOT NULL,
