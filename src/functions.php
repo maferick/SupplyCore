@@ -9298,6 +9298,11 @@ function doctrine_resolve_item_names(array $names): array
 
 function doctrine_resolve_parsed_fit(array $parsed, string $rawText): array
 {
+    $hullStockTrackedOverride = null;
+    if (array_key_exists('hull_is_stock_tracked', $parsed)) {
+        $hullStockTrackedOverride = (bool) $parsed['hull_is_stock_tracked'];
+    }
+
     $names = [$parsed['ship_name'] ?? ''];
     foreach ((array) ($parsed['items'] ?? []) as $item) {
         $names[] = (string) ($item['item_name'] ?? '');
@@ -9340,8 +9345,12 @@ function doctrine_resolve_parsed_fit(array $parsed, string $rawText): array
     $resolvedItems = doctrine_ensure_hull_item(
         $resolvedItems,
         $shipResolved,
-        (string) ($parsed['ship_name'] ?? '')
+        (string) ($parsed['ship_name'] ?? ''),
+        $hullStockTrackedOverride
     );
+
+    $hullItem = doctrine_find_hull_item($resolvedItems);
+    $hullIsStockTracked = (bool) ($hullItem['is_stock_tracked'] ?? true);
 
     $fitName = trim((string) ($parsed['fit_name'] ?? ''));
     if ($fitName === '') {
@@ -9368,10 +9377,70 @@ function doctrine_resolve_parsed_fit(array $parsed, string $rawText): array
         'ship' => $shipResolved,
         'unresolved' => $unresolved,
         'ship_missing' => $shipMissing,
+        'hull_is_stock_tracked' => $hullIsStockTracked,
+        'hull_tracking_default_reason' => doctrine_hull_stock_tracking_reason($shipResolved, $hullIsStockTracked),
     ];
 }
 
-function doctrine_ensure_hull_item(array $items, array $shipResolved, string $fallbackShipName = ''): array
+function doctrine_default_hull_stock_tracking(array $shipResolved, string $fallbackShipName = ''): bool
+{
+    $defaultRule = trim((string) get_setting('doctrine.hull_stocking_default', 'exclude_supercapital_hulls'));
+    if ($defaultRule === '' || $defaultRule === 'track_all_hulls') {
+        return true;
+    }
+
+    $shipTypeId = isset($shipResolved['type_id']) && $shipResolved['type_id'] !== null ? (int) $shipResolved['type_id'] : 0;
+    $shipName = trim((string) ($shipResolved['item_name'] ?? $fallbackShipName));
+    $labels = [doctrine_normalize_item_name($shipName)];
+
+    if ($shipTypeId > 0) {
+        try {
+            $metadataRows = db_ref_item_scope_metadata_by_ids([$shipTypeId]);
+        } catch (Throwable) {
+            $metadataRows = [];
+        }
+
+        $metadata = is_array($metadataRows[0] ?? null) ? $metadataRows[0] : [];
+        foreach (['group_name', 'category_name', 'market_group_name', 'type_name'] as $field) {
+            $labels[] = doctrine_normalize_item_name((string) ($metadata[$field] ?? ''));
+        }
+    }
+
+    $joined = implode(' ', array_filter($labels));
+    if ($joined === '') {
+        return true;
+    }
+
+    return !(str_contains($joined, 'titan') || str_contains($joined, 'supercarrier'));
+}
+
+function doctrine_hull_stock_tracking_reason(array $shipResolved, bool $isStockTracked): string
+{
+    $shipName = trim((string) ($shipResolved['item_name'] ?? 'this hull'));
+
+    if ($isStockTracked) {
+        return $shipName !== ''
+            ? $shipName . ' still contributes to alliance stocking recommendations.'
+            : 'This hull still contributes to alliance stocking recommendations.';
+    }
+
+    return $shipName !== ''
+        ? $shipName . ' is treated as an externally managed or specialty hull and is excluded from stocking urgency.'
+        : 'This hull is treated as externally managed and excluded from stocking urgency.';
+}
+
+function doctrine_find_hull_item(array $items): ?array
+{
+    foreach ($items as $item) {
+        if (strcasecmp((string) ($item['slot_category'] ?? ''), 'Hull') === 0) {
+            return $item;
+        }
+    }
+
+    return null;
+}
+
+function doctrine_ensure_hull_item(array $items, array $shipResolved, string $fallbackShipName = '', ?bool $hullIsStockTracked = null): array
 {
     $shipName = trim((string) ($shipResolved['item_name'] ?? $fallbackShipName));
     if ($shipName === '') {
@@ -9380,43 +9449,44 @@ function doctrine_ensure_hull_item(array $items, array $shipResolved, string $fa
 
     $shipKey = doctrine_normalize_item_name($shipName);
     $shipTypeId = isset($shipResolved['type_id']) && $shipResolved['type_id'] !== null ? (int) $shipResolved['type_id'] : null;
-    $hullIndex = null;
+    $hullItem = null;
+    $remainingItems = [];
 
-    foreach ($items as $index => $item) {
+    foreach ($items as $item) {
         $itemKey = doctrine_normalize_item_name((string) ($item['item_name'] ?? ''));
         $itemTypeId = isset($item['type_id']) && $item['type_id'] !== null ? (int) $item['type_id'] : null;
+        $isHullCategory = strcasecmp((string) ($item['slot_category'] ?? ''), 'Hull') === 0;
 
-        if (($shipTypeId !== null && $itemTypeId === $shipTypeId) || ($shipKey !== '' && $itemKey === $shipKey)) {
-            $hullIndex = $index;
-            break;
+        if ($isHullCategory || ($shipTypeId !== null && $itemTypeId === $shipTypeId) || ($shipKey !== '' && $itemKey === $shipKey)) {
+            if ($hullItem === null) {
+                $hullItem = $item;
+            }
+            continue;
         }
+
+        $item['is_stock_tracked'] = !array_key_exists('is_stock_tracked', $item) || (bool) $item['is_stock_tracked'];
+        $remainingItems[] = $item;
     }
 
-    if ($hullIndex === null) {
-        array_unshift($items, [
-            'line_number' => 1,
-            'slot_category' => 'Hull',
-            'item_name' => $shipName,
-            'type_id' => $shipTypeId,
-            'quantity' => 1,
-            'resolution_source' => (string) ($shipResolved['resolution_source'] ?? 'missing'),
-        ]);
-    } else {
-        $items[$hullIndex]['slot_category'] = 'Hull';
-        $items[$hullIndex]['item_name'] = $shipName;
-        $items[$hullIndex]['type_id'] = $shipTypeId;
-        $items[$hullIndex]['quantity'] = max(1, (int) ($items[$hullIndex]['quantity'] ?? 1));
-        $items[$hullIndex]['resolution_source'] = (string) ($items[$hullIndex]['resolution_source'] ?? ($shipResolved['resolution_source'] ?? 'missing'));
+    $resolvedTracking = $hullIsStockTracked ?? ($hullItem !== null && array_key_exists('is_stock_tracked', $hullItem)
+        ? (bool) $hullItem['is_stock_tracked']
+        : doctrine_default_hull_stock_tracking($shipResolved, $fallbackShipName));
 
-        if ($hullIndex !== 0) {
-            $hullItem = $items[$hullIndex];
-            array_splice($items, $hullIndex, 1);
-            array_unshift($items, $hullItem);
-        }
-    }
+    $hullItem = ($hullItem ?? []) + [
+        'resolution_source' => (string) ($shipResolved['resolution_source'] ?? 'missing'),
+    ];
+    $hullItem['slot_category'] = 'Hull';
+    $hullItem['item_name'] = $shipName;
+    $hullItem['type_id'] = $shipTypeId;
+    $hullItem['quantity'] = 1;
+    $hullItem['is_stock_tracked'] = $resolvedTracking;
+    $hullItem['resolution_source'] = (string) ($hullItem['resolution_source'] ?? ($shipResolved['resolution_source'] ?? 'missing'));
+
+    $items = array_merge([$hullItem], $remainingItems);
 
     foreach ($items as $index => &$item) {
         $item['line_number'] = $index + 1;
+        $item['is_stock_tracked'] = array_key_exists('is_stock_tracked', $item) ? (bool) $item['is_stock_tracked'] : true;
     }
     unset($item);
 
@@ -9439,6 +9509,15 @@ function doctrine_selected_group_ids(array $post): array
     }
 
     return array_values(array_unique(array_filter($groupIds, static fn (int $id): bool => $id > 0)));
+}
+
+function doctrine_request_hull_stock_tracked(array $post): ?bool
+{
+    if (!array_key_exists('hull_stock_tracked', $post)) {
+        return null;
+    }
+
+    return in_array((string) $post['hull_stock_tracked'], ['1', 'true', 'on', 'yes'], true);
 }
 
 function doctrine_render_editable_item_lines(array $items): string
@@ -9540,6 +9619,8 @@ function doctrine_prepare_fit_draft(array $resolved, array $groupIds = [], int $
         'suggested_groups' => $suggestions,
         'unresolved' => array_values(array_unique((array) ($resolved['unresolved'] ?? []))),
         'ship_missing' => (bool) ($resolved['ship_missing'] ?? false),
+        'hull_is_stock_tracked' => (bool) ($resolved['hull_is_stock_tracked'] ?? true),
+        'hull_tracking_default_reason' => (string) ($resolved['hull_tracking_default_reason'] ?? ''),
         'ready_to_save' => ((array) ($resolved['unresolved'] ?? [])) === [] && trim((string) ($fit['ship_name'] ?? '')) !== '' && trim((string) ($fit['fit_name'] ?? '')) !== '',
     ];
 }
@@ -9552,6 +9633,7 @@ function doctrine_build_draft_from_import_request(array $post): array
     }
 
     $parsed = doctrine_parse_import_text($rawText);
+    $parsed['hull_is_stock_tracked'] = doctrine_request_hull_stock_tracked($post);
     $resolved = doctrine_resolve_parsed_fit($parsed, $rawText);
 
     return doctrine_prepare_fit_draft($resolved, doctrine_selected_group_ids($post));
@@ -9582,6 +9664,7 @@ function doctrine_build_draft_from_editor_request(array $post, int $fitId = 0): 
         'ship_name' => $shipName,
         'items' => $items,
     ];
+    $parsed['hull_is_stock_tracked'] = doctrine_request_hull_stock_tracked($post);
     $resolved = doctrine_resolve_parsed_fit($parsed, $rawText !== '' ? $rawText : $itemLinesText);
     $resolved['fit']['fit_name'] = mb_substr($fitName, 0, 190);
     $resolved['fit']['source_format'] = $sourceFormat;
@@ -9718,22 +9801,83 @@ function doctrine_fit_item_market_rows(array $items, array $comparisonByTypeId =
         $hubPrice = isset($market['reference_best_sell_price']) ? (float) $market['reference_best_sell_price'] : null;
 
         $rows[] = $item + [
+            'is_stock_tracked' => !array_key_exists('is_stock_tracked', $item) || (bool) $item['is_stock_tracked'],
             'local_available_qty' => $localQty,
             'missing_qty' => $missingQty,
             'local_price' => isset($market['alliance_best_sell_price']) ? (float) $market['alliance_best_sell_price'] : null,
             'hub_price' => $hubPrice,
-            'restock_gap_isk' => $hubPrice !== null ? ($hubPrice * $missingQty) : null,
-            'market_status' => $status,
-            'market_label' => match ($status) {
-                'ok' => 'Stock OK',
-                'low' => 'Low',
-                default => 'Missing',
-            },
+            'restock_gap_isk' => (!array_key_exists('is_stock_tracked', $item) || (bool) $item['is_stock_tracked']) && $hubPrice !== null ? ($hubPrice * $missingQty) : null,
+            'market_status' => (!array_key_exists('is_stock_tracked', $item) || (bool) $item['is_stock_tracked']) ? $status : 'external',
+            'market_label' => (!array_key_exists('is_stock_tracked', $item) || (bool) $item['is_stock_tracked'])
+                ? match ($status) {
+                    'ok' => 'Stock OK',
+                    'low' => 'Low',
+                    default => 'Missing',
+                }
+                : 'Externally managed',
+            'stocking_state_label' => (!array_key_exists('is_stock_tracked', $item) || (bool) $item['is_stock_tracked'])
+                ? 'Tracked for stocking'
+                : 'Externally managed',
+            'stocking_note' => (!array_key_exists('is_stock_tracked', $item) || (bool) $item['is_stock_tracked'])
+                ? ''
+                : 'Specialty hull (excluded from stocking)',
             'observed_at' => $market['alliance_last_observed_at'] ?? null,
         ];
     }
 
     return $rows;
+}
+
+function doctrine_filter_stock_tracked_rows(array $rows): array
+{
+    return array_values(array_filter($rows, static fn (array $row): bool => !array_key_exists('is_stock_tracked', $row) || (bool) $row['is_stock_tracked']));
+}
+
+function doctrine_filter_stock_tracked_items(array $items): array
+{
+    return array_values(array_filter($items, static fn (array $item): bool => !array_key_exists('is_stock_tracked', $item) || (bool) $item['is_stock_tracked']));
+}
+
+function doctrine_fit_items_equal(array $before, array $after): bool
+{
+    $normalize = static function (array $items): array {
+        return array_map(static function (array $item): array {
+            return [
+                'line_number' => (int) ($item['line_number'] ?? 0),
+                'slot_category' => (string) ($item['slot_category'] ?? ''),
+                'item_name' => (string) ($item['item_name'] ?? ''),
+                'type_id' => isset($item['type_id']) && $item['type_id'] !== null ? (int) $item['type_id'] : null,
+                'quantity' => (int) ($item['quantity'] ?? 0),
+                'is_stock_tracked' => !array_key_exists('is_stock_tracked', $item) || (bool) $item['is_stock_tracked'],
+                'resolution_source' => (string) ($item['resolution_source'] ?? ''),
+            ];
+        }, array_values($items));
+    };
+
+    return $normalize($before) === $normalize($after);
+}
+
+function doctrine_normalize_persisted_fit_items(array $fit, array $items, bool $persistChanges = true): array
+{
+    $shipResolved = [
+        'item_name' => (string) ($fit['ship_name'] ?? ''),
+        'type_id' => isset($fit['ship_type_id']) && $fit['ship_type_id'] !== null ? (int) $fit['ship_type_id'] : null,
+        'resolution_source' => ((int) ($fit['ship_type_id'] ?? 0) > 0) ? 'ref' : 'missing',
+    ];
+
+    $normalized = doctrine_ensure_hull_item($items, $shipResolved, (string) ($fit['ship_name'] ?? ''));
+    if ($persistChanges && !doctrine_fit_items_equal($items, $normalized)) {
+        $fitId = (int) ($fit['id'] ?? 0);
+        if ($fitId > 0) {
+            try {
+                db_doctrine_fit_replace_items($fitId, $normalized);
+                db_doctrine_fit_sync_item_totals($fitId, count($normalized), (int) ($fit['unresolved_count'] ?? 0));
+            } catch (Throwable) {
+            }
+        }
+    }
+
+    return $normalized;
 }
 
 function doctrine_supply_summary(array $rows): array
@@ -9813,6 +9957,7 @@ function doctrine_complete_fit_availability(array $rows): array
                 'local_qty' => $localQty,
                 'required_qty' => $requiredQty,
                 'complete_fit_limit' => $fitCount,
+                'is_stock_tracked' => !array_key_exists('is_stock_tracked', $row) || (bool) $row['is_stock_tracked'],
             ];
         }
     }
@@ -9833,6 +9978,8 @@ function doctrine_complete_fit_availability(array $rows): array
     $bottleneckQty = max(0, (int) ($bottleneck['local_qty'] ?? 0));
     $bottleneckRequired = max(1, (int) ($bottleneck['required_qty'] ?? 1));
     $resolvedFits = max(0, (int) $completeFits);
+    $isStockTracked = (bool) ($bottleneck['is_stock_tracked'] ?? true);
+    $constraintPrefix = $isStockTracked ? '' : 'External bottleneck · ';
 
     return [
         'complete_fits_available' => $resolvedFits,
@@ -9840,8 +9987,12 @@ function doctrine_complete_fit_availability(array $rows): array
         'bottleneck_type_id' => isset($bottleneck['type_id']) ? (int) $bottleneck['type_id'] : null,
         'bottleneck_quantity' => $bottleneckQty,
         'bottleneck_required_quantity' => $bottleneckRequired,
+        'bottleneck_is_stock_tracked' => $isStockTracked,
+        'external_bottleneck' => !$isStockTracked,
+        'bottleneck_label' => $isStockTracked ? 'Bottleneck' : 'External bottleneck',
+        'bottleneck_management_label' => $isStockTracked ? 'Tracked for stocking' : 'Externally managed',
         'minimum_stock_constraint' => $resolvedFits,
-        'constraint_label' => doctrine_format_quantity($resolvedFits) . ' complete fits from ' . ($bottleneckItemName !== '' ? $bottleneckItemName : 'Unknown item'),
+        'constraint_label' => $constraintPrefix . doctrine_format_quantity($resolvedFits) . ' complete fits from ' . ($bottleneckItemName !== '' ? $bottleneckItemName : 'Unknown item'),
     ];
 }
 
@@ -10071,6 +10222,14 @@ function doctrine_loss_pressure_signals(array $items, ?int $shipTypeId, array $i
 
 function doctrine_bottleneck_restock_signal(array $availability, array $historyByTypeId): array
 {
+    if (($availability['external_bottleneck'] ?? false) === true) {
+        return [
+            'direction' => 'external',
+            'label' => 'External bottleneck',
+            'context' => 'The current fit ceiling is constrained by an externally managed hull, so no restock urgency is generated for it.',
+        ];
+    }
+
     $typeId = max(0, (int) ($availability['bottleneck_type_id'] ?? 0));
     if ($typeId <= 0 || !isset($historyByTypeId[$typeId])) {
         return [
@@ -10322,31 +10481,59 @@ function doctrine_planning_recommendation(array $availability, array $trend, arr
 
 function doctrine_operational_supply(array $rows, array $items, array $fit, array $historyByTypeId, array $itemLossByType, array $hullLossByType): array
 {
-    $base = doctrine_supply_summary($rows);
+    $hullItem = doctrine_find_hull_item($items);
+    $hullIsStockTracked = !is_array($hullItem) || !array_key_exists('is_stock_tracked', $hullItem) || (bool) $hullItem['is_stock_tracked'];
+    $trackedRows = doctrine_filter_stock_tracked_rows($rows);
+    $trackedItems = doctrine_filter_stock_tracked_items($items);
+    $base = doctrine_supply_summary($trackedRows);
     $availability = doctrine_complete_fit_availability($rows);
     $historySeries = doctrine_complete_fit_history_series($items, $historyByTypeId, 7);
     $trend = doctrine_readiness_trend($historySeries, (int) ($availability['complete_fits_available'] ?? 0));
     $lossSignals = doctrine_loss_pressure_signals(
+        $trackedItems,
+        $hullIsStockTracked
+            ? (isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null)
+            : null,
+        $itemLossByType,
+        $hullLossByType
+    );
+    $displayLossSignals = doctrine_loss_pressure_signals(
         $items,
         isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null,
         $itemLossByType,
         $hullLossByType
     );
     $depletionByType = doctrine_item_depletion_index($historyByTypeId);
-    $depletionSignal = doctrine_fit_depletion_signal($items, $depletionByType);
+    $depletionSignal = doctrine_fit_depletion_signal($trackedItems, $depletionByType);
     $restockSignal = doctrine_bottleneck_restock_signal($availability, $historyByTypeId);
     $restockSignal['depletion_signal'] = $depletionSignal;
     $targetPlan = doctrine_recommended_target_fit_count($availability, $trend, $lossSignals, $restockSignal);
     $planning = doctrine_planning_recommendation($availability, $trend, $lossSignals, $restockSignal, $targetPlan);
+
+    if (($availability['external_bottleneck'] ?? false) === true && (int) ($base['missing_lines'] ?? 0) === 0) {
+        $planning = [
+            'status' => 'external',
+            'label' => 'Externally managed hull',
+            'context' => 'Hull availability still limits complete fits, but this specialty hull is excluded from stocking urgency and spend.',
+            'code' => 'external_bottleneck',
+            'explanation' => 'The alliance is not expected to restock this hull through SupplyCore.',
+            'likely_enough_based_on_recent_losses' => true,
+        ];
+    }
+
     $coveragePercent = (float) ($base['coverage_percent'] ?? 0.0);
-    $scoreLossPressure = min(40.0, max(
+    $scoreLossPressure = $planning['status'] === 'external' ? 0.0 : min(40.0, max(
         (int) ($lossSignals['hull_losses_24h'] ?? 0) * 8.0,
         (int) ($lossSignals['item_equivalent_fit_losses_7d'] ?? 0) * 4.5,
         (int) ($lossSignals['hull_losses_7d'] ?? 0) * 4.0
     ));
-    $scoreStockGap = min(30.0, max(0.0, ((float) ($targetPlan['gap_to_target_fit_count'] ?? 0) * 8.0) + max(0.0, (100.0 - $coveragePercent) * 0.08)));
-    $scoreDepletion = min(20.0, max(0.0, ((float) ($depletionSignal['fit_equivalent_7d'] ?? 0.0) * 6.0) + (($depletionSignal['classification'] ?? 'stable') === 'draining' ? 4.0 : 0.0)));
-    $scoreBottleneck = min(10.0, max(0.0, ((int) ($availability['bottleneck_required_quantity'] ?? 0) > 0 && (int) ($availability['bottleneck_quantity'] ?? 0) <= (int) ($availability['bottleneck_required_quantity'] ?? 0)) ? 7.0 : 3.0));
+    $scoreStockGap = $planning['status'] === 'external'
+        ? 0.0
+        : min(30.0, max(0.0, ((float) ($targetPlan['gap_to_target_fit_count'] ?? 0) * 8.0) + max(0.0, (100.0 - $coveragePercent) * 0.08)));
+    $scoreDepletion = $planning['status'] === 'external' ? 0.0 : min(20.0, max(0.0, ((float) ($depletionSignal['fit_equivalent_7d'] ?? 0.0) * 6.0) + (($depletionSignal['classification'] ?? 'stable') === 'draining' ? 4.0 : 0.0)));
+    $scoreBottleneck = ($availability['external_bottleneck'] ?? false)
+        ? 0.0
+        : min(10.0, max(0.0, ((int) ($availability['bottleneck_required_quantity'] ?? 0) > 0 && (int) ($availability['bottleneck_quantity'] ?? 0) <= (int) ($availability['bottleneck_required_quantity'] ?? 0)) ? 7.0 : 3.0));
     $totalScore = round($scoreLossPressure + $scoreStockGap + $scoreDepletion + $scoreBottleneck, 2);
 
     return $base + $availability + $targetPlan + [
@@ -10360,8 +10547,8 @@ function doctrine_operational_supply(array $rows, array $items, array $fit, arra
         'readiness_trend_direction' => $trend['direction'],
         'readiness_trend_context' => $trend['context'],
         'complete_fit_history' => $historySeries,
-        'recent_hull_losses_24h' => $lossSignals['hull_losses_24h'],
-        'recent_hull_losses_7d' => $lossSignals['hull_losses_7d'],
+        'recent_hull_losses_24h' => $displayLossSignals['hull_losses_24h'],
+        'recent_hull_losses_7d' => $displayLossSignals['hull_losses_7d'],
         'recent_item_fit_losses_24h' => $lossSignals['item_equivalent_fit_losses_24h'],
         'recent_item_fit_losses_7d' => $lossSignals['item_equivalent_fit_losses_7d'],
         'top_pressure_item' => $lossSignals['top_pressure_item'],
@@ -10374,6 +10561,12 @@ function doctrine_operational_supply(array $rows, array $items, array $fit, arra
         'restock_trend' => $restockSignal['label'],
         'restock_trend_direction' => $restockSignal['direction'],
         'restock_trend_context' => $restockSignal['context'],
+        'externally_managed' => ($planning['status'] ?? '') === 'external',
+        'tracked_item_count' => count($trackedItems),
+        'hull_tracking_note' => doctrine_hull_stock_tracking_reason([
+            'item_name' => (string) ($fit['ship_name'] ?? ''),
+            'type_id' => isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null,
+        ], $hullIsStockTracked),
         'driver_scores' => [
             'loss_pressure' => round($scoreLossPressure, 2),
             'stock_gap' => round($scoreStockGap, 2),
@@ -10389,6 +10582,7 @@ function doctrine_supply_status_tone(string $status): string
 {
     return match ($status) {
         'ready' => 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100',
+        'external' => 'border-cyan-400/20 bg-cyan-500/10 text-cyan-100',
         'warning' => 'border-amber-400/20 bg-amber-500/10 text-amber-100',
         default => 'border-rose-400/20 bg-rose-500/10 text-rose-200',
     };
@@ -10557,13 +10751,17 @@ function doctrine_global_item_layer(array $fitsById, array $allDoctrineItems, ar
             continue;
         }
 
+        $isStockTracked = !array_key_exists('is_stock_tracked', $item) || (bool) $item['is_stock_tracked'];
         if (!isset($doctrineItemMeta[$typeId])) {
             $doctrineItemMeta[$typeId] = [
                 'fit_count' => 0,
                 'is_bottleneck' => false,
+                'is_external_bottleneck' => false,
             ];
         }
-        $doctrineItemMeta[$typeId]['fit_count']++;
+        if ($isStockTracked) {
+            $doctrineItemMeta[$typeId]['fit_count']++;
+        }
     }
 
     foreach ($fitsById as $fit) {
@@ -10571,6 +10769,7 @@ function doctrine_global_item_layer(array $fitsById, array $allDoctrineItems, ar
         $bottleneckTypeId = max(0, (int) ($supply['bottleneck_type_id'] ?? 0));
         if ($bottleneckTypeId > 0) {
             $doctrineItemMeta[$bottleneckTypeId]['is_bottleneck'] = true;
+            $doctrineItemMeta[$bottleneckTypeId]['is_external_bottleneck'] = !((bool) ($supply['bottleneck_is_stock_tracked'] ?? true));
         }
     }
 
@@ -10584,7 +10783,7 @@ function doctrine_global_item_layer(array $fitsById, array $allDoctrineItems, ar
         if ($isDoctrine) {
             $priority = (int) round($priority * 1.6);
         }
-        if (($doctrineMeta['is_bottleneck'] ?? false) === true) {
+        if (($doctrineMeta['is_bottleneck'] ?? false) === true && ($doctrineMeta['is_external_bottleneck'] ?? false) !== true) {
             $priority += 18;
         }
         if (($depletion['classification'] ?? 'stable') === 'draining') {
@@ -10595,6 +10794,7 @@ function doctrine_global_item_layer(array $fitsById, array $allDoctrineItems, ar
             'is_doctrine_item' => $isDoctrine,
             'doctrine_fit_count' => (int) ($doctrineMeta['fit_count'] ?? 0),
             'is_bottleneck_item' => (bool) ($doctrineMeta['is_bottleneck'] ?? false),
+            'is_external_bottleneck' => (bool) ($doctrineMeta['is_external_bottleneck'] ?? false),
             'depletion_state' => (string) ($depletion['classification'] ?? 'stable'),
             'depletion_24h' => (int) ($depletion['depletion_24h'] ?? 0),
             'depletion_7d' => (int) ($depletion['depletion_7d'] ?? 0),
@@ -10634,18 +10834,32 @@ function doctrine_operational_snapshot_build(bool $persistSnapshots = false, str
     }
 
     $fitIds = array_values(array_map(static fn (array $fit): int => (int) ($fit['id'] ?? 0), $fits));
+    $fitsByLookup = [];
+    foreach ($fits as $fit) {
+        $fitsByLookup[(int) ($fit['id'] ?? 0)] = $fit;
+    }
     $itemsByFitId = [];
     $allTypeIds = [];
     try {
         foreach (db_doctrine_fit_items_by_fit_ids($fitIds) as $item) {
             $fitId = (int) ($item['doctrine_fit_id'] ?? 0);
+            $itemsByFitId[$fitId][] = $item;
+        }
+    } catch (Throwable) {
+    }
+
+    foreach ($fitIds as $fitId) {
+        $normalizedItems = doctrine_normalize_persisted_fit_items($fitsByLookup[$fitId] ?? ['id' => $fitId], $itemsByFitId[$fitId] ?? []);
+        $itemsByFitId[$fitId] = item_scope_filter_rows(
+            $normalizedItems,
+            static fn (array $item): int => (int) ($item['type_id'] ?? 0)
+        );
+        foreach ($itemsByFitId[$fitId] as $item) {
             $typeId = (int) ($item['type_id'] ?? 0);
             if ($typeId > 0 && item_scope_is_type_id_in_scope($typeId)) {
-                $itemsByFitId[$fitId][] = $item;
                 $allTypeIds[] = $typeId;
             }
         }
-    } catch (Throwable) {
     }
 
     $comparisonByTypeId = doctrine_market_lookup_by_type_ids($allTypeIds);
@@ -10764,6 +10978,9 @@ function doctrine_operational_snapshot_build(bool $persistSnapshots = false, str
         }
 
         foreach ($marketRows as $row) {
+            if (($row['is_stock_tracked'] ?? true) !== true) {
+                continue;
+            }
             $missingQty = (int) ($row['missing_qty'] ?? 0);
             if ($missingQty <= 0) {
                 continue;
@@ -10790,8 +11007,8 @@ function doctrine_operational_snapshot_build(bool $persistSnapshots = false, str
         $groupId = (int) ($group['id'] ?? 0);
         $groupFits = array_values(array_filter($fitsById, static fn (array $fit): bool => in_array($groupId, (array) ($fit['group_ids'] ?? []), true)));
         $group['fits'] = $groupFits;
-        $group['ready_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => (bool) (($fit['supply']['market_ready'] ?? false))));
-        $group['gap_fit_count'] = count($groupFits) - (int) $group['ready_fit_count'];
+        $group['ready_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => in_array((string) (($fit['supply']['status'] ?? 'ready')), ['ready', 'external'], true)));
+        $group['gap_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => in_array((string) (($fit['supply']['status'] ?? 'ready')), ['warning', 'critical'], true)));
         $group['missing_lines'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['missing_lines'] ?? 0)), $groupFits));
         $group['total_missing_qty'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['total_missing_qty'] ?? 0)), $groupFits));
         $group['restock_gap_isk'] = array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['restock_gap_isk'] ?? 0.0)), $groupFits));
@@ -10799,13 +11016,14 @@ function doctrine_operational_snapshot_build(bool $persistSnapshots = false, str
         $group['complete_fits_available'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['complete_fits_available'] ?? 0)), $groupFits));
         $group['target_fit_count'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['recommended_target_fit_count'] ?? 0)), $groupFits));
         $group['fit_gap_count'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['gap_to_target_fit_count'] ?? 0)), $groupFits));
-        $group['loss_pressure_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => !(bool) (($fit['supply']['likely_enough_based_on_recent_losses'] ?? false))));
-        $group['trending_down_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['readiness_trend_direction'] ?? 'unknown') === 'down')));
+        $group['loss_pressure_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => in_array((string) (($fit['supply']['status'] ?? 'ready')), ['warning', 'critical'], true) && !(bool) (($fit['supply']['likely_enough_based_on_recent_losses'] ?? false))));
+        $group['trending_down_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => in_array((string) (($fit['supply']['status'] ?? 'ready')), ['warning', 'critical'], true) && (($fit['supply']['readiness_trend_direction'] ?? 'unknown') === 'down')));
         $group['status'] = count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') === 'critical'))) > 0
             ? 'critical'
-            : (count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') === 'warning'))) > 0 ? 'warning' : 'ready');
+            : (count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') === 'warning'))) > 0 ? 'warning' : (count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') === 'external'))) > 0 ? 'external' : 'ready'));
         $group['status_label'] = match ($group['status']) {
             'ready' => 'Stock sufficient',
+            'external' => 'External hull constraint',
             'warning' => 'Watch closely',
             default => 'Restock pressure',
         };
@@ -11111,14 +11329,14 @@ function doctrine_groups_overview_data(): array
     $snapshot = doctrine_operational_snapshot();
     $groups = $snapshot['groups'] ?? [];
     $fits = $snapshot['fits'] ?? [];
-    $notReadyFits = array_values(array_filter($fits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') !== 'ready')));
+    $notReadyFits = array_values(array_filter($fits, static fn (array $fit): bool => in_array((string) (($fit['supply']['status'] ?? 'ready')), ['warning', 'critical'], true)));
     usort($notReadyFits, static fn (array $a, array $b): int => ((float) (($b['supply']['driver_scores']['total'] ?? 0.0)) <=> (float) (($a['supply']['driver_scores']['total'] ?? 0.0))) ?: ((int) (($b['supply']['gap_to_target_fit_count'] ?? 0)) <=> (int) (($a['supply']['gap_to_target_fit_count'] ?? 0))));
     $totalMissingQty = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['total_missing_qty'] ?? 0)), $notReadyFits));
     $restockGap = array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['restock_gap_isk'] ?? 0.0)), $notReadyFits));
     $completeFitsAvailable = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['complete_fits_available'] ?? 0)), $fits));
     $targetFitsDesired = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['recommended_target_fit_count'] ?? 0)), $fits));
     $fitGap = max(0, $targetFitsDesired - $completeFitsAvailable);
-    $watchFits = count(array_filter($fits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') !== 'ready')));
+    $watchFits = count($notReadyFits);
     $globalLayer = $snapshot['global_layer'] ?? ['rows' => [], 'top_restock_items' => []];
     $topBottlenecks = array_values(array_filter($globalLayer['rows'] ?? [], static fn (array $row): bool => (bool) ($row['is_bottleneck_item'] ?? false)));
 
@@ -11170,6 +11388,7 @@ function doctrine_fit_detail_view_model(int $fitId): array
 
         $fit['group_ids'] = doctrine_parse_group_csv($fit['group_ids_csv'] ?? null);
         $fit['group_names'] = doctrine_parse_group_names_csv($fit['group_names_csv'] ?? null);
+        $items = doctrine_normalize_persisted_fit_items($fit, $items);
         $items = item_scope_filter_rows(
             $items,
             static fn (array $item): int => (int) ($item['type_id'] ?? 0)
@@ -11215,10 +11434,14 @@ function doctrine_fit_detail_view_model(int $fitId): array
             foreach ($rows as &$row) {
                 $row['required_qty_label'] = doctrine_format_quantity((int) ($row['quantity'] ?? 1));
                 $row['local_available_qty_label'] = doctrine_format_quantity((int) ($row['local_available_qty'] ?? 0));
-                $row['missing_qty_label'] = doctrine_format_quantity((int) ($row['missing_qty'] ?? 0));
+                $row['missing_qty_label'] = (($row['is_stock_tracked'] ?? true) === true)
+                    ? doctrine_format_quantity((int) ($row['missing_qty'] ?? 0))
+                    : 'Externally managed';
                 $row['local_price_label'] = market_format_isk(isset($row['local_price']) ? (float) $row['local_price'] : null);
                 $row['hub_price_label'] = market_format_isk(isset($row['hub_price']) ? (float) $row['hub_price'] : null);
-                $row['restock_gap_label'] = market_format_isk(isset($row['restock_gap_isk']) ? (float) $row['restock_gap_isk'] : null);
+                $row['restock_gap_label'] = (($row['is_stock_tracked'] ?? true) === true)
+                    ? market_format_isk(isset($row['restock_gap_isk']) ? (float) $row['restock_gap_isk'] : null)
+                    : 'Externally managed';
                 $marketRows[] = $row;
             }
             unset($row);

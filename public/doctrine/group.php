@@ -129,6 +129,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                         <div class="flex flex-wrap items-center gap-3">
                                             <h3 class="text-lg font-semibold text-white"><?= htmlspecialchars((string) ($fit['fit_name'] ?? ''), ENT_QUOTES) ?></h3>
                                             <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= htmlspecialchars(doctrine_supply_status_tone((string) ($supply['status'] ?? 'critical')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($supply['status_label'] ?? 'Supply gap'), ENT_QUOTES) ?></span>
+                                            <?php if (!empty($supply['externally_managed'])): ?>
+                                                <span class="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] text-cyan-100">Externally managed</span>
+                                            <?php endif; ?>
                                         </div>
                                         <p class="mt-1 text-sm text-slate-400"><?= htmlspecialchars((string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?></p>
                                     </div>
@@ -158,7 +161,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <div class="surface-tertiary">
                                     <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Bottleneck</p>
                                     <p class="mt-2 text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($supply['bottleneck_item_name'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($supply['bottleneck_quantity'] ?? 0)) ?> local for <?= doctrine_format_quantity((int) ($supply['bottleneck_required_quantity'] ?? 0)) ?> required per fit</p>
+                                    <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($supply['bottleneck_quantity'] ?? 0)) ?> local for <?= doctrine_format_quantity((int) ($supply['bottleneck_required_quantity'] ?? 0)) ?> required per fit<?= !empty($supply['external_bottleneck']) ? ' · External bottleneck' : '' ?></p>
                                 </div>
                                 <div class="surface-tertiary">
                                     <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Loss-aware view</p>

@@ -477,6 +477,7 @@ CREATE TABLE IF NOT EXISTS doctrine_fit_items (
     item_name VARCHAR(255) NOT NULL,
     type_id INT UNSIGNED DEFAULT NULL,
     quantity INT UNSIGNED NOT NULL DEFAULT 1,
+    is_stock_tracked TINYINT(1) NOT NULL DEFAULT 1,
     resolution_source ENUM('cache', 'ref', 'esi', 'missing') NOT NULL DEFAULT 'ref',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

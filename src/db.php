@@ -2956,6 +2956,10 @@ function doctrine_db_ensure_schema(): void
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
     );
 
+    if (db_table_exists('doctrine_fit_items') && !db_column_exists('doctrine_fit_items', 'is_stock_tracked')) {
+        db()->exec('ALTER TABLE doctrine_fit_items ADD COLUMN is_stock_tracked TINYINT(1) NOT NULL DEFAULT 1 AFTER quantity');
+    }
+
     $ensured = true;
 }
 
@@ -3237,6 +3241,7 @@ function db_doctrine_fit_items_by_fit(int $fitId): array
             dfi.item_name,
             dfi.type_id,
             dfi.quantity,
+            dfi.is_stock_tracked,
             dfi.resolution_source,
             rit.type_name
          FROM doctrine_fit_items dfi
@@ -3267,6 +3272,7 @@ function db_doctrine_fit_items_by_fit_ids(array $fitIds): array
             dfi.item_name,
             dfi.type_id,
             dfi.quantity,
+            dfi.is_stock_tracked,
             dfi.resolution_source,
             rit.type_name
          FROM doctrine_fit_items dfi
@@ -3399,14 +3405,29 @@ function db_doctrine_fit_replace_items(int $fitId, array $items): void
             'item_name' => (string) ($item['item_name'] ?? ''),
             'type_id' => isset($item['type_id']) ? (int) $item['type_id'] : null,
             'quantity' => max(1, (int) ($item['quantity'] ?? 1)),
+            'is_stock_tracked' => !array_key_exists('is_stock_tracked', $item) || (bool) $item['is_stock_tracked'] ? 1 : 0,
             'resolution_source' => (string) ($item['resolution_source'] ?? 'ref'),
         ];
     }
 
     db_bulk_insert_or_upsert(
         'doctrine_fit_items',
-        ['doctrine_fit_id', 'line_number', 'slot_category', 'item_name', 'type_id', 'quantity', 'resolution_source'],
+        ['doctrine_fit_id', 'line_number', 'slot_category', 'item_name', 'type_id', 'quantity', 'is_stock_tracked', 'resolution_source'],
         $rows
+    );
+}
+
+function db_doctrine_fit_sync_item_totals(int $fitId, int $itemCount, int $unresolvedCount): bool
+{
+    doctrine_db_ensure_schema();
+
+    if ($fitId <= 0) {
+        return false;
+    }
+
+    return db_execute(
+        'UPDATE doctrine_fits SET item_count = ?, unresolved_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? LIMIT 1',
+        [max(0, $itemCount), max(0, $unresolvedCount), $fitId]
     );
 }
 
