@@ -1182,6 +1182,87 @@ function dashboard_sync_dataset_active_error(array $states): ?string
     return null;
 }
 
+function sync_status_for_dataset_keys(array $datasetKeys): array
+{
+    $normalizedKeys = array_values(array_unique(array_filter(array_map(
+        static fn (mixed $datasetKey): string => trim((string) $datasetKey),
+        $datasetKeys
+    ), static fn (string $datasetKey): bool => $datasetKey !== '')));
+
+    if ($normalizedKeys === []) {
+        return [
+            'states' => [],
+            'runs' => [],
+            'last_success_at' => null,
+            'last_error_message' => null,
+            'recent_rows_written' => 0,
+        ];
+    }
+
+    try {
+        $states = [];
+        $runs = [];
+        $lastSuccessAt = null;
+        $lastErrorMessage = null;
+        $recentRowsWritten = 0;
+
+        foreach ($normalizedKeys as $datasetKey) {
+            $state = db_sync_state_get($datasetKey);
+            if ($state !== null) {
+                $states[] = $state;
+
+                $candidate = $state['last_success_at'] ?? null;
+                if (is_string($candidate) && $candidate !== '' && ($lastSuccessAt === null || strtotime($candidate) > strtotime($lastSuccessAt))) {
+                    $lastSuccessAt = $candidate;
+                }
+
+                $recentRowsWritten += max(0, (int) ($state['last_row_count'] ?? 0));
+            }
+
+            $latestRun = db_sync_run_latest_by_dataset($datasetKey);
+            if ($latestRun !== null) {
+                $runs[] = $latestRun;
+
+                if ($lastErrorMessage === null && (string) ($latestRun['run_status'] ?? '') === 'failed') {
+                    $message = trim((string) ($latestRun['error_message'] ?? ''));
+                    if ($message !== '') {
+                        $lastErrorMessage = $message;
+                    }
+                }
+            }
+        }
+
+        if ($lastErrorMessage === null) {
+            foreach ($states as $state) {
+                $message = trim((string) ($state['last_error_message'] ?? ''));
+                if ($message !== '') {
+                    $lastErrorMessage = $message;
+                    break;
+                }
+            }
+        }
+
+        usort($states, static fn (array $a, array $b): int => strcmp((string) ($b['updated_at'] ?? ''), (string) ($a['updated_at'] ?? '')));
+        usort($runs, static fn (array $a, array $b): int => (int) ($b['id'] ?? 0) <=> (int) ($a['id'] ?? 0));
+
+        return [
+            'states' => $states,
+            'runs' => $runs,
+            'last_success_at' => $lastSuccessAt,
+            'last_error_message' => $lastErrorMessage,
+            'recent_rows_written' => $recentRowsWritten,
+        ];
+    } catch (Throwable) {
+        return [
+            'states' => [],
+            'runs' => [],
+            'last_success_at' => null,
+            'last_error_message' => null,
+            'recent_rows_written' => 0,
+        ];
+    }
+}
+
 function dashboard_sync_health_panel(array $dataset): array
 {
     $states = $dataset['states'] ?? [];
@@ -1312,11 +1393,18 @@ function dashboard_intelligence_data(): array
     $risks = $rows;
     usort($risks, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['stock_score'] ?? 0) <=> ($a['stock_score'] ?? 0)));
 
-    $allianceSync = sync_status_from_prefix('alliance.structure.');
-    $hubCurrentSync = sync_status_from_prefix('market.hub.');
-    $historySync = sync_status_from_prefix('market.history.daily.');
-
     $marketHubRef = market_hub_setting_reference();
+    $allianceStructureId = selected_alliance_structure_id();
+    $allianceSync = $allianceStructureId !== null
+        ? sync_status_for_dataset_keys([sync_dataset_key_alliance_structure_orders_current($allianceStructureId)])
+        : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
+    $hubCurrentSync = $marketHubRef !== ''
+        ? sync_status_for_dataset_keys([sync_dataset_key_market_hub_current_orders($marketHubRef)])
+        : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
+    $historySync = $marketHubRef !== ''
+        ? sync_status_for_dataset_keys([sync_dataset_key_market_hub_local_history_daily($marketHubRef)])
+        : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
+
     $referenceSourceId = sync_source_id_from_hub_ref($marketHubRef);
     $trendHistory = dashboard_trend_history_dataset($marketHubRef, $referenceSourceId);
     $historyRows = $trendHistory['rows'] ?? [];
