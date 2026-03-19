@@ -3476,6 +3476,144 @@ function db_doctrine_fit_snapshot_insert(array $row): int
     return (int) db()->lastInsertId();
 }
 
+function db_doctrine_ai_briefing_get(string $entityType, int $entityId): ?array
+{
+    $normalizedType = in_array($entityType, ['fit', 'group'], true) ? $entityType : '';
+    $safeEntityId = max(0, $entityId);
+    if ($normalizedType === '' || $safeEntityId <= 0) {
+        return null;
+    }
+
+    return db_select_one(
+        'SELECT *
+         FROM doctrine_ai_briefings
+         WHERE entity_type = ? AND entity_id = ?
+         LIMIT 1',
+        [$normalizedType, $safeEntityId]
+    );
+}
+
+function db_doctrine_ai_briefings_get_many(array $targets): array
+{
+    $normalized = [];
+
+    foreach ($targets as $target) {
+        if (!is_array($target)) {
+            continue;
+        }
+
+        $entityType = in_array((string) ($target['entity_type'] ?? ''), ['fit', 'group'], true)
+            ? (string) $target['entity_type']
+            : '';
+        $entityId = max(0, (int) ($target['entity_id'] ?? 0));
+        if ($entityType === '' || $entityId <= 0) {
+            continue;
+        }
+
+        $normalized[$entityType . ':' . $entityId] = [$entityType, $entityId];
+    }
+
+    if ($normalized === []) {
+        return [];
+    }
+
+    $clauses = [];
+    $params = [];
+    foreach (array_values($normalized) as [$entityType, $entityId]) {
+        $clauses[] = '(entity_type = ? AND entity_id = ?)';
+        $params[] = $entityType;
+        $params[] = $entityId;
+    }
+
+    return db_select(
+        'SELECT *
+         FROM doctrine_ai_briefings
+         WHERE ' . implode(' OR ', $clauses),
+        $params
+    );
+}
+
+function db_doctrine_ai_briefings_top(int $limit = 6): array
+{
+    $safeLimit = max(1, min(20, $limit));
+
+    return db_select(
+        "SELECT *
+         FROM doctrine_ai_briefings
+         WHERE generation_status IN ('ready', 'fallback')
+         ORDER BY
+            FIELD(priority_level, 'critical', 'high', 'medium', 'low'),
+            computed_at DESC,
+            updated_at DESC
+         LIMIT {$safeLimit}"
+    );
+}
+
+function db_doctrine_ai_briefing_upsert(array $row): bool
+{
+    $entityType = in_array((string) ($row['entity_type'] ?? ''), ['fit', 'group'], true)
+        ? (string) $row['entity_type']
+        : '';
+    $entityId = max(0, (int) ($row['entity_id'] ?? 0));
+    if ($entityType === '' || $entityId <= 0) {
+        return false;
+    }
+
+    $fitId = $entityType === 'fit' ? $entityId : null;
+    $groupId = $entityType === 'group' ? $entityId : null;
+
+    return db_execute(
+        'INSERT INTO doctrine_ai_briefings (
+            entity_type,
+            entity_id,
+            fit_id,
+            group_id,
+            generation_status,
+            computed_at,
+            model_name,
+            headline,
+            summary,
+            action_text,
+            priority_level,
+            source_payload_json,
+            response_json,
+            error_message
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+            fit_id = VALUES(fit_id),
+            group_id = VALUES(group_id),
+            generation_status = VALUES(generation_status),
+            computed_at = VALUES(computed_at),
+            model_name = VALUES(model_name),
+            headline = VALUES(headline),
+            summary = VALUES(summary),
+            action_text = VALUES(action_text),
+            priority_level = VALUES(priority_level),
+            source_payload_json = VALUES(source_payload_json),
+            response_json = VALUES(response_json),
+            error_message = VALUES(error_message),
+            updated_at = CURRENT_TIMESTAMP',
+        [
+            $entityType,
+            $entityId,
+            $fitId,
+            $groupId,
+            mb_substr(trim((string) ($row['generation_status'] ?? 'ready')), 0, 32),
+            (string) ($row['computed_at'] ?? gmdate('Y-m-d H:i:s')),
+            ($row['model_name'] ?? null) !== null ? mb_substr(trim((string) $row['model_name']), 0, 120) : null,
+            ($row['headline'] ?? null) !== null ? mb_substr(trim((string) $row['headline']), 0, 255) : null,
+            ($row['summary'] ?? null) !== null ? trim((string) $row['summary']) : null,
+            ($row['action_text'] ?? null) !== null ? trim((string) $row['action_text']) : null,
+            in_array((string) ($row['priority_level'] ?? 'medium'), ['low', 'medium', 'high', 'critical'], true)
+                ? (string) $row['priority_level']
+                : 'medium',
+            ($row['source_payload_json'] ?? null) !== null ? (string) $row['source_payload_json'] : null,
+            ($row['response_json'] ?? null) !== null ? (string) $row['response_json'] : null,
+            ($row['error_message'] ?? null) !== null ? mb_substr(trim((string) $row['error_message']), 0, 500) : null,
+        ]
+    );
+}
+
 function db_doctrine_fit_replace_items(int $fitId, array $items): void
 {
     db_execute('DELETE FROM doctrine_fit_items WHERE doctrine_fit_id = ?', [$fitId]);

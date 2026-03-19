@@ -131,6 +131,31 @@ CREATE TABLE IF NOT EXISTS intelligence_snapshots (
     KEY idx_snapshot_computed_at (computed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS doctrine_ai_briefings (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    entity_type ENUM('fit', 'group') NOT NULL,
+    entity_id INT UNSIGNED NOT NULL,
+    fit_id INT UNSIGNED DEFAULT NULL,
+    group_id INT UNSIGNED DEFAULT NULL,
+    generation_status ENUM('ready', 'fallback', 'failed') NOT NULL DEFAULT 'ready',
+    computed_at DATETIME DEFAULT NULL,
+    model_name VARCHAR(120) DEFAULT NULL,
+    headline VARCHAR(255) DEFAULT NULL,
+    summary TEXT DEFAULT NULL,
+    action_text TEXT DEFAULT NULL,
+    priority_level ENUM('low', 'medium', 'high', 'critical') NOT NULL DEFAULT 'medium',
+    source_payload_json LONGTEXT DEFAULT NULL,
+    response_json LONGTEXT DEFAULT NULL,
+    error_message VARCHAR(500) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_entity_briefing (entity_type, entity_id),
+    KEY idx_entity_status (entity_type, generation_status, priority_level),
+    KEY idx_computed_at (computed_at),
+    KEY idx_fit_id (fit_id),
+    KEY idx_group_id (group_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS killmail_events (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     sequence_id BIGINT UNSIGNED NOT NULL,

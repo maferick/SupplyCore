@@ -312,6 +312,42 @@ $statusThemes = [
     </article>
 </section>
 
+<section class="mt-8">
+    <article class="surface-secondary">
+        <div class="section-header border-b border-white/8 pb-4">
+            <div>
+                <p class="eyebrow">AI-assisted briefings</p>
+                <h2 class="mt-2 section-title">Operational Briefings</h2>
+                <p class="mt-2 section-copy">Background-generated local AI summaries layered on top of deterministic doctrine metrics.</p>
+            </div>
+            <span class="badge border-violet-400/20 bg-violet-500/10 text-violet-100">Background only</span>
+        </div>
+        <div class="mt-5 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+            <?php foreach ((array) ($intel['ai_briefings'] ?? []) as $briefing): ?>
+                <a href="<?= htmlspecialchars((string) ($briefing['href'] ?? '/doctrine'), ENT_QUOTES) ?>" class="block rounded-[1.3rem] border border-white/8 bg-white/[0.03] p-4 transition hover:bg-white/[0.05]">
+                    <div class="flex items-start justify-between gap-3">
+                        <div class="min-w-0">
+                            <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($briefing['entity_name'] ?? 'Doctrine briefing'), ENT_QUOTES) ?></p>
+                            <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($briefing['context_name'] ?? ucfirst((string) ($briefing['entity_type'] ?? 'doctrine'))), ENT_QUOTES) ?></p>
+                        </div>
+                        <span class="badge <?= htmlspecialchars((string) ($briefing['priority_tone'] ?? 'border-slate-400/15 bg-slate-500/10 text-slate-200'), ENT_QUOTES) ?>"><?= htmlspecialchars(strtoupper((string) ($briefing['priority_level'] ?? 'medium')), ENT_QUOTES) ?></span>
+                    </div>
+                    <p class="mt-4 text-base font-semibold text-white"><?= htmlspecialchars((string) ($briefing['headline'] ?? 'Briefing unavailable'), ENT_QUOTES) ?></p>
+                    <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($briefing['summary'] ?? ''), ENT_QUOTES) ?></p>
+                    <div class="mt-4 rounded-2xl border border-white/8 bg-slate-950/60 px-3 py-3">
+                        <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Recommended action</p>
+                        <p class="mt-2 text-sm text-slate-100"><?= htmlspecialchars((string) ($briefing['action_text'] ?? ''), ENT_QUOTES) ?></p>
+                    </div>
+                    <p class="mt-3 text-xs text-slate-500">Updated <?= htmlspecialchars((string) ($briefing['computed_relative'] ?? 'Unknown'), ENT_QUOTES) ?><?= (($briefing['generation_status'] ?? 'ready') !== 'ready') ? ' · deterministic fallback' : '' ?></p>
+                </a>
+            <?php endforeach; ?>
+            <?php if (((array) ($intel['ai_briefings'] ?? [])) === []): ?>
+                <div class="surface-tertiary text-sm text-slate-400 lg:col-span-2 xl:col-span-3">No doctrine AI briefings are available yet. Run the background AI briefing job after doctrine intelligence refreshes.</div>
+            <?php endif; ?>
+        </div>
+    </article>
+</section>
+
 <section class="mt-8 grid gap-5 xl:grid-cols-3">
     <article class="surface-primary xl:col-span-2">
         <div class="section-header border-b border-white/8 pb-4">
