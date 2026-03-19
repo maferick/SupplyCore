@@ -9219,11 +9219,11 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
         $metaGroups = $dataset['meta_groups'];
         $types = $dataset['types'];
 
-        $rowsWritten = db_transaction(static function () use ($mode, $regions, $constellations, $systems, $stations, $categories, $groups, $marketGroups, $metaGroups, $types): int {
-            if ($mode === 'full') {
-                db_reference_data_truncate_all();
-            }
+        if ($mode === 'full') {
+            db_reference_data_truncate_all();
+        }
 
+        $rowsWritten = db_transaction(static function () use ($regions, $constellations, $systems, $stations, $categories, $groups, $marketGroups, $metaGroups, $types): int {
             $written = 0;
             $written += db_ref_regions_bulk_upsert($regions);
             $written += db_ref_constellations_bulk_upsert($constellations);

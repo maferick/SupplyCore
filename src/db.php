@@ -1959,18 +1959,15 @@ function db_static_data_import_state_upsert(
 function db_reference_data_truncate_all(): void
 {
     item_scope_db_ensure_schema();
-
-    db_transaction(static function (): void {
-        db_execute('TRUNCATE TABLE ref_item_types');
-        db_execute('TRUNCATE TABLE ref_meta_groups');
-        db_execute('TRUNCATE TABLE ref_item_groups');
-        db_execute('TRUNCATE TABLE ref_item_categories');
-        db_execute('TRUNCATE TABLE ref_market_groups');
-        db_execute('TRUNCATE TABLE ref_npc_stations');
-        db_execute('TRUNCATE TABLE ref_systems');
-        db_execute('TRUNCATE TABLE ref_constellations');
-        db_execute('TRUNCATE TABLE ref_regions');
-    });
+    db_execute('TRUNCATE TABLE ref_item_types');
+    db_execute('TRUNCATE TABLE ref_meta_groups');
+    db_execute('TRUNCATE TABLE ref_item_groups');
+    db_execute('TRUNCATE TABLE ref_item_categories');
+    db_execute('TRUNCATE TABLE ref_market_groups');
+    db_execute('TRUNCATE TABLE ref_npc_stations');
+    db_execute('TRUNCATE TABLE ref_systems');
+    db_execute('TRUNCATE TABLE ref_constellations');
+    db_execute('TRUNCATE TABLE ref_regions');
 }
 
 function db_ref_regions_bulk_upsert(array $rows, ?int $chunkSize = null): int
