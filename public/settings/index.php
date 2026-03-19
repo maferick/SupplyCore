@@ -571,7 +571,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= $selectedProvider === $value ? 'selected' : '' ?>><?= htmlspecialchars($label, ENT_QUOTES) ?></option>
                             <?php endforeach; ?>
                         </select>
-                        <p class="text-xs text-muted">Use <span class="font-medium text-slate-100">Local Ollama</span> for your existing self-hosted API, or switch to <span class="font-medium text-slate-100">Runpod Serverless</span> to send prompt requests through a bearer-authenticated endpoint.</p>
+                        <p class="text-xs text-muted">Use <span class="font-medium text-slate-100">Local Ollama</span> for your existing self-hosted API, or switch to <span class="font-medium text-slate-100">Runpod Serverless</span> to submit bearer-authenticated async jobs and poll their status in the background.</p>
                     </label>
                     <label class="block space-y-2 md:col-span-2">
                         <span class="text-sm text-muted">Local Ollama API URL</span>
@@ -581,7 +581,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <label class="block space-y-2 md:col-span-2">
                         <span class="text-sm text-muted">Runpod Serverless Endpoint</span>
                         <input name="ollama_runpod_url" value="<?= htmlspecialchars($settingValues['ollama_runpod_url'] ?? ($ollamaConfig['runpod_url'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" placeholder="https://api.runpod.ai/v2/.../run" />
-                        <p class="text-xs text-muted">Paste the full Runpod request URL, for example <span class="font-medium text-slate-100">https://api.runpod.ai/v2/58qz2qbho8h3f1/run</span>.</p>
+                        <p class="text-xs text-muted">Paste the full Runpod async request URL, for example <span class="font-medium text-slate-100">https://api.runpod.ai/v2/58qz2qbho8h3f1/run</span>. Existing <span class="font-medium text-slate-100">/runsync</span> URLs are converted automatically.</p>
                     </label>
                     <label class="block space-y-2 md:col-span-2">
                         <span class="text-sm text-muted">Runpod API Key</span>
@@ -613,7 +613,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
 
                 <div class="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-muted">
-                    Configure either the local Ollama API or the Runpod serverless endpoint here, then manage cadence under <a href="/settings?section=data-sync" class="font-medium text-slate-100 hover:text-white">Settings → Data Sync</a> for the <span class="font-medium text-slate-100">rebuild_ai_briefings</span> scheduler job. Small tiers stay compact, medium tiers add explanation and deltas, and large tiers unlock richer operator briefings while still keeping deterministic calculations authoritative.
+                    Configure either the local Ollama API or the Runpod serverless endpoint here, then manage cadence under <a href="/settings?section=data-sync" class="font-medium text-slate-100 hover:text-white">Settings → Data Sync</a> for the <span class="font-medium text-slate-100">rebuild_ai_briefings</span> scheduler job. Runpod requests now submit asynchronously and poll for completion within the configured timeout window. Small tiers stay compact, medium tiers add explanation and deltas, and large tiers unlock richer operator briefings while still keeping deterministic calculations authoritative.
                 </div>
 
                 <button class="btn-primary">Save AI Briefing Settings</button>

@@ -112,7 +112,8 @@ README.md
   - `Request Timeout (seconds)`
   - `Capability Tier` (`auto`, `small`, `medium`, or `large`)
 - When `Local Ollama` is selected, SupplyCore sends standard Ollama `/generate` requests to the configured API base URL.
-- When `Runpod Serverless` is selected, SupplyCore sends a bearer-authenticated JSON request to the saved Runpod endpoint using the configured model name and the centralized doctrine prompt payload.
+- When `Runpod Serverless` is selected, SupplyCore submits a bearer-authenticated async job to the saved Runpod endpoint, polls the companion `/status/<job-id>` endpoint until completion, and then validates the centralized doctrine prompt payload response.
+- Saved legacy `.../runsync` Runpod URLs are automatically converted to the async `.../run` flow before submission.
 - SupplyCore now uses a centralized AI capability strategy layer. By default it infers the tier from the configured model name (for example `1.5b` → `small`, `3b–8b` → `medium`, larger models → `large`), but operators can explicitly override the tier in Settings when needed.
 - The capability tier centrally controls prompt depth, enabled AI task types, how much snapshot/history context is included, the number of doctrine entities processed per background run, and how rich the dashboard briefing cards are.
 - Small tiers stay intentionally compact: short prompts, short structured outputs, top critical doctrines/groups only, no broad cross-doctrine reasoning, and no forecast-style commentary.
