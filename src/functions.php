@@ -14178,17 +14178,7 @@ function supplycore_ai_ollama_generate_json(array $sourcePayload): array
     $schema = doctrine_ai_output_schema($strategy);
 
     if (($config['provider'] ?? 'local') === 'runpod') {
-        $response = http_post_json(
-            (string) ($config['runpod_url'] ?? ''),
-            ['Authorization: Bearer ' . (string) ($config['runpod_api_key'] ?? '')],
-            [
-                'input' => [
-                    'prompt' => supplycore_ai_runpod_prompt($config, $systemPrompt, $userPrompt, $schema),
-                ],
-            ],
-            (int) ($config['timeout'] ?? 20)
-        );
-        $decoded = supplycore_ai_decode_runpod_response($response);
+        $decoded = supplycore_ai_runpod_generate_json($config, $systemPrompt, $userPrompt, $schema);
 
         return doctrine_ai_validate_response($decoded, $strategy);
     }
@@ -14225,6 +14215,25 @@ function supplycore_ai_ollama_generate_json(array $sourcePayload): array
     return doctrine_ai_validate_response($decoded, $strategy);
 }
 
+function supplycore_ai_runpod_generate_json(array $config, string $systemPrompt, string $userPrompt, array $schema): array
+{
+    $headers = ['Authorization: Bearer ' . (string) ($config['runpod_api_key'] ?? '')];
+    $requestPayload = [
+        'input' => [
+            'prompt' => supplycore_ai_runpod_prompt($config, $systemPrompt, $userPrompt, $schema),
+        ],
+    ];
+    $response = http_post_json(
+        supplycore_ai_runpod_submit_url((string) ($config['runpod_url'] ?? '')),
+        $headers,
+        $requestPayload,
+        supplycore_ai_runpod_request_timeout($config)
+    );
+    $polledResponse = supplycore_ai_runpod_poll_until_complete($config, $headers, $response);
+
+    return supplycore_ai_decode_runpod_response($polledResponse);
+}
+
 function supplycore_ai_runpod_prompt(array $config, string $systemPrompt, string $userPrompt, array $schema): string
 {
     $schemaJson = json_encode($schema, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
@@ -14245,6 +14254,109 @@ function supplycore_ai_runpod_prompt(array $config, string $systemPrompt, string
     ]));
 }
 
+function supplycore_ai_runpod_submit_url(string $url): string
+{
+    $normalized = rtrim(trim($url), '/');
+    if ($normalized === '') {
+        return '';
+    }
+
+    if (preg_match('#/runsync$#i', $normalized) === 1) {
+        return (string) preg_replace('#/runsync$#i', '/run', $normalized);
+    }
+
+    return $normalized;
+}
+
+function supplycore_ai_runpod_status_url(string $url, string $jobId): string
+{
+    $normalized = rtrim(trim($url), '/');
+    if ($normalized === '') {
+        throw new RuntimeException('Runpod endpoint is not configured.');
+    }
+
+    if (preg_match('#/(?:run|runsync)$#i', $normalized) === 1) {
+        return (string) preg_replace('#/(?:run|runsync)$#i', '/status/' . rawurlencode($jobId), $normalized);
+    }
+
+    return $normalized . '/status/' . rawurlencode($jobId);
+}
+
+function supplycore_ai_runpod_request_timeout(array $config): int
+{
+    $configuredTimeout = max(1, (int) ($config['timeout'] ?? 20));
+
+    return min(10, $configuredTimeout);
+}
+
+function supplycore_ai_runpod_poll_until_complete(array $config, array $headers, array $response): array
+{
+    $status = (int) ($response['status'] ?? 0);
+    $json = is_array($response['json'] ?? null) ? $response['json'] : [];
+    if ($status < 200 || $status >= 300) {
+        throw new RuntimeException('Runpod returned HTTP ' . $status . '.');
+    }
+
+    $jobStatus = supplycore_ai_runpod_job_status($json);
+    if (in_array($jobStatus, ['COMPLETED', 'SUCCESS'], true)) {
+        return $response;
+    }
+
+    if ($jobStatus === '' && supplycore_ai_runpod_response_has_output($json)) {
+        return $response;
+    }
+
+    if (in_array($jobStatus, ['FAILED', 'CANCELLED', 'TIMED_OUT'], true)) {
+        throw new RuntimeException('Runpod job failed with status: ' . $jobStatus . '.');
+    }
+
+    $jobId = trim((string) ($json['id'] ?? $json['job_id'] ?? ''));
+    if ($jobId === '') {
+        throw new RuntimeException('Runpod did not return a job ID for async polling.');
+    }
+
+    $deadline = microtime(true) + max(1, (int) ($config['timeout'] ?? 20));
+    $pollDelayMicroseconds = 750000;
+    $statusUrl = supplycore_ai_runpod_status_url((string) ($config['runpod_url'] ?? ''), $jobId);
+    $lastKnownStatus = $jobStatus !== '' ? $jobStatus : 'SUBMITTED';
+
+    while (microtime(true) < $deadline) {
+        usleep($pollDelayMicroseconds);
+
+        $statusResponse = http_get_json($statusUrl, $headers, supplycore_ai_runpod_request_timeout($config));
+        $statusCode = (int) ($statusResponse['status'] ?? 0);
+        $statusJson = is_array($statusResponse['json'] ?? null) ? $statusResponse['json'] : [];
+        if ($statusCode < 200 || $statusCode >= 300) {
+            throw new RuntimeException('Runpod status returned HTTP ' . $statusCode . '.');
+        }
+
+        $lastKnownStatus = supplycore_ai_runpod_job_status($statusJson);
+        if (in_array($lastKnownStatus, ['COMPLETED', 'SUCCESS'], true)) {
+            return $statusResponse;
+        }
+
+        if ($lastKnownStatus === '' && supplycore_ai_runpod_response_has_output($statusJson)) {
+            return $statusResponse;
+        }
+
+        if (in_array($lastKnownStatus, ['FAILED', 'CANCELLED', 'TIMED_OUT'], true)) {
+            throw new RuntimeException('Runpod job failed with status: ' . $lastKnownStatus . '.');
+        }
+    }
+
+    throw new RuntimeException('Runpod job did not finish before timeout (last status: ' . $lastKnownStatus . ').');
+}
+
+function supplycore_ai_runpod_job_status(array $payload): string
+{
+    return strtoupper(trim((string) ($payload['status'] ?? '')));
+}
+
+function supplycore_ai_runpod_response_has_output(array $payload): bool
+{
+    return array_key_exists('output', $payload) || array_key_exists('response', $payload);
+}
+
 function supplycore_ai_decode_runpod_response(array $response): array
 {
     $status = (int) ($response['status'] ?? 0);
@@ -14253,7 +14365,7 @@ function supplycore_ai_decode_runpod_response(array $response): array
         throw new RuntimeException('Runpod returned HTTP ' . $status . '.');
     }
 
-    $jobStatus = strtoupper(trim((string) ($json['status'] ?? '')));
+    $jobStatus = supplycore_ai_runpod_job_status($json);
     if ($jobStatus !== '' && !in_array($jobStatus, ['COMPLETED', 'SUCCESS'], true)) {
         throw new RuntimeException('Runpod job did not complete synchronously (status: ' . $jobStatus . ').');
     }
