@@ -458,6 +458,7 @@ CREATE TABLE IF NOT EXISTS ref_item_types (
     market_group_id INT UNSIGNED DEFAULT NULL,
     meta_group_id INT UNSIGNED DEFAULT NULL,
     type_name VARCHAR(255) NOT NULL,
+    type_name_normalized VARCHAR(255) GENERATED ALWAYS AS (LOWER(type_name)) STORED,
     description TEXT DEFAULT NULL,
     published TINYINT(1) NOT NULL DEFAULT 0,
     volume DECIMAL(20,6) DEFAULT NULL,
@@ -467,6 +468,7 @@ CREATE TABLE IF NOT EXISTS ref_item_types (
     KEY idx_group_id (group_id),
     KEY idx_market_group_id (market_group_id),
     KEY idx_meta_group_id (meta_group_id),
+    KEY idx_type_name_normalized (type_name_normalized),
     KEY idx_published (published)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
