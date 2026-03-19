@@ -2490,6 +2490,45 @@ function db_killmail_tracked_match_sql(string $eventAlias = 'e'): string
     )";
 }
 
+function db_killmail_tracked_matches_sql(?string $effectiveAfterSql = null, ?string $sequenceAfterSql = null): string
+{
+    $effectiveFilterSql = $effectiveAfterSql !== null
+        ? " AND e.effective_killmail_at >= {$effectiveAfterSql}"
+        : '';
+    $sequenceFilterSql = $sequenceAfterSql !== null
+        ? " AND e.sequence_id >= {$sequenceAfterSql}"
+        : '';
+
+    return "(
+        SELECT
+            matched.sequence_id,
+            MAX(matched.matches_victim_alliance) AS matches_victim_alliance,
+            MAX(matched.matches_victim_corporation) AS matches_victim_corporation
+        FROM (
+            SELECT
+                e.sequence_id,
+                1 AS matches_victim_alliance,
+                0 AS matches_victim_corporation
+            FROM killmail_tracked_alliances ta
+            INNER JOIN killmail_events e
+                ON e.victim_alliance_id = ta.alliance_id{$effectiveFilterSql}{$sequenceFilterSql}
+            WHERE ta.is_active = 1
+
+            UNION ALL
+
+            SELECT
+                e.sequence_id,
+                0 AS matches_victim_alliance,
+                1 AS matches_victim_corporation
+            FROM killmail_tracked_corporations tc
+            INNER JOIN killmail_events e
+                ON e.victim_corporation_id = tc.corporation_id{$effectiveFilterSql}{$sequenceFilterSql}
+            WHERE tc.is_active = 1
+        ) matched
+        GROUP BY matched.sequence_id
+    )";
+}
+
 function db_killmail_ingestion_status(): array
 {
     $state = db_sync_state_get('killmail.r2z2.stream');
@@ -2515,15 +2554,13 @@ function db_killmail_ingestion_status(): array
 function db_killmail_filtered_recent(int $limit = 50): array
 {
     $limit = max(1, min(500, $limit));
+    $trackedMatchesSql = db_killmail_tracked_matches_sql();
 
     return db_select(
         "SELECT e.sequence_id, e.killmail_id, e.killmail_hash, e.uploaded_at, e.killmail_time,
                 e.victim_alliance_id, e.victim_corporation_id, e.victim_ship_type_id, e.solar_system_id, e.region_id
-         FROM killmail_events e
-         WHERE (
-            EXISTS (SELECT 1 FROM killmail_tracked_alliances ta WHERE ta.is_active = 1 AND ta.alliance_id = e.victim_alliance_id)
-            OR EXISTS (SELECT 1 FROM killmail_tracked_corporations tc WHERE tc.is_active = 1 AND tc.corporation_id = e.victim_corporation_id)
-         )
+         FROM {$trackedMatchesSql} tracked
+         INNER JOIN killmail_events e ON e.sequence_id = tracked.sequence_id
          ORDER BY e.sequence_id DESC
          LIMIT {$limit}"
     );
@@ -2532,18 +2569,20 @@ function db_killmail_filtered_recent(int $limit = 50): array
 function db_killmail_overview_summary(int $recentHours = 24): array
 {
     $safeRecentHours = max(1, min(24 * 30, $recentHours));
-    $matchSql = db_killmail_tracked_match_sql('e');
-
-    return db_select_one(
+    $trackedMatchesSql = db_killmail_tracked_matches_sql();
+    $summary = db_select_one(
         "SELECT
             COUNT(*) AS total_count,
             SUM(CASE WHEN e.created_at >= (UTC_TIMESTAMP() - INTERVAL {$safeRecentHours} HOUR) THEN 1 ELSE 0 END) AS recent_count,
-            SUM(CASE WHEN {$matchSql} THEN 1 ELSE 0 END) AS tracked_match_count,
             MAX(e.sequence_id) AS max_sequence_id,
             MAX(e.created_at) AS last_ingested_at,
             MAX(e.uploaded_at) AS latest_uploaded_at
          FROM killmail_events e"
     ) ?? [];
+    $trackedCountRow = db_select_one("SELECT COUNT(*) AS tracked_match_count FROM {$trackedMatchesSql} tracked") ?? [];
+    $summary['tracked_match_count'] = (int) ($trackedCountRow['tracked_match_count'] ?? 0);
+
+    return $summary;
 }
 
 function db_killmail_overview_filter_options(): array
@@ -2697,9 +2736,12 @@ function db_killmail_overview_page(array $filters = []): array
     $corporationId = max(0, (int) ($filters['corporation_id'] ?? 0));
     $trackedOnly = (bool) ($filters['tracked_only'] ?? false);
     $search = trim((string) ($filters['search'] ?? ''));
-    $matchSql = db_killmail_tracked_match_sql('e');
+    $trackedMatchesSql = db_killmail_tracked_matches_sql();
+    $trackedJoinType = $trackedOnly ? 'INNER JOIN' : 'LEFT JOIN';
 
     $fromSql = " FROM killmail_events e
+        {$trackedJoinType} {$trackedMatchesSql} tracked
+          ON tracked.sequence_id = e.sequence_id
         LEFT JOIN ref_item_types ship ON ship.type_id = e.victim_ship_type_id
         LEFT JOIN ref_systems system_ref ON system_ref.system_id = e.solar_system_id
         LEFT JOIN ref_regions region_ref ON region_ref.region_id = e.region_id
@@ -2724,7 +2766,7 @@ function db_killmail_overview_page(array $filters = []): array
     }
 
     if ($trackedOnly) {
-        $conditions[] = $matchSql;
+        $conditions[] = 'tracked.sequence_id IS NOT NULL';
     }
 
     if ($search !== '') {
@@ -2771,13 +2813,9 @@ function db_killmail_overview_page(array $filters = []): array
             COALESCE(NULLIF(ship.type_name, ''), CONCAT('Type #', e.victim_ship_type_id)) AS ship_type_name,
             COALESCE(NULLIF(system_ref.system_name, ''), CONCAT('System #', e.solar_system_id)) AS system_name,
             COALESCE(NULLIF(region_ref.region_name, ''), CONCAT('Region #', e.region_id)) AS region_name,
-            CASE WHEN EXISTS (
-                SELECT 1 FROM killmail_tracked_alliances ta WHERE ta.is_active = 1 AND ta.alliance_id = e.victim_alliance_id
-            ) THEN 1 ELSE 0 END AS matches_victim_alliance,
-            CASE WHEN EXISTS (
-                SELECT 1 FROM killmail_tracked_corporations tc WHERE tc.is_active = 1 AND tc.corporation_id = e.victim_corporation_id
-            ) THEN 1 ELSE 0 END AS matches_victim_corporation,
-            CASE WHEN {$matchSql} THEN 1 ELSE 0 END AS matched_tracked
+            COALESCE(tracked.matches_victim_alliance, 0) AS matches_victim_alliance,
+            COALESCE(tracked.matches_victim_corporation, 0) AS matches_victim_corporation,
+            CASE WHEN tracked.sequence_id IS NULL THEN 0 ELSE 1 END AS matched_tracked
             {$fromSql}
             {$whereSql}
          ORDER BY e.sequence_id DESC
@@ -2805,7 +2843,7 @@ function db_killmail_tracked_recent_hull_losses(array $hullTypeIds, int $hours =
     }
 
     $placeholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
-    $matchSql = db_killmail_tracked_match_sql('e');
+    $trackedMatchesSql = db_killmail_tracked_matches_sql("(UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)");
 
     return db_select(
         "SELECT
@@ -2814,9 +2852,9 @@ function db_killmail_tracked_recent_hull_losses(array $hullTypeIds, int $hours =
             SUM(CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS losses_7d,
             COUNT(*) AS losses_window,
             MAX(e.effective_killmail_at) AS latest_loss_at
-         FROM killmail_events e
-         WHERE {$matchSql}
-           AND e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)
+         FROM {$trackedMatchesSql} tracked
+         INNER JOIN killmail_events e ON e.sequence_id = tracked.sequence_id
+         WHERE e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)
            AND e.victim_ship_type_id IN ({$placeholders})
          GROUP BY e.victim_ship_type_id",
         $normalizedTypeIds
@@ -2832,7 +2870,7 @@ function db_killmail_tracked_recent_item_losses(array $typeIds, int $hours = 24 
     }
 
     $placeholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
-    $matchSql = db_killmail_tracked_match_sql('e');
+    $trackedMatchesSql = db_killmail_tracked_matches_sql("(UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)");
     $quantitySql = "GREATEST(
         COALESCE(i.quantity_destroyed, 0) + COALESCE(i.quantity_dropped, 0),
         CASE
@@ -2852,10 +2890,10 @@ function db_killmail_tracked_recent_item_losses(array $typeIds, int $hours = 24 
             COUNT(DISTINCT CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN e.sequence_id END) AS losses_7d,
             COUNT(DISTINCT e.sequence_id) AS losses_window,
             MAX(e.effective_killmail_at) AS latest_loss_at
-         FROM killmail_items i
-         INNER JOIN killmail_events e ON e.sequence_id = i.sequence_id
-         WHERE {$matchSql}
-           AND e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)
+         FROM {$trackedMatchesSql} tracked
+         INNER JOIN killmail_events e ON e.sequence_id = tracked.sequence_id
+         INNER JOIN killmail_items i ON i.sequence_id = e.sequence_id
+         WHERE e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)
            AND i.item_type_id IN ({$placeholders})
          GROUP BY i.item_type_id",
         $normalizedTypeIds
