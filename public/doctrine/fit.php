@@ -218,6 +218,21 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Doctrine groups</p>
                         <p class="mt-2 font-semibold text-slate-100"><?= htmlspecialchars(implode(', ', (array) ($fit['group_names'] ?? [])) ?: 'Ungrouped', ENT_QUOTES) ?></p>
                     </div>
+                    <?php if (is_array($fit['ai_briefing'] ?? null)): ?>
+                        <?php $aiBriefing = (array) $fit['ai_briefing']; ?>
+                        <div class="rounded-[1.25rem] border border-violet-400/20 bg-violet-500/10 p-4">
+                            <div class="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                    <p class="text-xs uppercase tracking-[0.16em] text-violet-100/80">AI notes</p>
+                                    <p class="mt-2 text-sm font-semibold text-white"><?= htmlspecialchars((string) ($aiBriefing['headline'] ?? 'Operational briefing'), ENT_QUOTES) ?></p>
+                                </div>
+                                <span class="badge <?= htmlspecialchars((string) ($aiBriefing['priority_tone'] ?? 'border-violet-400/20 bg-violet-500/10 text-violet-100'), ENT_QUOTES) ?>"><?= htmlspecialchars(strtoupper((string) ($aiBriefing['priority_level'] ?? 'medium')), ENT_QUOTES) ?></span>
+                            </div>
+                            <p class="mt-3 text-sm text-slate-200"><?= htmlspecialchars((string) ($aiBriefing['summary'] ?? ''), ENT_QUOTES) ?></p>
+                            <p class="mt-3 text-sm font-medium text-violet-50">Next action: <?= htmlspecialchars((string) ($aiBriefing['action_text'] ?? ''), ENT_QUOTES) ?></p>
+                            <p class="mt-2 text-xs text-violet-100/70">Generated <?= htmlspecialchars((string) ($aiBriefing['computed_relative'] ?? 'Unknown'), ENT_QUOTES) ?><?= (($aiBriefing['generation_status'] ?? 'ready') !== 'ready') ? ' · deterministic fallback' : '' ?></p>
+                        </div>
+                    <?php endif; ?>
                     <div class="surface-tertiary">
                         <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Complete fits available</p>
                         <p class="mt-2 font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($supply['complete_fits_available'] ?? 0)) ?></p>

@@ -116,6 +116,22 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
             </div>
 
+            <?php if (is_array($group['ai_briefing'] ?? null)): ?>
+                <?php $aiBriefing = (array) $group['ai_briefing']; ?>
+                <div class="mt-5 rounded-[1.4rem] border border-violet-400/20 bg-violet-500/10 p-4">
+                    <div class="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                            <p class="text-xs uppercase tracking-[0.16em] text-violet-100/80">AI notes</p>
+                            <h3 class="mt-2 text-lg font-semibold text-white"><?= htmlspecialchars((string) ($aiBriefing['headline'] ?? 'Operational briefing'), ENT_QUOTES) ?></h3>
+                        </div>
+                        <span class="badge <?= htmlspecialchars((string) ($aiBriefing['priority_tone'] ?? 'border-violet-400/20 bg-violet-500/10 text-violet-100'), ENT_QUOTES) ?>"><?= htmlspecialchars(strtoupper((string) ($aiBriefing['priority_level'] ?? 'medium')), ENT_QUOTES) ?></span>
+                    </div>
+                    <p class="mt-3 text-sm text-slate-200"><?= htmlspecialchars((string) ($aiBriefing['summary'] ?? ''), ENT_QUOTES) ?></p>
+                    <p class="mt-3 text-sm font-medium text-violet-50">Next action: <?= htmlspecialchars((string) ($aiBriefing['action_text'] ?? ''), ENT_QUOTES) ?></p>
+                    <p class="mt-2 text-xs text-violet-100/70">Generated <?= htmlspecialchars((string) ($aiBriefing['computed_relative'] ?? 'Unknown'), ENT_QUOTES) ?><?= (($aiBriefing['generation_status'] ?? 'ready') !== 'ready') ? ' · deterministic fallback' : '' ?></p>
+                </div>
+            <?php endif; ?>
+
             <?php if ($fits === []): ?>
                 <div class="surface-tertiary text-sm text-slate-400">No fits have been imported into this group yet.</div>
             <?php else: ?>

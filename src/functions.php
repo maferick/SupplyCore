@@ -2025,6 +2025,13 @@ function data_sync_schedule_job_definitions(): array
             'default_interval_seconds' => 300,
             'label' => 'Dashboard Summary Batch',
         ],
+        'rebuild_ai_briefings' => [
+            'enabled_key' => 'rebuild_ai_briefings_enabled',
+            'interval_value_key' => 'rebuild_ai_briefings_interval_value',
+            'interval_unit_key' => 'rebuild_ai_briefings_interval_unit',
+            'default_interval_seconds' => 300,
+            'label' => 'Doctrine AI Briefings',
+        ],
         'forecasting_ai_sync' => [
             'enabled_key' => 'forecasting_ai_sync_enabled',
             'interval_value_key' => 'forecasting_ai_sync_interval_value',
@@ -2450,6 +2457,7 @@ function dashboard_intelligence_data_build(): array
     $doctrine = doctrine_groups_overview_data();
     $lossDemand = loss_demand_snapshot_payload();
     $lossDemandTop = array_slice((array) ($lossDemand['top_rows'] ?? []), 0, 5);
+    $aiBriefings = doctrine_ai_dashboard_briefings(6);
 
     $atRiskDoctrines = array_slice(array_values((array) ($doctrine['not_ready_fits'] ?? [])), 0, 5);
     if ($atRiskDoctrines === []) {
@@ -2499,6 +2507,7 @@ function dashboard_intelligence_data_build(): array
         'top_loss_demand_items' => $lossDemandTop,
         'top_comparison_signals' => array_slice($risks, 0, 5),
         'doctrine_readiness_rollups' => array_slice((array) ($doctrine['groups'] ?? []), 0, 8),
+        'ai_briefings' => $aiBriefings,
     ];
 }
 
@@ -5602,6 +5611,13 @@ function scheduler_job_definitions(): array
                 return dashboard_refresh_summary_job_result('scheduler');
             },
         ],
+        'rebuild_ai_briefings' => [
+            'timeout_seconds' => 180,
+            'lock_ttl_seconds' => 300,
+            'handler' => static function (): array {
+                return rebuild_ai_briefings_job_result('scheduler');
+            },
+        ],
         'forecasting_ai_sync' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
@@ -5633,6 +5649,7 @@ function scheduler_job_type(string $jobKey): string
         'market_comparison_summary_sync' => 'sync.market_summary',
         'loss_demand_summary_sync' => 'sync.loss_demand',
         'dashboard_summary_sync' => 'sync.dashboard',
+        'rebuild_ai_briefings' => 'sync.doctrine_ai',
         'forecasting_ai_sync' => 'sync.forecasting',
         'killmail_r2z2_sync' => 'sync.killmail',
         default => 'sync.generic',
@@ -6034,6 +6051,39 @@ function http_post_form(string $url, array $headers, array $formData): array
         CURLOPT_POSTFIELDS => http_build_query($formData),
         CURLOPT_HTTPHEADER => $headers,
         CURLOPT_TIMEOUT => 25,
+    ]);
+
+    $response = curl_exec($ch);
+    $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    if ($response === false) {
+        throw new RuntimeException('HTTP request failed: ' . $error);
+    }
+
+    $decoded = json_decode($response, true);
+    if (!is_array($decoded)) {
+        throw new RuntimeException('Invalid JSON response from ' . $url);
+    }
+
+    return ['status' => $status, 'json' => $decoded];
+}
+
+function http_post_json(string $url, array $headers, array $payload, int $timeoutSeconds = 25): array
+{
+    $jsonPayload = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    if (!is_string($jsonPayload)) {
+        throw new RuntimeException('Unable to encode JSON payload for ' . $url);
+    }
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $jsonPayload,
+        CURLOPT_HTTPHEADER => array_merge(['Content-Type: application/json'], $headers),
+        CURLOPT_TIMEOUT => max(1, $timeoutSeconds),
     ]);
 
     $response = curl_exec($ch);
@@ -12530,6 +12580,7 @@ function doctrine_refresh_trigger_job_keys(): array
         'market_comparison_summary_sync',
         'loss_demand_summary_sync',
         'dashboard_summary_sync',
+        'rebuild_ai_briefings',
     ];
 }
 
@@ -12702,6 +12753,21 @@ function doctrine_groups_overview_data(): array
     $snapshot = doctrine_operational_snapshot();
     $groups = $snapshot['groups'] ?? [];
     $fits = $snapshot['fits'] ?? [];
+    $briefingMap = doctrine_ai_briefings_fetch_map(array_merge(
+        array_map(static fn (array $group): array => ['entity_type' => 'group', 'entity_id' => (int) ($group['id'] ?? 0)], $groups),
+        array_map(static fn (array $fit): array => ['entity_type' => 'fit', 'entity_id' => (int) ($fit['id'] ?? 0)], $fits)
+    ));
+
+    foreach ($groups as &$group) {
+        $group['ai_briefing'] = $briefingMap['group:' . (int) ($group['id'] ?? 0)] ?? null;
+    }
+    unset($group);
+
+    foreach ($fits as &$fit) {
+        $fit['ai_briefing'] = $briefingMap['fit:' . (int) ($fit['id'] ?? 0)] ?? null;
+    }
+    unset($fit);
+
     $notReadyFits = array_values(array_filter($fits, static fn (array $fit): bool => (($fit['supply']['readiness_state'] ?? 'market_ready') !== 'market_ready')));
     $pressureFits = array_values(array_filter($fits, static fn (array $fit): bool => (($fit['supply']['resupply_pressure_state'] ?? 'stable') !== 'stable')));
     usort($notReadyFits, static fn (array $a, array $b): int => ((float) (($b['supply']['driver_scores']['total'] ?? 0.0)) <=> (float) (($a['supply']['driver_scores']['total'] ?? 0.0))) ?: ((int) (($b['supply']['gap_to_target_fit_count'] ?? 0)) <=> (int) (($a['supply']['gap_to_target_fit_count'] ?? 0))));
@@ -12741,7 +12807,18 @@ function doctrine_group_detail_data(int $groupId): array
     $groups = $snapshot['groups'] ?? [];
     foreach ($groups as $group) {
         if ((int) ($group['id'] ?? 0) === $groupId) {
-            return ['group' => $group, 'fits' => (array) ($group['fits'] ?? []), 'freshness' => $snapshot['_freshness'] ?? doctrine_snapshot_metadata()];
+            $fits = array_values((array) ($group['fits'] ?? []));
+            $briefingMap = doctrine_ai_briefings_fetch_map(array_merge(
+                [['entity_type' => 'group', 'entity_id' => $groupId]],
+                array_map(static fn (array $fit): array => ['entity_type' => 'fit', 'entity_id' => (int) ($fit['id'] ?? 0)], $fits)
+            ));
+            $group['ai_briefing'] = $briefingMap['group:' . $groupId] ?? null;
+            foreach ($fits as &$fit) {
+                $fit['ai_briefing'] = $briefingMap['fit:' . (int) ($fit['id'] ?? 0)] ?? null;
+            }
+            unset($fit);
+
+            return ['group' => $group, 'fits' => $fits, 'freshness' => $snapshot['_freshness'] ?? doctrine_snapshot_metadata()];
         }
     }
 
@@ -12809,6 +12886,7 @@ function doctrine_fit_detail_view_model(int $fitId): array
         $fit['ship_image_url'] = doctrine_ship_image_url(isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null, 256);
         $fit['supply'] = $supply;
         $fit['snapshot_history'] = $history;
+        $fit['ai_briefing'] = doctrine_ai_briefing_get('fit', $fitId);
 
         return [
             'fit' => $fit,
@@ -12827,4 +12905,683 @@ function doctrine_fit_detail_view_model(int $fitId): array
         'dependencies' => ['doctrine', 'market_compare', 'killmail_overview'],
         'lock_ttl' => 20,
     ]);
+}
+
+function supplycore_ai_ollama_config(): array
+{
+    return [
+        'enabled' => (bool) config('ollama.enabled', false),
+        'url' => rtrim((string) config('ollama.url', 'http://localhost:11434/api'), '/'),
+        'model' => trim((string) config('ollama.model', 'qwen2.5:1.5b-instruct')),
+        'timeout' => max(1, (int) config('ollama.timeout', 20)),
+    ];
+}
+
+function supplycore_ai_ollama_enabled(): bool
+{
+    $config = supplycore_ai_ollama_config();
+
+    return $config['enabled'] === true && $config['url'] !== '' && $config['model'] !== '';
+}
+
+function supplycore_ai_log(string $event, array $payload = []): void
+{
+    try {
+        error_log('[supplycore.ai] ' . json_encode([
+            'event' => $event,
+            'ts' => gmdate(DATE_ATOM),
+        ] + $payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    } catch (Throwable) {
+        error_log('[supplycore.ai] ' . $event);
+    }
+}
+
+function supplycore_ai_priority_rank(string $priority): int
+{
+    return match ($priority) {
+        'critical' => 4,
+        'high' => 3,
+        'medium' => 2,
+        default => 1,
+    };
+}
+
+function supplycore_ai_priority_tone(string $priority): string
+{
+    return match ($priority) {
+        'critical' => 'border-rose-400/20 bg-rose-500/10 text-rose-200',
+        'high' => 'border-amber-400/20 bg-amber-500/10 text-amber-100',
+        'medium' => 'border-sky-400/20 bg-sky-500/10 text-sky-100',
+        default => 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100',
+    };
+}
+
+function doctrine_ai_cache_key(string $entityType, int $entityId): string
+{
+    return 'doctrine_ai_briefing:' . $entityType . ':' . max(0, $entityId);
+}
+
+function doctrine_ai_briefing_normalize_row(?array $row): ?array
+{
+    if (!is_array($row)) {
+        return null;
+    }
+
+    $responseJson = json_decode((string) ($row['response_json'] ?? ''), true);
+    $sourcePayload = json_decode((string) ($row['source_payload_json'] ?? ''), true);
+    $priority = in_array((string) ($row['priority_level'] ?? 'medium'), ['low', 'medium', 'high', 'critical'], true)
+        ? (string) $row['priority_level']
+        : 'medium';
+
+    return [
+        'entity_type' => (string) ($row['entity_type'] ?? ''),
+        'entity_id' => (int) ($row['entity_id'] ?? 0),
+        'fit_id' => isset($row['fit_id']) ? (int) $row['fit_id'] : null,
+        'group_id' => isset($row['group_id']) ? (int) $row['group_id'] : null,
+        'generation_status' => (string) ($row['generation_status'] ?? 'ready'),
+        'computed_at' => ($row['computed_at'] ?? null) !== null ? (string) $row['computed_at'] : null,
+        'computed_relative' => supplycore_relative_datetime(($row['computed_at'] ?? null) !== null ? (string) $row['computed_at'] : null),
+        'model_name' => ($row['model_name'] ?? null) !== null ? (string) $row['model_name'] : null,
+        'headline' => trim((string) ($row['headline'] ?? '')),
+        'summary' => trim((string) ($row['summary'] ?? '')),
+        'action_text' => trim((string) ($row['action_text'] ?? '')),
+        'priority_level' => $priority,
+        'priority_rank' => supplycore_ai_priority_rank($priority),
+        'priority_tone' => supplycore_ai_priority_tone($priority),
+        'source_payload' => is_array($sourcePayload) ? $sourcePayload : [],
+        'response_json' => is_array($responseJson) ? $responseJson : [],
+        'error_message' => ($row['error_message'] ?? null) !== null ? (string) $row['error_message'] : null,
+        'updated_at' => ($row['updated_at'] ?? null) !== null ? (string) $row['updated_at'] : null,
+    ];
+}
+
+function doctrine_ai_briefing_get(string $entityType, int $entityId): ?array
+{
+    $normalizedType = in_array($entityType, ['fit', 'group'], true) ? $entityType : '';
+    $safeEntityId = max(0, $entityId);
+    if ($normalizedType === '' || $safeEntityId <= 0) {
+        return null;
+    }
+
+    $cached = supplycore_redis_get_json(doctrine_ai_cache_key($normalizedType, $safeEntityId));
+    if (is_array($cached)) {
+        return doctrine_ai_briefing_normalize_row($cached);
+    }
+
+    try {
+        $row = db_doctrine_ai_briefing_get($normalizedType, $safeEntityId);
+    } catch (Throwable) {
+        $row = null;
+    }
+
+    if (!is_array($row)) {
+        return null;
+    }
+
+    supplycore_redis_set_json(doctrine_ai_cache_key($normalizedType, $safeEntityId), $row, 300);
+
+    return doctrine_ai_briefing_normalize_row($row);
+}
+
+function doctrine_ai_briefings_fetch_map(array $targets): array
+{
+    $normalizedTargets = [];
+    $cacheKeys = [];
+
+    foreach ($targets as $target) {
+        if (!is_array($target)) {
+            continue;
+        }
+
+        $entityType = in_array((string) ($target['entity_type'] ?? ''), ['fit', 'group'], true)
+            ? (string) $target['entity_type']
+            : '';
+        $entityId = max(0, (int) ($target['entity_id'] ?? 0));
+        if ($entityType === '' || $entityId <= 0) {
+            continue;
+        }
+
+        $key = $entityType . ':' . $entityId;
+        $normalizedTargets[$key] = ['entity_type' => $entityType, 'entity_id' => $entityId];
+        $cacheKeys[$key] = doctrine_ai_cache_key($entityType, $entityId);
+    }
+
+    if ($normalizedTargets === []) {
+        return [];
+    }
+
+    $map = [];
+    $cacheKeyEntries = array_values($cacheKeys);
+    $cachedRows = supplycore_redis_enabled() ? supplycore_redis_mget($cacheKeyEntries) : [];
+    $targetKeys = array_keys($cacheKeys);
+    foreach ($cacheKeyEntries as $index => $cacheKey) {
+        $key = $targetKeys[$index] ?? null;
+        if (!is_string($key)) {
+            continue;
+        }
+        $cachedPayload = $cachedRows[$index] ?? null;
+        if (!is_string($cachedPayload) || $cachedPayload === '') {
+            continue;
+        }
+
+        $decoded = json_decode($cachedPayload, true);
+        if (!is_array($decoded)) {
+            continue;
+        }
+
+        $map[$key] = doctrine_ai_briefing_normalize_row($decoded);
+    }
+
+    $missingTargets = [];
+    foreach ($normalizedTargets as $key => $target) {
+        if (!array_key_exists($key, $map)) {
+            $missingTargets[] = $target;
+        }
+    }
+
+    if ($missingTargets !== []) {
+        try {
+            foreach (db_doctrine_ai_briefings_get_many($missingTargets) as $row) {
+                $key = (string) ($row['entity_type'] ?? '') . ':' . (int) ($row['entity_id'] ?? 0);
+                $map[$key] = doctrine_ai_briefing_normalize_row($row);
+                supplycore_redis_set_json(doctrine_ai_cache_key((string) ($row['entity_type'] ?? ''), (int) ($row['entity_id'] ?? 0)), $row, 300);
+            }
+        } catch (Throwable) {
+        }
+    }
+
+    return array_filter($map, static fn (mixed $value): bool => is_array($value));
+}
+
+function doctrine_ai_recent_change_summary_for_group(array $group): string
+{
+    $parts = [];
+    $fitGapCount = max(0, (int) ($group['fit_gap_count'] ?? 0));
+    $pressureFitCount = max(0, (int) ($group['pressure_fit_count'] ?? 0));
+    $trendingDownFits = max(0, (int) ($group['trending_down_fit_count'] ?? 0));
+
+    if ($fitGapCount > 0) {
+        $parts[] = doctrine_format_quantity($fitGapCount) . ' fits are currently below target coverage.';
+    }
+    if ($pressureFitCount > 0) {
+        $parts[] = doctrine_format_quantity($pressureFitCount) . ' fits show non-stable resupply pressure.';
+    }
+    if ($trendingDownFits > 0) {
+        $parts[] = doctrine_format_quantity($trendingDownFits) . ' fits are trending down.';
+    }
+
+    return $parts !== [] ? implode(' ', $parts) : 'No material group-level change is currently flagged by deterministic signals.';
+}
+
+function doctrine_ai_previous_recommendation_fact(?array $briefing): ?array
+{
+    if (!is_array($briefing)) {
+        return null;
+    }
+
+    $action = trim((string) ($briefing['action_text'] ?? ''));
+    $priority = trim((string) ($briefing['priority_level'] ?? ''));
+    if ($action === '' && $priority === '') {
+        return null;
+    }
+
+    return [
+        'priority' => $priority !== '' ? $priority : null,
+        'action' => $action !== '' ? $action : null,
+        'computed_at' => ($briefing['computed_at'] ?? null) !== null ? (string) $briefing['computed_at'] : null,
+    ];
+}
+
+function doctrine_ai_source_payload_for_fit(array $fit, ?array $previousBriefing = null): array
+{
+    $supply = is_array($fit['supply'] ?? null) ? $fit['supply'] : [];
+    $recentChange = is_array($fit['snapshot_change'] ?? null)
+        ? (string) (($fit['snapshot_change']['summary'] ?? '') ?: 'No prior doctrine snapshot change is available.')
+        : 'No prior doctrine snapshot change is available.';
+
+    return [
+        'entity_type' => 'fit',
+        'entity_id' => (int) ($fit['id'] ?? 0),
+        'name' => trim((string) ($fit['fit_name'] ?? ('Fit #' . (int) ($fit['id'] ?? 0)))),
+        'group_name' => implode(', ', (array) ($fit['group_names'] ?? [])),
+        'readiness_state' => (string) ($supply['readiness_label'] ?? $supply['status_label'] ?? 'Market ready'),
+        'resupply_pressure' => (string) ($supply['resupply_pressure_label'] ?? 'Stable'),
+        'complete_fits' => (int) ($supply['complete_fits_available'] ?? 0),
+        'target_fits' => (int) ($supply['recommended_target_fit_count'] ?? 0),
+        'fit_gap' => (int) ($supply['gap_to_target_fit_count'] ?? 0),
+        'bottleneck_item' => ($supply['bottleneck_item_name'] ?? null) !== null ? (string) $supply['bottleneck_item_name'] : null,
+        'bottleneck_quantity' => (int) ($supply['bottleneck_quantity'] ?? 0),
+        'loss_24h' => max((int) ($supply['recent_hull_losses_24h'] ?? 0), (int) ($supply['recent_item_fit_losses_24h'] ?? 0)),
+        'loss_7d' => max((int) ($supply['recent_hull_losses_7d'] ?? 0), (int) ($supply['recent_item_fit_losses_7d'] ?? 0)),
+        'depletion_signal' => (string) ($supply['depletion_state'] ?? 'stable'),
+        'recent_change_summary' => $recentChange,
+        'current_recommendation' => (string) ($supply['recommendation_text'] ?? ''),
+        'previous_recommendation' => doctrine_ai_previous_recommendation_fact($previousBriefing),
+    ];
+}
+
+function doctrine_ai_source_payload_for_group(array $group, ?array $previousBriefing = null): array
+{
+    $fits = array_values((array) ($group['fits'] ?? []));
+    $loss24h = 0;
+    $loss7d = 0;
+    $topBottleneckItem = null;
+    $topBottleneckQty = 0;
+    $topScore = -1.0;
+    $depletionSignal = 'stable';
+
+    foreach ($fits as $fit) {
+        $supply = is_array($fit['supply'] ?? null) ? $fit['supply'] : [];
+        $loss24h = max($loss24h, max((int) ($supply['recent_hull_losses_24h'] ?? 0), (int) ($supply['recent_item_fit_losses_24h'] ?? 0)));
+        $loss7d = max($loss7d, max((int) ($supply['recent_hull_losses_7d'] ?? 0), (int) ($supply['recent_item_fit_losses_7d'] ?? 0)));
+        $score = (float) (($supply['driver_scores']['total'] ?? 0.0));
+        if ($score > $topScore) {
+            $topScore = $score;
+            $topBottleneckItem = ($supply['bottleneck_item_name'] ?? null) !== null ? (string) $supply['bottleneck_item_name'] : null;
+            $topBottleneckQty = (int) ($supply['bottleneck_quantity'] ?? 0);
+            $depletionSignal = (string) ($supply['depletion_state'] ?? 'stable');
+        }
+    }
+
+    return [
+        'entity_type' => 'group',
+        'entity_id' => (int) ($group['id'] ?? 0),
+        'name' => trim((string) ($group['group_name'] ?? ('Group #' . (int) ($group['id'] ?? 0)))),
+        'readiness_state' => (string) ($group['status_label'] ?? 'Market ready'),
+        'resupply_pressure' => (string) ($group['pressure_label'] ?? 'Stable'),
+        'complete_fits' => (int) ($group['complete_fits_available'] ?? 0),
+        'target_fits' => (int) ($group['target_fit_count'] ?? 0),
+        'fit_gap' => (int) ($group['fit_gap_count'] ?? 0),
+        'bottleneck_item' => $topBottleneckItem,
+        'bottleneck_quantity' => $topBottleneckQty,
+        'loss_24h' => $loss24h,
+        'loss_7d' => $loss7d,
+        'depletion_signal' => $depletionSignal,
+        'recent_change_summary' => doctrine_ai_recent_change_summary_for_group($group),
+        'current_recommendation' => (string) ($group['combined_status_label'] ?? ''),
+        'previous_recommendation' => doctrine_ai_previous_recommendation_fact($previousBriefing),
+    ];
+}
+
+function doctrine_ai_system_prompt(): string
+{
+    return 'You are an alliance logistics analyst. Use only the provided facts. Do not invent data. Keep output concise and operational. Return JSON only.';
+}
+
+function doctrine_ai_output_schema(): array
+{
+    return [
+        'type' => 'object',
+        'required' => ['headline', 'summary', 'action', 'priority'],
+        'properties' => [
+            'headline' => ['type' => 'string'],
+            'summary' => ['type' => 'string'],
+            'action' => ['type' => 'string'],
+            'priority' => ['type' => 'string', 'enum' => ['low', 'medium', 'high', 'critical']],
+        ],
+        'additionalProperties' => false,
+    ];
+}
+
+function doctrine_ai_user_prompt(array $sourcePayload): string
+{
+    return "Summarize this doctrine logistics state.\nFacts:\n"
+        . json_encode($sourcePayload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+}
+
+function doctrine_ai_validate_response(array $response): array
+{
+    $headline = trim((string) ($response['headline'] ?? ''));
+    $summary = trim((string) ($response['summary'] ?? ''));
+    $action = trim((string) ($response['action'] ?? ''));
+    $priority = trim((string) ($response['priority'] ?? ''));
+
+    if ($headline === '' || $summary === '' || $action === '') {
+        throw new RuntimeException('AI response is missing one or more required fields.');
+    }
+
+    if (!in_array($priority, ['low', 'medium', 'high', 'critical'], true)) {
+        throw new RuntimeException('AI response priority is invalid.');
+    }
+
+    return [
+        'headline' => mb_substr($headline, 0, 255),
+        'summary' => mb_substr($summary, 0, 1200),
+        'action' => mb_substr($action, 0, 1200),
+        'priority' => $priority,
+    ];
+}
+
+function doctrine_ai_fallback_response(array $sourcePayload, string $reason): array
+{
+    $gap = max(0, (int) ($sourcePayload['fit_gap'] ?? 0));
+    $pressure = (string) ($sourcePayload['resupply_pressure'] ?? 'Stable');
+    $readiness = (string) ($sourcePayload['readiness_state'] ?? 'Market ready');
+    $name = trim((string) ($sourcePayload['name'] ?? 'Doctrine item'));
+    $bottleneckItem = trim((string) ($sourcePayload['bottleneck_item'] ?? ''));
+
+    $priority = 'low';
+    if ($gap >= 3 || str_contains(mb_strtolower($pressure), 'urgent') || str_contains(mb_strtolower($readiness), 'critical')) {
+        $priority = 'critical';
+    } elseif ($gap > 0 || str_contains(mb_strtolower($pressure), 'soon')) {
+        $priority = 'high';
+    } elseif (str_contains(mb_strtolower($pressure), 'elevated')) {
+        $priority = 'medium';
+    }
+
+    return [
+        'headline' => $name . ': ' . ($gap > 0 ? doctrine_format_quantity($gap) . ' fit gap' : $pressure),
+        'summary' => trim($readiness . ' with ' . $pressure . '. ' . ($bottleneckItem !== '' ? ('Primary bottleneck remains ' . $bottleneckItem . '.') : 'Use deterministic doctrine metrics for precise quantities.')),
+        'action' => $gap > 0
+            ? 'Prioritize the current bottleneck and close the remaining fit gap before the next doctrine review.'
+            : 'Monitor this doctrine state in the next background refresh and verify deterministic stock numbers before acting.',
+        'priority' => $priority,
+        '_fallback_reason' => $reason,
+    ];
+}
+
+function supplycore_ai_ollama_generate_json(array $sourcePayload): array
+{
+    $config = supplycore_ai_ollama_config();
+    if ($config['enabled'] !== true) {
+        throw new RuntimeException('Ollama integration is disabled.');
+    }
+
+    $endpoint = $config['url'] . '/generate';
+    $requestPayload = [
+        'model' => $config['model'],
+        'stream' => false,
+        'system' => doctrine_ai_system_prompt(),
+        'prompt' => doctrine_ai_user_prompt($sourcePayload),
+        'format' => doctrine_ai_output_schema(),
+        'options' => [
+            'temperature' => 0.1,
+        ],
+    ];
+
+    $response = http_post_json($endpoint, [], $requestPayload, $config['timeout']);
+    $status = (int) ($response['status'] ?? 0);
+    $json = is_array($response['json'] ?? null) ? $response['json'] : [];
+    if ($status < 200 || $status >= 300) {
+        throw new RuntimeException('Ollama returned HTTP ' . $status . '.');
+    }
+
+    $rawModelResponse = trim((string) ($json['response'] ?? ''));
+    if ($rawModelResponse === '') {
+        throw new RuntimeException('Ollama returned an empty response payload.');
+    }
+
+    $decoded = json_decode($rawModelResponse, true);
+    if (!is_array($decoded)) {
+        throw new RuntimeException('Ollama returned malformed JSON content.');
+    }
+
+    return doctrine_ai_validate_response($decoded);
+}
+
+function doctrine_ai_store_briefing(array $sourcePayload, array $briefing, string $status, ?string $errorMessage = null): bool
+{
+    $entityType = (string) ($sourcePayload['entity_type'] ?? '');
+    $entityId = max(0, (int) ($sourcePayload['entity_id'] ?? 0));
+    if (!in_array($entityType, ['fit', 'group'], true) || $entityId <= 0) {
+        return false;
+    }
+
+    $modelName = $status === 'ready' ? (string) supplycore_ai_ollama_config()['model'] : 'deterministic-fallback';
+    $sourcePayloadJson = json_encode($sourcePayload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    $responseJson = json_encode($briefing, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    $row = [
+        'entity_type' => $entityType,
+        'entity_id' => $entityId,
+        'generation_status' => $status,
+        'computed_at' => gmdate('Y-m-d H:i:s'),
+        'model_name' => $modelName,
+        'headline' => (string) ($briefing['headline'] ?? ''),
+        'summary' => (string) ($briefing['summary'] ?? ''),
+        'action_text' => (string) ($briefing['action'] ?? ''),
+        'priority_level' => (string) ($briefing['priority'] ?? 'medium'),
+        'source_payload_json' => is_string($sourcePayloadJson) ? $sourcePayloadJson : null,
+        'response_json' => is_string($responseJson) ? $responseJson : null,
+        'error_message' => $errorMessage,
+    ];
+
+    $saved = db_doctrine_ai_briefing_upsert($row);
+    if ($saved) {
+        $dbRow = db_doctrine_ai_briefing_get($entityType, $entityId);
+        if (is_array($dbRow)) {
+            supplycore_redis_set_json(doctrine_ai_cache_key($entityType, $entityId), $dbRow, 300);
+        }
+    }
+
+    return $saved;
+}
+
+function doctrine_ai_candidate_score(array $entity, string $entityType): float
+{
+    if ($entityType === 'fit') {
+        $supply = is_array($entity['supply'] ?? null) ? $entity['supply'] : [];
+        $priority = (float) (($supply['driver_scores']['total'] ?? 0.0));
+        $gap = (int) ($supply['gap_to_target_fit_count'] ?? 0);
+        $pressureWeight = match ((string) ($supply['resupply_pressure_state'] ?? 'stable')) {
+            'urgent_resupply' => 40,
+            'resupply_soon' => 24,
+            'elevated' => 10,
+            default => 0,
+        };
+        $readinessWeight = match ((string) ($supply['readiness_state'] ?? 'market_ready')) {
+            'critical_gap' => 35,
+            'partial_gap' => 18,
+            default => 0,
+        };
+
+        return $priority + ($gap * 12) + $pressureWeight + $readinessWeight;
+    }
+
+    $gap = (int) ($entity['fit_gap_count'] ?? 0);
+    $pressureWeight = match ((string) ($entity['pressure_state'] ?? 'stable')) {
+        'urgent_resupply' => 40,
+        'resupply_soon' => 24,
+        'elevated' => 10,
+        default => 0,
+    };
+    $readinessWeight = match ((string) ($entity['status'] ?? 'market_ready')) {
+        'critical_gap' => 35,
+        'partial_gap' => 18,
+        default => 0,
+    };
+
+    return ($gap * 14) + $pressureWeight + $readinessWeight + ((int) ($entity['pressure_fit_count'] ?? 0) * 3);
+}
+
+function doctrine_ai_select_candidates(array $snapshot, int $limit = 8): array
+{
+    $candidates = [];
+
+    foreach ((array) ($snapshot['fits'] ?? []) as $fit) {
+        $fitId = (int) ($fit['id'] ?? 0);
+        if ($fitId <= 0) {
+            continue;
+        }
+
+        $score = doctrine_ai_candidate_score($fit, 'fit');
+        if ($score <= 0) {
+            continue;
+        }
+
+        $candidates[] = [
+            'entity_type' => 'fit',
+            'entity_id' => $fitId,
+            'score' => $score,
+            'entity' => $fit,
+        ];
+    }
+
+    foreach ((array) ($snapshot['groups'] ?? []) as $group) {
+        $groupId = (int) ($group['id'] ?? 0);
+        if ($groupId <= 0) {
+            continue;
+        }
+
+        $score = doctrine_ai_candidate_score($group, 'group');
+        if ($score <= 0) {
+            continue;
+        }
+
+        $candidates[] = [
+            'entity_type' => 'group',
+            'entity_id' => $groupId,
+            'score' => $score,
+            'entity' => $group,
+        ];
+    }
+
+    usort($candidates, static function (array $a, array $b): int {
+        return ((float) ($b['score'] ?? 0.0) <=> (float) ($a['score'] ?? 0.0))
+            ?: strcmp((string) ($a['entity_type'] ?? ''), (string) ($b['entity_type'] ?? ''))
+            ?: ((int) ($a['entity_id'] ?? 0) <=> (int) ($b['entity_id'] ?? 0));
+    });
+
+    return array_slice($candidates, 0, max(1, min(20, $limit)));
+}
+
+function rebuild_ai_briefings_job_result(string $reason = 'manual'): array
+{
+    $snapshot = doctrine_snapshot_cache_payload();
+    if ($snapshot === null) {
+        $snapshot = doctrine_refresh_intelligence($reason . ':bootstrap');
+    }
+
+    $config = supplycore_ai_ollama_config();
+    if ($config['enabled'] !== true) {
+        return sync_result_shape() + [
+            'rows_seen' => 0,
+            'rows_written' => 0,
+            'warnings' => ['Ollama integration is disabled.'],
+            'meta' => [
+                'outcome_reason' => 'AI briefing rebuild skipped because OLLAMA_ENABLED is disabled.',
+            ],
+        ];
+    }
+
+    $candidates = doctrine_ai_select_candidates($snapshot, 8);
+    $processed = 0;
+    $written = 0;
+    $fallbacks = 0;
+
+    foreach ($candidates as $candidate) {
+        $entityType = (string) ($candidate['entity_type'] ?? '');
+        $entityId = (int) ($candidate['entity_id'] ?? 0);
+        $entity = is_array($candidate['entity'] ?? null) ? $candidate['entity'] : [];
+        if (!in_array($entityType, ['fit', 'group'], true) || $entityId <= 0 || $entity === []) {
+            continue;
+        }
+
+        $processed++;
+        $previousBriefing = doctrine_ai_briefing_get($entityType, $entityId);
+        $sourcePayload = $entityType === 'fit'
+            ? doctrine_ai_source_payload_for_fit($entity, $previousBriefing)
+            : doctrine_ai_source_payload_for_group($entity, $previousBriefing);
+
+        supplycore_ai_log('briefing.attempt', [
+            'entity_type' => $entityType,
+            'entity_id' => $entityId,
+            'reason' => $reason,
+            'model' => $config['model'],
+        ]);
+
+        try {
+            $briefing = supplycore_ai_ollama_generate_json($sourcePayload);
+            doctrine_ai_store_briefing($sourcePayload, $briefing, 'ready');
+            $written++;
+            supplycore_ai_log('briefing.success', [
+                'entity_type' => $entityType,
+                'entity_id' => $entityId,
+                'priority' => (string) ($briefing['priority'] ?? 'medium'),
+            ]);
+        } catch (Throwable $exception) {
+            $fallbacks++;
+            $fallback = doctrine_ai_fallback_response($sourcePayload, $exception->getMessage());
+            doctrine_ai_store_briefing($sourcePayload, $fallback, 'fallback', $exception->getMessage());
+            supplycore_ai_log('briefing.failure', [
+                'entity_type' => $entityType,
+                'entity_id' => $entityId,
+                'error' => $exception->getMessage(),
+            ]);
+        }
+    }
+
+    dashboard_refresh_summary($reason . ':ai-briefings');
+    supplycore_cache_bust(['dashboard', 'doctrine']);
+
+    return sync_result_shape() + [
+        'rows_seen' => $processed,
+        'rows_written' => $written + $fallbacks,
+        'cursor' => 'doctrine_ai_briefings:' . gmdate('Y-m-d H:i:s'),
+        'checksum' => sync_checksum([
+            'processed' => $processed,
+            'written' => $written,
+            'fallbacks' => $fallbacks,
+            'reason' => $reason,
+            'model' => $config['model'],
+        ]),
+        'meta' => [
+            'outcome_reason' => 'Doctrine AI briefings were rebuilt in the background from compact deterministic doctrine facts.',
+            'processed_candidates' => $processed,
+            'fallback_count' => $fallbacks,
+            'model_name' => $config['model'],
+        ],
+    ];
+}
+
+function doctrine_ai_dashboard_briefings(int $limit = 6): array
+{
+    try {
+        $rows = db_doctrine_ai_briefings_top($limit);
+    } catch (Throwable) {
+        $rows = [];
+    }
+
+    $briefings = [];
+    foreach ($rows as $row) {
+        $normalized = doctrine_ai_briefing_normalize_row($row);
+        if ($normalized !== null) {
+            $briefings[] = $normalized;
+        }
+    }
+
+    if ($briefings === []) {
+        return [];
+    }
+
+    $snapshot = doctrine_snapshot_cache_payload();
+    $fitsById = [];
+    foreach ((array) ($snapshot['fits'] ?? []) as $fit) {
+        $fitsById[(int) ($fit['id'] ?? 0)] = $fit;
+    }
+    $groupsById = [];
+    foreach ((array) ($snapshot['groups'] ?? []) as $group) {
+        $groupsById[(int) ($group['id'] ?? 0)] = $group;
+    }
+
+    foreach ($briefings as &$briefing) {
+        if (($briefing['entity_type'] ?? '') === 'fit') {
+            $fit = $fitsById[(int) ($briefing['entity_id'] ?? 0)] ?? [];
+            $briefing['entity_name'] = (string) ($fit['fit_name'] ?? ('Fit #' . (int) ($briefing['entity_id'] ?? 0)));
+            $briefing['context_name'] = implode(', ', (array) ($fit['group_names'] ?? []));
+            $briefing['href'] = '/doctrine/fit?fit_id=' . (int) ($briefing['entity_id'] ?? 0);
+        } else {
+            $group = $groupsById[(int) ($briefing['entity_id'] ?? 0)] ?? [];
+            $briefing['entity_name'] = (string) ($group['group_name'] ?? ('Group #' . (int) ($briefing['entity_id'] ?? 0)));
+            $briefing['context_name'] = doctrine_format_quantity((int) ($group['fit_count'] ?? 0)) . ' fits';
+            $briefing['href'] = '/doctrine/group?group_id=' . (int) ($briefing['entity_id'] ?? 0);
+        }
+    }
+    unset($briefing);
+
+    usort($briefings, static function (array $a, array $b): int {
+        return ((int) ($b['priority_rank'] ?? 0) <=> (int) ($a['priority_rank'] ?? 0))
+            ?: strcmp((string) ($b['computed_at'] ?? ''), (string) ($a['computed_at'] ?? ''));
+    });
+
+    return array_slice($briefings, 0, $limit);
 }
