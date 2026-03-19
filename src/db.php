@@ -2909,13 +2909,14 @@ function db_ref_item_types_by_names(array $names): array
         return [];
     }
 
-    $placeholders = implode(',', array_fill(0, count($safeNames), '?'));
+    $normalizedNames = array_map(static fn (string $name): string => mb_strtolower($name), $safeNames);
+    $placeholders = implode(',', array_fill(0, count($normalizedNames), '?'));
 
     return db_select(
         "SELECT type_id, type_name, category_id, group_id, market_group_id, meta_group_id, description, published, volume
          FROM ref_item_types
-         WHERE LOWER(type_name) IN ($placeholders)",
-        array_map(static fn (string $name): string => mb_strtolower($name), $safeNames)
+         WHERE type_name_normalized IN ($placeholders)",
+        $normalizedNames
     );
 }
 
@@ -3071,6 +3072,16 @@ function db_column_exists(string $tableName, string $columnName): bool
     return $row !== null;
 }
 
+function db_index_exists(string $tableName, string $indexName): bool
+{
+    $row = db_select_one(
+        'SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ? LIMIT 1',
+        [$tableName, $indexName]
+    );
+
+    return $row !== null;
+}
+
 function db_foreign_key_delete_rule(string $constraintName): ?string
 {
     $row = db_select_one(
@@ -3132,6 +3143,14 @@ function item_scope_db_ensure_schema(): void
     if (db_table_exists('ref_item_types') && !db_column_exists('ref_item_types', 'meta_group_id')) {
         db()->exec('ALTER TABLE ref_item_types ADD COLUMN meta_group_id INT UNSIGNED DEFAULT NULL AFTER market_group_id');
         db()->exec('ALTER TABLE ref_item_types ADD KEY idx_meta_group_id (meta_group_id)');
+    }
+
+    if (db_table_exists('ref_item_types') && !db_column_exists('ref_item_types', 'type_name_normalized')) {
+        db()->exec('ALTER TABLE ref_item_types ADD COLUMN type_name_normalized VARCHAR(255) GENERATED ALWAYS AS (LOWER(type_name)) STORED AFTER type_name');
+    }
+
+    if (db_table_exists('ref_item_types') && !db_index_exists('ref_item_types', 'idx_type_name_normalized')) {
+        db()->exec('ALTER TABLE ref_item_types ADD KEY idx_type_name_normalized (type_name_normalized)');
     }
 
     $ensured = true;
