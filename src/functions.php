@@ -10389,6 +10389,38 @@ function doctrine_html_collect_texts(DOMXPath $xpath, array $queries, int $maxLe
     return array_values($texts);
 }
 
+function doctrine_html_collect_block_texts(DOMXPath $xpath, array $queries, int $maxLength = 20000, ?DOMNode $contextNode = null): array
+{
+    $texts = [];
+
+    foreach ($queries as $query) {
+        $nodes = @$xpath->query($query, $contextNode);
+        if (!$nodes instanceof DOMNodeList) {
+            continue;
+        }
+
+        foreach ($nodes as $node) {
+            if (!$node instanceof DOMNode) {
+                continue;
+            }
+
+            $text = trim(str_replace(["\r\n", "\r"], "\n", (string) $node->textContent));
+            if ($text === '') {
+                continue;
+            }
+
+            $key = doctrine_normalize_label(preg_replace('/\s+/', ' ', $text) ?? $text);
+            if ($key === '') {
+                continue;
+            }
+
+            $texts[$key] = mb_substr($text, 0, $maxLength);
+        }
+    }
+
+    return array_values($texts);
+}
+
 function doctrine_html_first_text(DOMXPath $xpath, array $queries, ?DOMNode $contextNode = null): ?string
 {
     foreach (doctrine_html_collect_texts($xpath, $queries, 1000, $contextNode) as $text) {
@@ -10439,10 +10471,13 @@ function doctrine_extract_buyall_payload_from_html(string $html, ?DOMXPath $xpat
             }
         }
 
-        foreach (doctrine_html_collect_texts($xpath, [
+        foreach (doctrine_html_collect_block_texts($xpath, [
             '//textarea[contains(@name, "buy") or contains(@id, "buy") or contains(@class, "buy")]',
             '//pre[contains(@class, "buy") or contains(@id, "buy")]',
             '//code[contains(@class, "buy") or contains(@id, "buy")]',
+            '//textarea',
+            '//pre',
+            '//code',
         ], 20000) as $value) {
             $candidates[] = html_entity_decode($value, ENT_QUOTES | ENT_HTML5);
         }
@@ -10465,6 +10500,10 @@ function doctrine_extract_buyall_payload_from_html(string $html, ?DOMXPath $xpat
             continue;
         }
 
+        if (preg_match('/^\[[^\],]+\s*,\s*[^\]]+\]$/', $lines[0]) === 1) {
+            continue;
+        }
+
         return implode("\n", $lines);
     }
 
@@ -10483,16 +10522,19 @@ function doctrine_extract_eft_payload_from_html(string $html, ?DOMXPath $xpath =
             }
         }
 
-        foreach (doctrine_html_collect_texts($xpath, [
+        foreach (doctrine_html_collect_block_texts($xpath, [
             '//textarea[contains(@name, "eft") or contains(@id, "eft") or contains(@class, "eft")]',
             '//pre[contains(@class, "eft") or contains(@id, "eft")]',
             '//code[contains(@class, "eft") or contains(@id, "eft")]',
+            '//textarea',
+            '//pre',
+            '//code',
         ], 20000) as $value) {
             $candidates[] = html_entity_decode($value, ENT_QUOTES | ENT_HTML5);
         }
     }
 
-    if (preg_match_all('/\[[^\],]+\s*,\s*[^\]]+\](?:\R.+)+/m', html_entity_decode($html, ENT_QUOTES | ENT_HTML5), $matches) === 1 || !empty($matches[0])) {
+    if (preg_match_all('/\[[^\],]+\s*,\s*[^\]]+\](?:\R.*)+/m', html_entity_decode($html, ENT_QUOTES | ENT_HTML5), $matches) === 1 || !empty($matches[0])) {
         foreach ((array) ($matches[0] ?? []) as $value) {
             $candidates[] = trim((string) $value);
         }
@@ -10508,9 +10550,50 @@ function doctrine_extract_eft_payload_from_html(string $html, ?DOMXPath $xpath =
     return null;
 }
 
+function doctrine_extract_html_fit_title(DOMXPath $xpath): string
+{
+    $candidates = doctrine_html_collect_texts($xpath, [
+        '//*[@data-fit-title]',
+        '//*[contains(@class, "fit-title")]',
+        '//main//h1',
+        '//main//h2',
+        '//main//h3',
+        '//main//h4',
+        '//h1',
+        '//h2',
+        '//h3',
+        '//h4[contains(@class, "modal-title")]',
+        '//title',
+    ], 255);
+
+    $ignored = [
+        'fit', 'fitting', 'fittings', 'fit information', 'fittings and doctrines',
+        'view all fits', 'view all categories', 'copy fit (eft)', 'copy buy all',
+        'save to eve', 'winter coalition - english auth', 'fit - winter coalition - english auth',
+    ];
+
+    foreach ($candidates as $candidate) {
+        $normalized = doctrine_normalize_label($candidate);
+        if ($normalized === '' || in_array($normalized, $ignored, true)) {
+            continue;
+        }
+
+        if (mb_strlen($candidate) < 6 || mb_strlen($candidate) > 190) {
+            continue;
+        }
+
+        return trim($candidate);
+    }
+
+    return '';
+}
+
 function doctrine_extract_html_group_labels(DOMXPath $xpath): array
 {
     $labels = doctrine_html_collect_texts($xpath, [
+        '//dt[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "doctrine")]/following-sibling::dd[1]//a',
+        '//dt[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "doctrine")]/following-sibling::dd[1]//*[self::a or self::span or self::li]',
+        '//*[self::h1 or self::h2 or self::h3 or self::h4][contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "doctrine")]/following-sibling::*[1]//a',
         '//*[contains(@class, "breadcrumb")]//a',
         '//*[contains(@class, "group")]//a',
         '//*[contains(@class, "group")][self::a or self::span or self::div]',
@@ -10521,12 +10604,13 @@ function doctrine_extract_html_group_labels(DOMXPath $xpath): array
         '//*[contains(@class, "chip")]//*[self::a or self::span]',
         '//*[contains(@class, "badge")][self::a or self::span or self::div]',
         '//*[contains(@class, "badge")]//*[self::a or self::span]',
-        '//a[contains(@href, "doctrine") or contains(@href, "group")]',
+        '//a[contains(@href, "/doctrine/") or contains(@href, "/group/")]',
     ], 190);
 
     $ignored = [
         'buy all', 'copy buy all', 'copy eft', 'copy fit', 'back', 'doctrine fits',
-        'fit', 'fitting', 'eft', 'copy', 'clipboard',
+        'fit', 'fitting', 'fittings', 'eft', 'copy', 'clipboard', 'doctrines',
+        'fittings and doctrines', 'view all fits', 'view all categories', 'pk umbrella fits',
     ];
 
     return array_values(array_filter($labels, static function (string $label) use ($ignored): bool {
@@ -10634,13 +10718,7 @@ function doctrine_parse_html_fit_page(string $html, string $sourceReference = ''
         throw new RuntimeException('Uploaded HTML could not be parsed.');
     }
 
-    $fitTitle = doctrine_html_first_text($xpath, [
-        '//main//h1',
-        '//header//h1',
-        '//*[@data-fit-title]',
-        '//*[contains(@class, "fit-title")]',
-        '//title',
-    ]) ?? '';
+    $fitTitle = doctrine_extract_html_fit_title($xpath);
 
     $buyAllPayload = doctrine_extract_buyall_payload_from_html($html, $xpath);
     $eftPayload = doctrine_extract_eft_payload_from_html($html, $xpath);
