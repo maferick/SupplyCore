@@ -401,6 +401,89 @@ function db_ensure_table_column(string $table, string $columnName, string $defin
     ));
 }
 
+function db_table_has_primary_key(string $table): bool
+{
+    $row = db_select_one(
+        'SELECT 1
+         FROM information_schema.table_constraints
+         WHERE table_schema = DATABASE()
+           AND table_name = ?
+           AND constraint_type = \'PRIMARY KEY\'
+         LIMIT 1',
+        [$table]
+    );
+
+    return $row !== null;
+}
+
+function db_table_column_is_nullable(string $table, string $columnName): ?bool
+{
+    $row = db_select_one(
+        'SELECT is_nullable
+         FROM information_schema.columns
+         WHERE table_schema = DATABASE()
+           AND table_name = ?
+           AND column_name = ?
+         LIMIT 1',
+        [$table, $columnName]
+    );
+
+    if ($row === null) {
+        return null;
+    }
+
+    return strtoupper((string) ($row['is_nullable'] ?? '')) === 'YES';
+}
+
+function db_time_series_nullable_dimension_schema_ensure(
+    string $table,
+    array $nullableColumns,
+    array $generatedColumns,
+    string $uniqueIndexName,
+    string $uniqueIndexDefinition
+): void {
+    $needsMigration = db_table_has_primary_key($table) || !db_table_has_index($table, $uniqueIndexName);
+
+    foreach (array_keys($generatedColumns) as $columnName) {
+        if (!db_table_has_column($table, $columnName)) {
+            $needsMigration = true;
+            break;
+        }
+    }
+
+    if (!$needsMigration) {
+        foreach (array_keys($nullableColumns) as $columnName) {
+            if (db_table_column_is_nullable($table, $columnName) === false) {
+                $needsMigration = true;
+                break;
+            }
+        }
+    }
+
+    if (!$needsMigration) {
+        return;
+    }
+
+    if (db_table_has_primary_key($table)) {
+        db()->exec('ALTER TABLE ' . db_validate_identifier($table) . ' DROP PRIMARY KEY');
+    }
+
+    foreach ($nullableColumns as $columnName => $definitionSql) {
+        db()->exec(sprintf(
+            'ALTER TABLE %s MODIFY COLUMN %s %s',
+            db_validate_identifier($table),
+            db_validate_identifier($columnName),
+            $definitionSql
+        ));
+    }
+
+    foreach ($generatedColumns as $columnName => $definitionSql) {
+        db_ensure_table_column($table, $columnName, $definitionSql);
+    }
+
+    db_ensure_table_index($table, $uniqueIndexName, $uniqueIndexDefinition);
+}
+
 function db_time_series_analytics_ensure_schema(): void
 {
     static $ensured = false;
@@ -418,12 +501,15 @@ function db_time_series_analytics_ensure_schema(): void
             doctrine_fit_id INT UNSIGNED DEFAULT NULL,
             doctrine_group_id INT UNSIGNED DEFAULT NULL,
             hull_type_id INT UNSIGNED DEFAULT NULL,
+            doctrine_fit_key INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_fit_id, 0)) STORED,
+            doctrine_group_key INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_group_id, 0)) STORED,
+            hull_type_key INT UNSIGNED GENERATED ALWAYS AS (COALESCE(hull_type_id, 0)) STORED,
             loss_count INT UNSIGNED NOT NULL DEFAULT 0,
             quantity_lost BIGINT UNSIGNED NOT NULL DEFAULT 0,
             victim_count INT UNSIGNED NOT NULL DEFAULT 0,
             killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (bucket_start, type_id, doctrine_fit_id, doctrine_group_id, hull_type_id),
+            UNIQUE KEY uniq_killmail_item_loss_1h_dimensions (bucket_start, type_id, doctrine_fit_key, doctrine_group_key, hull_type_key),
             KEY idx_killmail_item_loss_1h_bucket_type (bucket_start, type_id),
             KEY idx_killmail_item_loss_1h_type_bucket (type_id, bucket_start),
             KEY idx_killmail_item_loss_1h_bucket (bucket_start),
@@ -437,12 +523,15 @@ function db_time_series_analytics_ensure_schema(): void
             doctrine_fit_id INT UNSIGNED DEFAULT NULL,
             doctrine_group_id INT UNSIGNED DEFAULT NULL,
             hull_type_id INT UNSIGNED DEFAULT NULL,
+            doctrine_fit_key INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_fit_id, 0)) STORED,
+            doctrine_group_key INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_group_id, 0)) STORED,
+            hull_type_key INT UNSIGNED GENERATED ALWAYS AS (COALESCE(hull_type_id, 0)) STORED,
             loss_count INT UNSIGNED NOT NULL DEFAULT 0,
             quantity_lost BIGINT UNSIGNED NOT NULL DEFAULT 0,
             victim_count INT UNSIGNED NOT NULL DEFAULT 0,
             killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (bucket_start, type_id, doctrine_fit_id, doctrine_group_id, hull_type_id),
+            UNIQUE KEY uniq_killmail_item_loss_1d_dimensions (bucket_start, type_id, doctrine_fit_key, doctrine_group_key, hull_type_key),
             KEY idx_killmail_item_loss_1d_bucket_type (bucket_start, type_id),
             KEY idx_killmail_item_loss_1d_type_bucket (type_id, bucket_start),
             KEY idx_killmail_item_loss_1d_bucket (bucket_start),
@@ -455,11 +544,13 @@ function db_time_series_analytics_ensure_schema(): void
             hull_type_id INT UNSIGNED NOT NULL,
             doctrine_fit_id INT UNSIGNED DEFAULT NULL,
             doctrine_group_id INT UNSIGNED DEFAULT NULL,
+            doctrine_fit_key INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_fit_id, 0)) STORED,
+            doctrine_group_key INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_group_id, 0)) STORED,
             loss_count INT UNSIGNED NOT NULL DEFAULT 0,
             victim_count INT UNSIGNED NOT NULL DEFAULT 0,
             killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (bucket_start, hull_type_id, doctrine_fit_id, doctrine_group_id),
+            UNIQUE KEY uniq_killmail_hull_loss_1d_dimensions (bucket_start, hull_type_id, doctrine_fit_key, doctrine_group_key),
             KEY idx_killmail_hull_loss_1d_bucket (bucket_start),
             KEY idx_killmail_hull_loss_1d_hull_bucket (hull_type_id, bucket_start),
             KEY idx_killmail_hull_loss_1d_group_bucket (doctrine_group_id, bucket_start),
@@ -470,12 +561,15 @@ function db_time_series_analytics_ensure_schema(): void
             doctrine_fit_id INT UNSIGNED DEFAULT NULL,
             doctrine_group_id INT UNSIGNED DEFAULT NULL,
             hull_type_id INT UNSIGNED DEFAULT NULL,
+            doctrine_fit_key INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_fit_id, 0)) STORED,
+            doctrine_group_key INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_group_id, 0)) STORED,
+            hull_type_key INT UNSIGNED GENERATED ALWAYS AS (COALESCE(hull_type_id, 0)) STORED,
             loss_count INT UNSIGNED NOT NULL DEFAULT 0,
             quantity_lost BIGINT UNSIGNED NOT NULL DEFAULT 0,
             victim_count INT UNSIGNED NOT NULL DEFAULT 0,
             killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (bucket_start, doctrine_fit_id, doctrine_group_id, hull_type_id),
+            UNIQUE KEY uniq_killmail_doctrine_activity_1d_dimensions (bucket_start, doctrine_fit_key, doctrine_group_key, hull_type_key),
             KEY idx_killmail_doctrine_activity_1d_bucket_fit (bucket_start, doctrine_fit_id),
             KEY idx_killmail_doctrine_activity_1d_bucket_group (bucket_start, doctrine_group_id),
             KEY idx_killmail_doctrine_activity_1d_bucket (bucket_start),
@@ -658,6 +752,65 @@ function db_time_series_analytics_ensure_schema(): void
     foreach ($columns as [$table, $columnName, $definitionSql]) {
         db_ensure_table_column($table, $columnName, $definitionSql);
     }
+
+    db_time_series_nullable_dimension_schema_ensure(
+        'killmail_item_loss_1h',
+        [
+            'doctrine_fit_id' => 'INT UNSIGNED DEFAULT NULL',
+            'doctrine_group_id' => 'INT UNSIGNED DEFAULT NULL',
+            'hull_type_id' => 'INT UNSIGNED DEFAULT NULL',
+        ],
+        [
+            'doctrine_fit_key' => 'INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_fit_id, 0)) STORED AFTER hull_type_id',
+            'doctrine_group_key' => 'INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_group_id, 0)) STORED AFTER doctrine_fit_key',
+            'hull_type_key' => 'INT UNSIGNED GENERATED ALWAYS AS (COALESCE(hull_type_id, 0)) STORED AFTER doctrine_group_key',
+        ],
+        'uniq_killmail_item_loss_1h_dimensions',
+        'UNIQUE KEY uniq_killmail_item_loss_1h_dimensions (bucket_start, type_id, doctrine_fit_key, doctrine_group_key, hull_type_key)'
+    );
+    db_time_series_nullable_dimension_schema_ensure(
+        'killmail_item_loss_1d',
+        [
+            'doctrine_fit_id' => 'INT UNSIGNED DEFAULT NULL',
+            'doctrine_group_id' => 'INT UNSIGNED DEFAULT NULL',
+            'hull_type_id' => 'INT UNSIGNED DEFAULT NULL',
+        ],
+        [
+            'doctrine_fit_key' => 'INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_fit_id, 0)) STORED AFTER hull_type_id',
+            'doctrine_group_key' => 'INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_group_id, 0)) STORED AFTER doctrine_fit_key',
+            'hull_type_key' => 'INT UNSIGNED GENERATED ALWAYS AS (COALESCE(hull_type_id, 0)) STORED AFTER doctrine_group_key',
+        ],
+        'uniq_killmail_item_loss_1d_dimensions',
+        'UNIQUE KEY uniq_killmail_item_loss_1d_dimensions (bucket_start, type_id, doctrine_fit_key, doctrine_group_key, hull_type_key)'
+    );
+    db_time_series_nullable_dimension_schema_ensure(
+        'killmail_hull_loss_1d',
+        [
+            'doctrine_fit_id' => 'INT UNSIGNED DEFAULT NULL',
+            'doctrine_group_id' => 'INT UNSIGNED DEFAULT NULL',
+        ],
+        [
+            'doctrine_fit_key' => 'INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_fit_id, 0)) STORED AFTER doctrine_group_id',
+            'doctrine_group_key' => 'INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_group_id, 0)) STORED AFTER doctrine_fit_key',
+        ],
+        'uniq_killmail_hull_loss_1d_dimensions',
+        'UNIQUE KEY uniq_killmail_hull_loss_1d_dimensions (bucket_start, hull_type_id, doctrine_fit_key, doctrine_group_key)'
+    );
+    db_time_series_nullable_dimension_schema_ensure(
+        'killmail_doctrine_activity_1d',
+        [
+            'doctrine_fit_id' => 'INT UNSIGNED DEFAULT NULL',
+            'doctrine_group_id' => 'INT UNSIGNED DEFAULT NULL',
+            'hull_type_id' => 'INT UNSIGNED DEFAULT NULL',
+        ],
+        [
+            'doctrine_fit_key' => 'INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_fit_id, 0)) STORED AFTER hull_type_id',
+            'doctrine_group_key' => 'INT UNSIGNED GENERATED ALWAYS AS (COALESCE(doctrine_group_id, 0)) STORED AFTER doctrine_fit_key',
+            'hull_type_key' => 'INT UNSIGNED GENERATED ALWAYS AS (COALESCE(hull_type_id, 0)) STORED AFTER doctrine_group_key',
+        ],
+        'uniq_killmail_doctrine_activity_1d_dimensions',
+        'UNIQUE KEY uniq_killmail_doctrine_activity_1d_dimensions (bucket_start, doctrine_fit_key, doctrine_group_key, hull_type_key)'
+    );
 
     if (!db_table_has_column('killmail_events', 'effective_killmail_at')) {
         db()->exec(
