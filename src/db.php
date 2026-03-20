@@ -308,11 +308,97 @@ function db_bulk_insert_or_upsert(string $table, array $columns, array $rows, ar
 
 function db_time_series_bucket_retention_days(string $resolution): int
 {
-    $default = $resolution === '1h' ? 14 : 400;
+    $default = $resolution === '1h' ? 14 : 180;
     $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', ['analytics_bucket_' . $resolution . '_retention_days']);
     $days = (int) ($row['setting_value'] ?? $default);
 
     return max($resolution === '1h' ? 1 : 30, min(3650, $days > 0 ? $days : $default));
+}
+
+function db_time_series_job_setting_int(string $settingKey, int $default, int $min, int $max): int
+{
+    $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', [$settingKey]);
+    $value = (int) ($row['setting_value'] ?? $default);
+
+    return max($min, min($max, $value > 0 ? $value : $default));
+}
+
+function db_time_series_job_max_runtime_seconds(): int
+{
+    return db_time_series_job_setting_int('analytics_bucket_max_runtime_seconds', 15, 5, 60);
+}
+
+function db_time_series_killmail_max_rows_per_run(): int
+{
+    return db_time_series_job_setting_int('analytics_bucket_killmail_max_rows_per_run', 1000, 100, 5000);
+}
+
+function db_time_series_market_max_rows_per_run(): int
+{
+    return db_time_series_job_setting_int('analytics_bucket_market_max_rows_per_run', 1000, 100, 5000);
+}
+
+function db_time_series_doctrine_rollup_max_rows_per_run(): int
+{
+    return db_time_series_job_setting_int('analytics_bucket_doctrine_rollup_max_rows_per_run', 500, 50, 5000);
+}
+
+function db_time_series_cache_ttl_seconds(): int
+{
+    return db_time_series_job_setting_int('analytics_bucket_cache_ttl_seconds', 300, 60, 3600);
+}
+
+function db_table_has_index(string $table, string $indexName): bool
+{
+    $row = db_select_one(
+        'SELECT 1
+         FROM information_schema.statistics
+         WHERE table_schema = DATABASE()
+           AND table_name = ?
+           AND index_name = ?
+         LIMIT 1',
+        [$table, $indexName]
+    );
+
+    return $row !== null;
+}
+
+function db_ensure_table_index(string $table, string $indexName, string $definitionSql): void
+{
+    if (db_table_has_index($table, $indexName)) {
+        return;
+    }
+
+    db()->exec(sprintf('ALTER TABLE %s ADD %s', db_validate_identifier($table), $definitionSql));
+}
+
+function db_table_has_column(string $table, string $columnName): bool
+{
+    $row = db_select_one(
+        'SELECT 1
+         FROM information_schema.columns
+         WHERE table_schema = DATABASE()
+           AND table_name = ?
+           AND column_name = ?
+         LIMIT 1',
+        [$table, $columnName]
+    );
+
+    return $row !== null;
+}
+
+function db_ensure_table_column(string $table, string $columnName, string $definitionSql): void
+{
+    if (db_table_has_column($table, $columnName)) {
+        return;
+    }
+
+    db()->exec(sprintf(
+        'ALTER TABLE %s ADD COLUMN %s %s',
+        db_validate_identifier($table),
+        db_validate_identifier($columnName),
+        $definitionSql
+    ));
 }
 
 function db_time_series_analytics_ensure_schema(): void
@@ -338,7 +424,9 @@ function db_time_series_analytics_ensure_schema(): void
             killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (bucket_start, type_id, doctrine_fit_id, doctrine_group_id, hull_type_id),
+            KEY idx_killmail_item_loss_1h_bucket_type (bucket_start, type_id),
             KEY idx_killmail_item_loss_1h_type_bucket (type_id, bucket_start),
+            KEY idx_killmail_item_loss_1h_bucket (bucket_start),
             KEY idx_killmail_item_loss_1h_group_bucket (doctrine_group_id, bucket_start),
             KEY idx_killmail_item_loss_1h_fit_bucket (doctrine_fit_id, bucket_start),
             KEY idx_killmail_item_loss_1h_hull_bucket (hull_type_id, bucket_start)
@@ -355,7 +443,9 @@ function db_time_series_analytics_ensure_schema(): void
             killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (bucket_start, type_id, doctrine_fit_id, doctrine_group_id, hull_type_id),
+            KEY idx_killmail_item_loss_1d_bucket_type (bucket_start, type_id),
             KEY idx_killmail_item_loss_1d_type_bucket (type_id, bucket_start),
+            KEY idx_killmail_item_loss_1d_bucket (bucket_start),
             KEY idx_killmail_item_loss_1d_group_bucket (doctrine_group_id, bucket_start),
             KEY idx_killmail_item_loss_1d_fit_bucket (doctrine_fit_id, bucket_start),
             KEY idx_killmail_item_loss_1d_hull_bucket (hull_type_id, bucket_start)
@@ -370,6 +460,7 @@ function db_time_series_analytics_ensure_schema(): void
             killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (bucket_start, hull_type_id, doctrine_fit_id, doctrine_group_id),
+            KEY idx_killmail_hull_loss_1d_bucket (bucket_start),
             KEY idx_killmail_hull_loss_1d_hull_bucket (hull_type_id, bucket_start),
             KEY idx_killmail_hull_loss_1d_group_bucket (doctrine_group_id, bucket_start),
             KEY idx_killmail_hull_loss_1d_fit_bucket (doctrine_fit_id, bucket_start)
@@ -385,6 +476,9 @@ function db_time_series_analytics_ensure_schema(): void
             killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (bucket_start, doctrine_fit_id, doctrine_group_id, hull_type_id),
+            KEY idx_killmail_doctrine_activity_1d_bucket_fit (bucket_start, doctrine_fit_id),
+            KEY idx_killmail_doctrine_activity_1d_bucket_group (bucket_start, doctrine_group_id),
+            KEY idx_killmail_doctrine_activity_1d_bucket (bucket_start),
             KEY idx_killmail_doctrine_activity_1d_group_bucket (doctrine_group_id, bucket_start),
             KEY idx_killmail_doctrine_activity_1d_fit_bucket (doctrine_fit_id, bucket_start),
             KEY idx_killmail_doctrine_activity_1d_hull_bucket (hull_type_id, bucket_start)
@@ -394,11 +488,16 @@ function db_time_series_analytics_ensure_schema(): void
             source_type ENUM('alliance_structure', 'market_hub') NOT NULL,
             source_id BIGINT UNSIGNED NOT NULL,
             type_id INT UNSIGNED NOT NULL,
+            sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+            stock_units_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
+            listing_count_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
             local_stock_units BIGINT NOT NULL DEFAULT 0,
             listing_count INT UNSIGNED NOT NULL DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+            KEY idx_market_item_stock_1h_bucket_type (bucket_start, type_id),
             KEY idx_market_item_stock_1h_type_bucket (type_id, bucket_start),
+            KEY idx_market_item_stock_1h_bucket (bucket_start),
             KEY idx_market_item_stock_1h_source_bucket (source_type, source_id, bucket_start)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS market_item_stock_1d (
@@ -406,11 +505,16 @@ function db_time_series_analytics_ensure_schema(): void
             source_type ENUM('alliance_structure', 'market_hub') NOT NULL,
             source_id BIGINT UNSIGNED NOT NULL,
             type_id INT UNSIGNED NOT NULL,
+            sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+            stock_units_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
+            listing_count_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
             local_stock_units BIGINT NOT NULL DEFAULT 0,
             listing_count INT UNSIGNED NOT NULL DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+            KEY idx_market_item_stock_1d_bucket_type (bucket_start, type_id),
             KEY idx_market_item_stock_1d_type_bucket (type_id, bucket_start),
+            KEY idx_market_item_stock_1d_bucket (bucket_start),
             KEY idx_market_item_stock_1d_source_bucket (source_type, source_id, bucket_start)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS market_item_price_1h (
@@ -418,6 +522,11 @@ function db_time_series_analytics_ensure_schema(): void
             source_type ENUM('alliance_structure', 'market_hub') NOT NULL,
             source_id BIGINT UNSIGNED NOT NULL,
             type_id INT UNSIGNED NOT NULL,
+            sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+            listing_count_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
+            avg_price_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
+            weighted_price_numerator DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
+            weighted_price_denominator DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
             listing_count INT UNSIGNED NOT NULL DEFAULT 0,
             min_price DECIMAL(20, 2) DEFAULT NULL,
             max_price DECIMAL(20, 2) DEFAULT NULL,
@@ -425,7 +534,9 @@ function db_time_series_analytics_ensure_schema(): void
             weighted_price DECIMAL(20, 2) DEFAULT NULL,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+            KEY idx_market_item_price_1h_bucket_type (bucket_start, type_id),
             KEY idx_market_item_price_1h_type_bucket (type_id, bucket_start),
+            KEY idx_market_item_price_1h_bucket (bucket_start),
             KEY idx_market_item_price_1h_source_bucket (source_type, source_id, bucket_start)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS market_item_price_1d (
@@ -433,6 +544,11 @@ function db_time_series_analytics_ensure_schema(): void
             source_type ENUM('alliance_structure', 'market_hub') NOT NULL,
             source_id BIGINT UNSIGNED NOT NULL,
             type_id INT UNSIGNED NOT NULL,
+            sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+            listing_count_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
+            avg_price_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
+            weighted_price_numerator DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
+            weighted_price_denominator DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
             listing_count INT UNSIGNED NOT NULL DEFAULT 0,
             min_price DECIMAL(20, 2) DEFAULT NULL,
             max_price DECIMAL(20, 2) DEFAULT NULL,
@@ -440,7 +556,9 @@ function db_time_series_analytics_ensure_schema(): void
             weighted_price DECIMAL(20, 2) DEFAULT NULL,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+            KEY idx_market_item_price_1d_bucket_type (bucket_start, type_id),
             KEY idx_market_item_price_1d_type_bucket (type_id, bucket_start),
+            KEY idx_market_item_price_1d_bucket (bucket_start),
             KEY idx_market_item_price_1d_source_bucket (source_type, source_id, bucket_start)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS doctrine_item_stock_1d (
@@ -472,6 +590,9 @@ function db_time_series_analytics_ensure_schema(): void
             priority_score DECIMAL(8,2) NOT NULL DEFAULT 0.00,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (bucket_start, fit_id),
+            KEY idx_doctrine_fit_activity_1d_bucket_fit (bucket_start, fit_id),
+            KEY idx_doctrine_fit_activity_1d_bucket_group (bucket_start, doctrine_group_id),
+            KEY idx_doctrine_fit_activity_1d_bucket (bucket_start),
             KEY idx_doctrine_fit_activity_1d_group_bucket (doctrine_group_id, bucket_start),
             KEY idx_doctrine_fit_activity_1d_hull_bucket (hull_type_id, bucket_start),
             KEY idx_doctrine_fit_activity_1d_priority (priority_score, bucket_start)
@@ -489,6 +610,8 @@ function db_time_series_analytics_ensure_schema(): void
             priority_score DECIMAL(8,2) NOT NULL DEFAULT 0.00,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (bucket_start, group_id),
+            KEY idx_doctrine_group_activity_1d_bucket_group (bucket_start, group_id),
+            KEY idx_doctrine_group_activity_1d_bucket (bucket_start),
             KEY idx_doctrine_group_activity_1d_priority (priority_score, bucket_start)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS doctrine_fit_stock_pressure_1d (
@@ -513,10 +636,61 @@ function db_time_series_analytics_ensure_schema(): void
         db()->exec($sql);
     }
 
+    $columns = [
+        ['market_item_stock_1h', 'sample_count', 'INT UNSIGNED NOT NULL DEFAULT 0'],
+        ['market_item_stock_1h', 'stock_units_sum', 'DECIMAL(20, 2) NOT NULL DEFAULT 0.00'],
+        ['market_item_stock_1h', 'listing_count_sum', 'DECIMAL(20, 2) NOT NULL DEFAULT 0.00'],
+        ['market_item_stock_1d', 'sample_count', 'INT UNSIGNED NOT NULL DEFAULT 0'],
+        ['market_item_stock_1d', 'stock_units_sum', 'DECIMAL(20, 2) NOT NULL DEFAULT 0.00'],
+        ['market_item_stock_1d', 'listing_count_sum', 'DECIMAL(20, 2) NOT NULL DEFAULT 0.00'],
+        ['market_item_price_1h', 'sample_count', 'INT UNSIGNED NOT NULL DEFAULT 0'],
+        ['market_item_price_1h', 'listing_count_sum', 'DECIMAL(20, 2) NOT NULL DEFAULT 0.00'],
+        ['market_item_price_1h', 'avg_price_sum', 'DECIMAL(20, 2) NOT NULL DEFAULT 0.00'],
+        ['market_item_price_1h', 'weighted_price_numerator', 'DECIMAL(24, 2) NOT NULL DEFAULT 0.00'],
+        ['market_item_price_1h', 'weighted_price_denominator', 'DECIMAL(24, 2) NOT NULL DEFAULT 0.00'],
+        ['market_item_price_1d', 'sample_count', 'INT UNSIGNED NOT NULL DEFAULT 0'],
+        ['market_item_price_1d', 'listing_count_sum', 'DECIMAL(20, 2) NOT NULL DEFAULT 0.00'],
+        ['market_item_price_1d', 'avg_price_sum', 'DECIMAL(20, 2) NOT NULL DEFAULT 0.00'],
+        ['market_item_price_1d', 'weighted_price_numerator', 'DECIMAL(24, 2) NOT NULL DEFAULT 0.00'],
+        ['market_item_price_1d', 'weighted_price_denominator', 'DECIMAL(24, 2) NOT NULL DEFAULT 0.00'],
+    ];
+
+    foreach ($columns as [$table, $columnName, $definitionSql]) {
+        db_ensure_table_column($table, $columnName, $definitionSql);
+    }
+
+    $indexes = [
+        ['killmail_item_loss_1h', 'idx_killmail_item_loss_1h_bucket_type', 'INDEX idx_killmail_item_loss_1h_bucket_type (bucket_start, type_id)'],
+        ['killmail_item_loss_1h', 'idx_killmail_item_loss_1h_bucket', 'INDEX idx_killmail_item_loss_1h_bucket (bucket_start)'],
+        ['killmail_item_loss_1d', 'idx_killmail_item_loss_1d_bucket_type', 'INDEX idx_killmail_item_loss_1d_bucket_type (bucket_start, type_id)'],
+        ['killmail_item_loss_1d', 'idx_killmail_item_loss_1d_bucket', 'INDEX idx_killmail_item_loss_1d_bucket (bucket_start)'],
+        ['killmail_hull_loss_1d', 'idx_killmail_hull_loss_1d_bucket', 'INDEX idx_killmail_hull_loss_1d_bucket (bucket_start)'],
+        ['killmail_doctrine_activity_1d', 'idx_killmail_doctrine_activity_1d_bucket_fit', 'INDEX idx_killmail_doctrine_activity_1d_bucket_fit (bucket_start, doctrine_fit_id)'],
+        ['killmail_doctrine_activity_1d', 'idx_killmail_doctrine_activity_1d_bucket_group', 'INDEX idx_killmail_doctrine_activity_1d_bucket_group (bucket_start, doctrine_group_id)'],
+        ['killmail_doctrine_activity_1d', 'idx_killmail_doctrine_activity_1d_bucket', 'INDEX idx_killmail_doctrine_activity_1d_bucket (bucket_start)'],
+        ['market_item_stock_1h', 'idx_market_item_stock_1h_bucket_type', 'INDEX idx_market_item_stock_1h_bucket_type (bucket_start, type_id)'],
+        ['market_item_stock_1h', 'idx_market_item_stock_1h_bucket', 'INDEX idx_market_item_stock_1h_bucket (bucket_start)'],
+        ['market_item_stock_1d', 'idx_market_item_stock_1d_bucket_type', 'INDEX idx_market_item_stock_1d_bucket_type (bucket_start, type_id)'],
+        ['market_item_stock_1d', 'idx_market_item_stock_1d_bucket', 'INDEX idx_market_item_stock_1d_bucket (bucket_start)'],
+        ['market_item_price_1h', 'idx_market_item_price_1h_bucket_type', 'INDEX idx_market_item_price_1h_bucket_type (bucket_start, type_id)'],
+        ['market_item_price_1h', 'idx_market_item_price_1h_bucket', 'INDEX idx_market_item_price_1h_bucket (bucket_start)'],
+        ['market_item_price_1d', 'idx_market_item_price_1d_bucket_type', 'INDEX idx_market_item_price_1d_bucket_type (bucket_start, type_id)'],
+        ['market_item_price_1d', 'idx_market_item_price_1d_bucket', 'INDEX idx_market_item_price_1d_bucket (bucket_start)'],
+        ['doctrine_fit_activity_1d', 'idx_doctrine_fit_activity_1d_bucket_fit', 'INDEX idx_doctrine_fit_activity_1d_bucket_fit (bucket_start, fit_id)'],
+        ['doctrine_fit_activity_1d', 'idx_doctrine_fit_activity_1d_bucket_group', 'INDEX idx_doctrine_fit_activity_1d_bucket_group (bucket_start, doctrine_group_id)'],
+        ['doctrine_fit_activity_1d', 'idx_doctrine_fit_activity_1d_bucket', 'INDEX idx_doctrine_fit_activity_1d_bucket (bucket_start)'],
+        ['doctrine_group_activity_1d', 'idx_doctrine_group_activity_1d_bucket_group', 'INDEX idx_doctrine_group_activity_1d_bucket_group (bucket_start, group_id)'],
+        ['doctrine_group_activity_1d', 'idx_doctrine_group_activity_1d_bucket', 'INDEX idx_doctrine_group_activity_1d_bucket (bucket_start)'],
+    ];
+
+    foreach ($indexes as [$table, $indexName, $definitionSql]) {
+        db_ensure_table_index($table, $indexName, $definitionSql);
+    }
+
     $ensured = true;
 }
 
-function db_time_series_hour_bucket_start(string $timestamp): string
+function normalize_to_hour_bucket(string $timestamp): string
 {
     $unix = strtotime($timestamp);
     if ($unix === false) {
@@ -524,6 +698,21 @@ function db_time_series_hour_bucket_start(string $timestamp): string
     }
 
     return gmdate('Y-m-d H:00:00', $unix);
+}
+
+function normalize_to_day_bucket(string $timestamp): string
+{
+    $unix = strtotime($timestamp);
+    if ($unix === false) {
+        return gmdate('Y-m-d 00:00:00');
+    }
+
+    return gmdate('Y-m-d 00:00:00', $unix);
+}
+
+function db_time_series_hour_bucket_start(string $timestamp): string
+{
+    return normalize_to_hour_bucket($timestamp);
 }
 
 function db_killmail_item_quantity_sql(): string
@@ -538,255 +727,472 @@ function db_killmail_item_quantity_sql(): string
     )";
 }
 
-function db_time_series_refresh_killmail_item_loss(string $resolution = '1h', int $lookbackHours = 336): int
+function db_time_series_dataset_key(string $jobName, string $resolution = '1h'): string
+{
+    return 'analytics.time_series.' . $jobName . '.' . ($resolution === '1d' ? '1d' : '1h');
+}
+
+function db_time_series_parse_cursor(?string $cursor, string $idField = 'id'): array
+{
+    $parts = explode('|', trim((string) $cursor), 2);
+
+    return [
+        'timestamp' => trim($parts[0] ?? ''),
+        'id' => max(0, (int) ($parts[1] ?? 0)),
+        'id_field' => $idField,
+    ];
+}
+
+function db_time_series_cursor_value(string $timestamp, int $id): string
+{
+    return trim($timestamp) . '|' . max(0, $id);
+}
+
+function db_time_series_source_batch(
+    string $table,
+    string $timestampColumn,
+    string $idColumn,
+    string $cursor,
+    int $limit
+): array {
+    $parsed = db_time_series_parse_cursor($cursor, $idColumn);
+    $safeLimit = max(1, $limit);
+
+    return db_select(
+        "SELECT {$idColumn} AS source_id, {$timestampColumn} AS source_ts
+         FROM {$table}
+         WHERE {$timestampColumn} IS NOT NULL
+           AND (
+                {$timestampColumn} > ?
+                OR ({$timestampColumn} = ? AND {$idColumn} > ?)
+           )
+         ORDER BY {$timestampColumn} ASC, {$idColumn} ASC
+         LIMIT {$safeLimit}",
+        [$parsed['timestamp'], $parsed['timestamp'], $parsed['id']]
+    );
+}
+
+function db_time_series_retention_cleanup(string $resolution = '1h', int $maxRowsPerTable = 5000): array
 {
     db_time_series_analytics_ensure_schema();
 
     $safeResolution = $resolution === '1d' ? '1d' : '1h';
-    $safeHours = max(1, min(24 * 90, $lookbackHours));
-    $table = $safeResolution === '1d' ? 'killmail_item_loss_1d' : 'killmail_item_loss_1h';
-    $bucketExpr = $safeResolution === '1d'
+    $safeLimit = max(100, min(20000, $maxRowsPerTable));
+    $retentionDays = db_time_series_bucket_retention_days($safeResolution);
+    $cutoff = $safeResolution === '1d'
+        ? gmdate('Y-m-d', strtotime('-' . $retentionDays . ' days'))
+        : gmdate('Y-m-d H:00:00', strtotime('-' . $retentionDays . ' days'));
+    $tables = $safeResolution === '1d'
+        ? [
+            'killmail_item_loss_1d',
+            'killmail_hull_loss_1d',
+            'killmail_doctrine_activity_1d',
+            'market_item_stock_1d',
+            'market_item_price_1d',
+            'doctrine_item_stock_1d',
+            'doctrine_fit_activity_1d',
+            'doctrine_group_activity_1d',
+            'doctrine_fit_stock_pressure_1d',
+        ]
+        : [
+            'killmail_item_loss_1h',
+            'market_item_stock_1h',
+            'market_item_price_1h',
+        ];
+    $deleted = [];
+    $totalDeleted = 0;
+
+    foreach ($tables as $table) {
+        db_execute(
+            'DELETE FROM ' . db_validate_identifier($table) . ' WHERE bucket_start < ? LIMIT ' . $safeLimit,
+            [$cutoff]
+        );
+        $rows = (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
+        $deleted[$table] = $rows;
+        $totalDeleted += $rows;
+    }
+
+    return [
+        'rows_seen' => $totalDeleted,
+        'rows_written' => $totalDeleted,
+        'deleted_rows' => $deleted,
+        'cutoff' => $cutoff,
+    ];
+}
+
+function db_time_series_refresh_killmail_item_loss(string $resolution = '1h', int $maxKillmailsPerRun = 1000): array
+{
+    db_time_series_analytics_ensure_schema();
+
+    $startedAt = microtime(true);
+    $safeResolution = $resolution === '1d' ? '1d' : '1h';
+    $safeLimit = max(1, min(5000, $maxKillmailsPerRun));
+    $datasetKey = db_time_series_dataset_key('killmail', $safeResolution);
+    $cursorStart = db_sync_cursor_get($datasetKey) ?? '1970-01-01 00:00:00|0';
+    $batch = db_time_series_source_batch('killmail_events', 'effective_killmail_at', 'sequence_id', $cursorStart, $safeLimit);
+
+    if ($batch === []) {
+        return [
+            'rows_seen' => 0,
+            'rows_written' => 0,
+            'cursor_end' => $cursorStart,
+            'last_processed_timestamp' => db_time_series_parse_cursor($cursorStart)['timestamp'],
+            'has_more' => false,
+            'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
+        ];
+    }
+
+    $sequenceIds = array_map(static fn (array $row): int => (int) ($row['source_id'] ?? 0), $batch);
+    $lastRow = $batch[array_key_last($batch)];
+    $cursorEnd = db_time_series_cursor_value((string) ($lastRow['source_ts'] ?? ''), (int) ($lastRow['source_id'] ?? 0));
+    $placeholders = implode(',', array_fill(0, count($sequenceIds), '?'));
+    $quantitySql = db_killmail_item_quantity_sql();
+    $itemTable = $safeResolution === '1d' ? 'killmail_item_loss_1d' : 'killmail_item_loss_1h';
+    $itemBucketExpr = $safeResolution === '1d'
         ? 'DATE(e.effective_killmail_at)'
         : "DATE_FORMAT(e.effective_killmail_at, '%Y-%m-%d %H:00:00')";
-    $quantitySql = db_killmail_item_quantity_sql();
 
-    db_execute('DELETE FROM ' . db_validate_identifier($table) . ' WHERE bucket_start < (UTC_TIMESTAMP() - INTERVAL ' . db_time_series_bucket_retention_days($safeResolution) . ' DAY)');
+    $result = db_sync_run_with_state($datasetKey, 'incremental', $cursorStart, static function (int $runId) use (
+        $safeResolution,
+        $sequenceIds,
+        $placeholders,
+        $quantitySql,
+        $itemTable,
+        $itemBucketExpr,
+        $cursorEnd,
+        $batch,
+        $startedAt
+    ): array {
+        db_execute(
+            "INSERT INTO {$itemTable} (
+                bucket_start,
+                type_id,
+                doctrine_fit_id,
+                doctrine_group_id,
+                hull_type_id,
+                loss_count,
+                quantity_lost,
+                victim_count,
+                killmail_count
+            )
+            SELECT
+                {$itemBucketExpr} AS bucket_start,
+                i.item_type_id AS type_id,
+                df.id AS doctrine_fit_id,
+                dfg.doctrine_group_id,
+                e.victim_ship_type_id AS hull_type_id,
+                COUNT(*) AS loss_count,
+                SUM({$quantitySql}) AS quantity_lost,
+                COUNT(DISTINCT COALESCE(e.victim_character_id, e.sequence_id)) AS victim_count,
+                COUNT(DISTINCT e.sequence_id) AS killmail_count
+            FROM killmail_events e
+            INNER JOIN killmail_items i ON i.sequence_id = e.sequence_id
+            LEFT JOIN doctrine_fit_items dfi ON dfi.type_id = i.item_type_id
+            LEFT JOIN doctrine_fits df
+                ON df.id = dfi.doctrine_fit_id
+               AND (df.ship_type_id IS NULL OR df.ship_type_id = e.victim_ship_type_id)
+            LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
+            WHERE e.sequence_id IN ({$placeholders})
+              AND i.item_type_id IS NOT NULL
+            GROUP BY {$itemBucketExpr}, i.item_type_id, df.id, dfg.doctrine_group_id, e.victim_ship_type_id
+            ON DUPLICATE KEY UPDATE
+                loss_count = loss_count + VALUES(loss_count),
+                quantity_lost = quantity_lost + VALUES(quantity_lost),
+                victim_count = victim_count + VALUES(victim_count),
+                killmail_count = killmail_count + VALUES(killmail_count),
+                updated_at = CURRENT_TIMESTAMP",
+            $sequenceIds
+        );
+        $rowsWritten = (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
 
-    $sql = "INSERT INTO {$table} (
-            bucket_start,
-            type_id,
-            doctrine_fit_id,
-            doctrine_group_id,
-            hull_type_id,
-            loss_count,
-            quantity_lost,
-            victim_count,
-            killmail_count
-        )
-        SELECT
-            {$bucketExpr} AS bucket_start,
-            i.item_type_id AS type_id,
-            df.id AS doctrine_fit_id,
-            dfg.doctrine_group_id,
-            e.victim_ship_type_id AS hull_type_id,
-            COUNT(*) AS loss_count,
-            SUM({$quantitySql}) AS quantity_lost,
-            COUNT(DISTINCT COALESCE(e.victim_character_id, e.sequence_id)) AS victim_count,
-            COUNT(DISTINCT e.sequence_id) AS killmail_count
-        FROM killmail_events e
-        INNER JOIN killmail_items i ON i.sequence_id = e.sequence_id
-        LEFT JOIN doctrine_fit_items dfi ON dfi.type_id = i.item_type_id
-        LEFT JOIN doctrine_fits df
-            ON df.id = dfi.doctrine_fit_id
-           AND (df.ship_type_id IS NULL OR df.ship_type_id = e.victim_ship_type_id)
-        LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
-        WHERE e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)
-          AND i.item_type_id IS NOT NULL
-        GROUP BY {$bucketExpr}, i.item_type_id, df.id, dfg.doctrine_group_id, e.victim_ship_type_id
-        ON DUPLICATE KEY UPDATE
-            loss_count = VALUES(loss_count),
-            quantity_lost = VALUES(quantity_lost),
-            victim_count = VALUES(victim_count),
-            killmail_count = VALUES(killmail_count),
-            updated_at = CURRENT_TIMESTAMP";
+        if ($safeResolution === '1d') {
+            db_execute(
+                "INSERT INTO killmail_hull_loss_1d (
+                    bucket_start,
+                    hull_type_id,
+                    doctrine_fit_id,
+                    doctrine_group_id,
+                    loss_count,
+                    victim_count,
+                    killmail_count
+                )
+                SELECT
+                    DATE(e.effective_killmail_at) AS bucket_start,
+                    e.victim_ship_type_id AS hull_type_id,
+                    df.id AS doctrine_fit_id,
+                    dfg.doctrine_group_id,
+                    COUNT(*) AS loss_count,
+                    COUNT(DISTINCT COALESCE(e.victim_character_id, e.sequence_id)) AS victim_count,
+                    COUNT(DISTINCT e.sequence_id) AS killmail_count
+                FROM killmail_events e
+                LEFT JOIN doctrine_fits df ON df.ship_type_id = e.victim_ship_type_id
+                LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
+                WHERE e.sequence_id IN ({$placeholders})
+                  AND e.victim_ship_type_id IS NOT NULL
+                GROUP BY DATE(e.effective_killmail_at), e.victim_ship_type_id, df.id, dfg.doctrine_group_id
+                ON DUPLICATE KEY UPDATE
+                    loss_count = loss_count + VALUES(loss_count),
+                    victim_count = victim_count + VALUES(victim_count),
+                    killmail_count = killmail_count + VALUES(killmail_count),
+                    updated_at = CURRENT_TIMESTAMP",
+                $sequenceIds
+            );
+            $rowsWritten += (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
 
-    db_execute($sql);
+            db_execute(
+                "INSERT INTO killmail_doctrine_activity_1d (
+                    bucket_start,
+                    doctrine_fit_id,
+                    doctrine_group_id,
+                    hull_type_id,
+                    loss_count,
+                    quantity_lost,
+                    victim_count,
+                    killmail_count
+                )
+                SELECT
+                    DATE(e.effective_killmail_at) AS bucket_start,
+                    df.id AS doctrine_fit_id,
+                    dfg.doctrine_group_id,
+                    e.victim_ship_type_id AS hull_type_id,
+                    COUNT(*) AS loss_count,
+                    SUM({$quantitySql}) AS quantity_lost,
+                    COUNT(DISTINCT COALESCE(e.victim_character_id, e.sequence_id)) AS victim_count,
+                    COUNT(DISTINCT e.sequence_id) AS killmail_count
+                FROM killmail_events e
+                INNER JOIN killmail_items i ON i.sequence_id = e.sequence_id
+                INNER JOIN doctrine_fit_items dfi ON dfi.type_id = i.item_type_id
+                INNER JOIN doctrine_fits df
+                    ON df.id = dfi.doctrine_fit_id
+                   AND (df.ship_type_id IS NULL OR df.ship_type_id = e.victim_ship_type_id)
+                LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
+                WHERE e.sequence_id IN ({$placeholders})
+                GROUP BY DATE(e.effective_killmail_at), df.id, dfg.doctrine_group_id, e.victim_ship_type_id
+                ON DUPLICATE KEY UPDATE
+                    loss_count = loss_count + VALUES(loss_count),
+                    quantity_lost = quantity_lost + VALUES(quantity_lost),
+                    victim_count = victim_count + VALUES(victim_count),
+                    killmail_count = killmail_count + VALUES(killmail_count),
+                    updated_at = CURRENT_TIMESTAMP",
+                $sequenceIds
+            );
+            $rowsWritten += (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
+        }
 
-    return (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
+        return [
+            'sync_mode' => 'incremental',
+            'source_rows' => count($batch),
+            'written_rows' => $rowsWritten,
+            'cursor_end' => $cursorEnd,
+            'checksum' => hash('sha256', json_encode([$safeResolution, $cursorEnd, count($batch), $rowsWritten], JSON_THROW_ON_ERROR)),
+            'last_processed_timestamp' => (string) ($batch[array_key_last($batch)]['source_ts'] ?? ''),
+            'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
+        ];
+    });
+
+    return $result + [
+        'has_more' => count($batch) >= $safeLimit,
+    ];
 }
 
-function db_time_series_refresh_killmail_hull_loss_1d(int $lookbackDays = 60): int
+function db_time_series_refresh_market_aggregates(string $resolution = '1h', int $maxRowsPerRun = 1000): array
 {
     db_time_series_analytics_ensure_schema();
 
-    $safeDays = max(1, min(365, $lookbackDays));
-    db_execute('DELETE FROM killmail_hull_loss_1d WHERE bucket_start < (UTC_TIMESTAMP() - INTERVAL ' . db_time_series_bucket_retention_days('1d') . ' DAY)');
-
-    $sql = "INSERT INTO killmail_hull_loss_1d (
-            bucket_start,
-            hull_type_id,
-            doctrine_fit_id,
-            doctrine_group_id,
-            loss_count,
-            victim_count,
-            killmail_count
-        )
-        SELECT
-            DATE(e.effective_killmail_at) AS bucket_start,
-            e.victim_ship_type_id AS hull_type_id,
-            df.id AS doctrine_fit_id,
-            dfg.doctrine_group_id,
-            COUNT(*) AS loss_count,
-            COUNT(DISTINCT COALESCE(e.victim_character_id, e.sequence_id)) AS victim_count,
-            COUNT(DISTINCT e.sequence_id) AS killmail_count
-        FROM killmail_events e
-        LEFT JOIN doctrine_fits df ON df.ship_type_id = e.victim_ship_type_id
-        LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
-        WHERE e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL {$safeDays} DAY)
-          AND e.victim_ship_type_id IS NOT NULL
-        GROUP BY DATE(e.effective_killmail_at), e.victim_ship_type_id, df.id, dfg.doctrine_group_id
-        ON DUPLICATE KEY UPDATE
-            loss_count = VALUES(loss_count),
-            victim_count = VALUES(victim_count),
-            killmail_count = VALUES(killmail_count),
-            updated_at = CURRENT_TIMESTAMP";
-
-    db_execute($sql);
-
-    return (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
-}
-
-function db_time_series_refresh_killmail_doctrine_activity_1d(int $lookbackDays = 60): int
-{
-    db_time_series_analytics_ensure_schema();
-
-    $safeDays = max(1, min(365, $lookbackDays));
-    $quantitySql = db_killmail_item_quantity_sql();
-    db_execute('DELETE FROM killmail_doctrine_activity_1d WHERE bucket_start < (UTC_TIMESTAMP() - INTERVAL ' . db_time_series_bucket_retention_days('1d') . ' DAY)');
-
-    $sql = "INSERT INTO killmail_doctrine_activity_1d (
-            bucket_start,
-            doctrine_fit_id,
-            doctrine_group_id,
-            hull_type_id,
-            loss_count,
-            quantity_lost,
-            victim_count,
-            killmail_count
-        )
-        SELECT
-            DATE(e.effective_killmail_at) AS bucket_start,
-            df.id AS doctrine_fit_id,
-            dfg.doctrine_group_id,
-            e.victim_ship_type_id AS hull_type_id,
-            COUNT(*) AS loss_count,
-            SUM({$quantitySql}) AS quantity_lost,
-            COUNT(DISTINCT COALESCE(e.victim_character_id, e.sequence_id)) AS victim_count,
-            COUNT(DISTINCT e.sequence_id) AS killmail_count
-        FROM killmail_events e
-        INNER JOIN killmail_items i ON i.sequence_id = e.sequence_id
-        INNER JOIN doctrine_fit_items dfi ON dfi.type_id = i.item_type_id
-        INNER JOIN doctrine_fits df
-            ON df.id = dfi.doctrine_fit_id
-           AND (df.ship_type_id IS NULL OR df.ship_type_id = e.victim_ship_type_id)
-        LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
-        WHERE e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL {$safeDays} DAY)
-        GROUP BY DATE(e.effective_killmail_at), df.id, dfg.doctrine_group_id, e.victim_ship_type_id
-        ON DUPLICATE KEY UPDATE
-            loss_count = VALUES(loss_count),
-            quantity_lost = VALUES(quantity_lost),
-            victim_count = VALUES(victim_count),
-            killmail_count = VALUES(killmail_count),
-            updated_at = CURRENT_TIMESTAMP";
-
-    db_execute($sql);
-
-    return (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
-}
-
-function db_time_series_refresh_market_aggregates(string $resolution = '1h', int $lookbackDays = 14): int
-{
-    db_time_series_analytics_ensure_schema();
-
+    $startedAt = microtime(true);
     $safeResolution = $resolution === '1d' ? '1d' : '1h';
-    $safeDays = max(1, min(365, $lookbackDays));
+    $safeLimit = max(1, min(5000, $maxRowsPerRun));
+    $datasetKey = db_time_series_dataset_key('market', $safeResolution);
+    $cursorStart = db_sync_cursor_get($datasetKey) ?? '1970-01-01 00:00:00|0';
+    $batch = db_time_series_source_batch('market_order_snapshots_summary', 'observed_at', 'id', $cursorStart, $safeLimit);
+
+    if ($batch === []) {
+        return [
+            'rows_seen' => 0,
+            'rows_written' => 0,
+            'cursor_end' => $cursorStart,
+            'last_processed_timestamp' => db_time_series_parse_cursor($cursorStart)['timestamp'],
+            'has_more' => false,
+            'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
+        ];
+    }
+
+    $snapshotIds = array_map(static fn (array $row): int => (int) ($row['source_id'] ?? 0), $batch);
+    $lastRow = $batch[array_key_last($batch)];
+    $cursorEnd = db_time_series_cursor_value((string) ($lastRow['source_ts'] ?? ''), (int) ($lastRow['source_id'] ?? 0));
+    $placeholders = implode(',', array_fill(0, count($snapshotIds), '?'));
     $stockTable = $safeResolution === '1d' ? 'market_item_stock_1d' : 'market_item_stock_1h';
     $priceTable = $safeResolution === '1d' ? 'market_item_price_1d' : 'market_item_price_1h';
     $bucketExpr = $safeResolution === '1d'
         ? 'DATE(moss.observed_at)'
         : "DATE_FORMAT(moss.observed_at, '%Y-%m-%d %H:00:00')";
 
-    db_execute('DELETE FROM ' . $stockTable . ' WHERE bucket_start < (UTC_TIMESTAMP() - INTERVAL ' . db_time_series_bucket_retention_days($safeResolution) . ' DAY)');
-    db_execute('DELETE FROM ' . $priceTable . ' WHERE bucket_start < (UTC_TIMESTAMP() - INTERVAL ' . db_time_series_bucket_retention_days($safeResolution) . ' DAY)');
+    $result = db_sync_run_with_state($datasetKey, 'incremental', $cursorStart, static function (int $runId) use (
+        $snapshotIds,
+        $placeholders,
+        $stockTable,
+        $priceTable,
+        $bucketExpr,
+        $cursorEnd,
+        $batch,
+        $safeResolution,
+        $startedAt
+    ): array {
+        db_execute(
+            "INSERT INTO {$stockTable} (
+                bucket_start,
+                source_type,
+                source_id,
+                type_id,
+                sample_count,
+                stock_units_sum,
+                listing_count_sum,
+                local_stock_units,
+                listing_count
+            )
+            SELECT
+                {$bucketExpr} AS bucket_start,
+                moss.source_type,
+                moss.source_id,
+                moss.type_id,
+                COUNT(*) AS sample_count,
+                SUM(COALESCE(moss.total_sell_volume, 0)) AS stock_units_sum,
+                SUM(COALESCE(moss.sell_order_count, 0)) AS listing_count_sum,
+                ROUND(AVG(COALESCE(moss.total_sell_volume, 0))) AS local_stock_units,
+                ROUND(AVG(COALESCE(moss.sell_order_count, 0))) AS listing_count
+            FROM market_order_snapshots_summary moss
+            WHERE moss.id IN ({$placeholders})
+            GROUP BY {$bucketExpr}, moss.source_type, moss.source_id, moss.type_id
+            ON DUPLICATE KEY UPDATE
+                sample_count = sample_count + VALUES(sample_count),
+                stock_units_sum = stock_units_sum + VALUES(stock_units_sum),
+                listing_count_sum = listing_count_sum + VALUES(listing_count_sum),
+                local_stock_units = ROUND((stock_units_sum + VALUES(stock_units_sum)) / NULLIF(sample_count + VALUES(sample_count), 0)),
+                listing_count = ROUND((listing_count_sum + VALUES(listing_count_sum)) / NULLIF(sample_count + VALUES(sample_count), 0)),
+                updated_at = CURRENT_TIMESTAMP",
+            $snapshotIds
+        );
+        $rowsWritten = (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
 
-    db_execute(
-        "INSERT INTO {$stockTable} (
-            bucket_start,
-            source_type,
-            source_id,
-            type_id,
-            local_stock_units,
-            listing_count
-        )
-        SELECT
-            {$bucketExpr} AS bucket_start,
-            moss.source_type,
-            moss.source_id,
-            moss.type_id,
-            ROUND(AVG(COALESCE(moss.total_sell_volume, 0))) AS local_stock_units,
-            ROUND(AVG(COALESCE(moss.sell_order_count, 0))) AS listing_count
-        FROM market_order_snapshots_summary moss
-        WHERE moss.observed_at >= (UTC_TIMESTAMP() - INTERVAL {$safeDays} DAY)
-        GROUP BY {$bucketExpr}, moss.source_type, moss.source_id, moss.type_id
-        ON DUPLICATE KEY UPDATE
-            local_stock_units = VALUES(local_stock_units),
-            listing_count = VALUES(listing_count),
-            updated_at = CURRENT_TIMESTAMP"
-    );
+        db_execute(
+            "INSERT INTO {$priceTable} (
+                bucket_start,
+                source_type,
+                source_id,
+                type_id,
+                sample_count,
+                listing_count_sum,
+                avg_price_sum,
+                weighted_price_numerator,
+                weighted_price_denominator,
+                listing_count,
+                min_price,
+                max_price,
+                avg_price,
+                weighted_price
+            )
+            SELECT
+                {$bucketExpr} AS bucket_start,
+                moss.source_type,
+                moss.source_id,
+                moss.type_id,
+                COUNT(*) AS sample_count,
+                SUM(COALESCE(moss.sell_order_count, 0)) AS listing_count_sum,
+                SUM(COALESCE(moss.best_sell_price, 0)) AS avg_price_sum,
+                SUM(COALESCE(moss.best_sell_price, 0) * COALESCE(moss.total_sell_volume, 0)) AS weighted_price_numerator,
+                SUM(COALESCE(moss.total_sell_volume, 0)) AS weighted_price_denominator,
+                ROUND(AVG(COALESCE(moss.sell_order_count, 0))) AS listing_count,
+                MIN(moss.best_sell_price) AS min_price,
+                MAX(moss.best_sell_price) AS max_price,
+                AVG(moss.best_sell_price) AS avg_price,
+                CASE
+                    WHEN SUM(COALESCE(moss.total_sell_volume, 0)) > 0 THEN SUM(COALESCE(moss.best_sell_price, 0) * COALESCE(moss.total_sell_volume, 0)) / SUM(COALESCE(moss.total_sell_volume, 0))
+                    ELSE AVG(moss.best_sell_price)
+                END AS weighted_price
+            FROM market_order_snapshots_summary moss
+            WHERE moss.id IN ({$placeholders})
+            GROUP BY {$bucketExpr}, moss.source_type, moss.source_id, moss.type_id
+            ON DUPLICATE KEY UPDATE
+                sample_count = sample_count + VALUES(sample_count),
+                listing_count_sum = listing_count_sum + VALUES(listing_count_sum),
+                avg_price_sum = avg_price_sum + VALUES(avg_price_sum),
+                weighted_price_numerator = weighted_price_numerator + VALUES(weighted_price_numerator),
+                weighted_price_denominator = weighted_price_denominator + VALUES(weighted_price_denominator),
+                listing_count = ROUND((listing_count_sum + VALUES(listing_count_sum)) / NULLIF(sample_count + VALUES(sample_count), 0)),
+                min_price = CASE
+                    WHEN min_price IS NULL THEN VALUES(min_price)
+                    WHEN VALUES(min_price) IS NULL THEN min_price
+                    ELSE LEAST(min_price, VALUES(min_price))
+                END,
+                max_price = CASE
+                    WHEN max_price IS NULL THEN VALUES(max_price)
+                    WHEN VALUES(max_price) IS NULL THEN max_price
+                    ELSE GREATEST(max_price, VALUES(max_price))
+                END,
+                avg_price = ROUND((avg_price_sum + VALUES(avg_price_sum)) / NULLIF(sample_count + VALUES(sample_count), 0), 2),
+                weighted_price = ROUND(
+                    CASE
+                        WHEN (weighted_price_denominator + VALUES(weighted_price_denominator)) > 0
+                            THEN (weighted_price_numerator + VALUES(weighted_price_numerator)) / (weighted_price_denominator + VALUES(weighted_price_denominator))
+                        ELSE (avg_price_sum + VALUES(avg_price_sum)) / NULLIF(sample_count + VALUES(sample_count), 0)
+                    END,
+                    2
+                ),
+                updated_at = CURRENT_TIMESTAMP",
+            $snapshotIds
+        );
+        $rowsWritten += (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
 
-    db_execute(
-        "INSERT INTO {$priceTable} (
-            bucket_start,
-            source_type,
-            source_id,
-            type_id,
-            listing_count,
-            min_price,
-            max_price,
-            avg_price,
-            weighted_price
-        )
-        SELECT
-            {$bucketExpr} AS bucket_start,
-            moss.source_type,
-            moss.source_id,
-            moss.type_id,
-            ROUND(AVG(COALESCE(moss.sell_order_count, 0))) AS listing_count,
-            MIN(moss.best_sell_price) AS min_price,
-            MAX(moss.best_sell_price) AS max_price,
-            AVG(moss.best_sell_price) AS avg_price,
-            CASE
-                WHEN SUM(COALESCE(moss.total_sell_volume, 0)) > 0 THEN SUM(COALESCE(moss.best_sell_price, 0) * COALESCE(moss.total_sell_volume, 0)) / SUM(COALESCE(moss.total_sell_volume, 0))
-                ELSE AVG(moss.best_sell_price)
-            END AS weighted_price
-        FROM market_order_snapshots_summary moss
-        WHERE moss.observed_at >= (UTC_TIMESTAMP() - INTERVAL {$safeDays} DAY)
-        GROUP BY {$bucketExpr}, moss.source_type, moss.source_id, moss.type_id
-        ON DUPLICATE KEY UPDATE
-            listing_count = VALUES(listing_count),
-            min_price = VALUES(min_price),
-            max_price = VALUES(max_price),
-            avg_price = VALUES(avg_price),
-            weighted_price = VALUES(weighted_price),
-            updated_at = CURRENT_TIMESTAMP"
-    );
+        return [
+            'sync_mode' => 'incremental',
+            'source_rows' => count($batch),
+            'written_rows' => $rowsWritten,
+            'cursor_end' => $cursorEnd,
+            'checksum' => hash('sha256', json_encode([$safeResolution, $cursorEnd, count($batch), $rowsWritten], JSON_THROW_ON_ERROR)),
+            'last_processed_timestamp' => (string) ($batch[array_key_last($batch)]['source_ts'] ?? ''),
+            'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
+        ];
+    });
 
-    return 1;
+    return $result + [
+        'has_more' => count($batch) >= $safeLimit,
+    ];
 }
 
 function db_time_series_refresh_all(string $resolution = '1h'): array
 {
     $safeResolution = $resolution === '1d' ? '1d' : '1h';
-
-    $killmailRows = db_time_series_refresh_killmail_item_loss($safeResolution, $safeResolution === '1d' ? 24 * 60 : 24 * 14);
-    $marketRows = db_time_series_refresh_market_aggregates($safeResolution, $safeResolution === '1d' ? 60 : 14);
-    $hullRows = 0;
-    $doctrineRows = 0;
-
-    if ($safeResolution === '1d') {
-        $hullRows = db_time_series_refresh_killmail_hull_loss_1d(60);
-        $doctrineRows = db_time_series_refresh_killmail_doctrine_activity_1d(60);
-    }
+    $startedAt = microtime(true);
+    $maxRuntimeSeconds = db_time_series_job_max_runtime_seconds();
+    $killmailResult = db_time_series_refresh_killmail_item_loss($safeResolution, db_time_series_killmail_max_rows_per_run());
+    $budgetExceededAfterKillmail = (microtime(true) - $startedAt) >= $maxRuntimeSeconds;
+    $marketResult = $budgetExceededAfterKillmail
+        ? [
+            'rows_seen' => 0,
+            'rows_written' => 0,
+            'has_more' => true,
+            'skipped' => true,
+            'skip_reason' => 'max_runtime_reached_before_market_job',
+        ]
+        : db_time_series_refresh_market_aggregates($safeResolution, db_time_series_market_max_rows_per_run());
+    $cleanupResult = db_time_series_retention_cleanup($safeResolution, db_time_series_doctrine_rollup_max_rows_per_run());
 
     return [
         'resolution' => $safeResolution,
-        'rows_seen' => $killmailRows + $marketRows + $hullRows + $doctrineRows,
-        'rows_written' => $killmailRows + $marketRows + $hullRows + $doctrineRows,
+        'rows_seen' => (int) ($killmailResult['source_rows'] ?? $killmailResult['rows_seen'] ?? 0)
+            + (int) ($marketResult['source_rows'] ?? $marketResult['rows_seen'] ?? 0),
+        'rows_written' => (int) ($killmailResult['written_rows'] ?? $killmailResult['rows_written'] ?? 0)
+            + (int) ($marketResult['written_rows'] ?? $marketResult['rows_written'] ?? 0)
+            + (int) ($cleanupResult['rows_written'] ?? 0),
         'meta' => [
-            'killmail_rows' => $killmailRows,
-            'market_rows' => $marketRows,
-            'hull_rows' => $hullRows,
-            'doctrine_rows' => $doctrineRows,
+            'killmail' => $killmailResult,
+            'market' => $marketResult,
+            'cleanup' => $cleanupResult,
+            'max_runtime_seconds' => $maxRuntimeSeconds,
+            'killmail_max_rows_per_run' => db_time_series_killmail_max_rows_per_run(),
+            'market_max_rows_per_run' => db_time_series_market_max_rows_per_run(),
+            'doctrine_rollup_max_rows_per_run' => db_time_series_doctrine_rollup_max_rows_per_run(),
+            'has_more_work' => !empty($killmailResult['has_more']) || !empty($marketResult['has_more']),
         ],
     ];
 }
@@ -796,6 +1202,8 @@ function db_time_series_store_doctrine_daily_rollups(array $fitRows, array $grou
     db_time_series_analytics_ensure_schema();
 
     $bucketStart = gmdate('Y-m-d');
+    $fitRows = array_slice($fitRows, 0, db_time_series_doctrine_rollup_max_rows_per_run());
+    $groupRows = array_slice($groupRows, 0, db_time_series_doctrine_rollup_max_rows_per_run());
     $fitActivityRows = [];
     $fitPressureRows = [];
     $itemRows = [];

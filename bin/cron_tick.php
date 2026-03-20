@@ -6,6 +6,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../src/bootstrap.php';
 
 const CRON_TICK_RUNNER_LOCK = 'cron_tick_runner';
+const CRON_TICK_APP_LOCK = 'supplycore:cron_tick';
 
 function cron_tick_output(string $event, array $payload = [], $stream = STDOUT): void
 {
@@ -21,19 +22,34 @@ function cron_tick_exit_code(array $summary): int
 function cron_tick_main(): int
 {
     $tickStartedAt = microtime(true);
+    $appLockAcquired = false;
     $lockAcquired = false;
 
-    cron_tick_output('cron_tick.started', [
-        'scheduler_status' => 'starting',
-    ]);
-
     try {
+        $appLockAcquired = db_runner_lock_acquire(CRON_TICK_APP_LOCK, 0);
+        if (!$appLockAcquired) {
+            $durationMs = (int) round((microtime(true) - $tickStartedAt) * 1000);
+            cron_tick_output('cron_tick.lock_skipped', [
+                'scheduler_status' => 'skipped_locked',
+                'duration_ms' => $durationMs,
+                'lock_name' => CRON_TICK_APP_LOCK,
+            ]);
+
+            return 0;
+        }
+
+        cron_tick_output('cron_tick.started', [
+            'scheduler_status' => 'starting',
+            'lock_name' => CRON_TICK_APP_LOCK,
+        ]);
+
         $lockAcquired = runner_lock_acquire(CRON_TICK_RUNNER_LOCK);
         if (!$lockAcquired) {
             $durationMs = (int) round((microtime(true) - $tickStartedAt) * 1000);
             cron_tick_output('cron_tick.lock_skipped', [
                 'scheduler_status' => 'skipped_locked',
                 'duration_ms' => $durationMs,
+                'lock_name' => CRON_TICK_RUNNER_LOCK,
             ]);
 
             return 0;
@@ -76,6 +92,9 @@ function cron_tick_main(): int
     } finally {
         if ($lockAcquired) {
             runner_lock_release(CRON_TICK_RUNNER_LOCK);
+        }
+        if ($appLockAcquired) {
+            db_runner_lock_release(CRON_TICK_APP_LOCK);
         }
     }
 }

@@ -1289,6 +1289,46 @@ function supplycore_cache_ttl(string $category): int
     };
 }
 
+function supplycore_analytics_cache_ttl(): int
+{
+    return function_exists('db_time_series_cache_ttl_seconds')
+        ? db_time_series_cache_ttl_seconds()
+        : max(60, min(3600, (int) get_setting('analytics_bucket_cache_ttl_seconds', '300')));
+}
+
+function supplycore_activity_doctrine_cache_key(): string
+{
+    return 'activity:doctrine';
+}
+
+function supplycore_activity_items_cache_key(): string
+{
+    return 'activity:items';
+}
+
+function supplycore_dashboard_top_cache_key(): string
+{
+    return 'dashboard:top';
+}
+
+function supplycore_cached_json_read(string $key): ?array
+{
+    if (!supplycore_redis_enabled()) {
+        return null;
+    }
+
+    return supplycore_redis_get_json($key);
+}
+
+function supplycore_cached_json_write(string $key, array $payload, ?int $ttlSeconds = null): array
+{
+    if (supplycore_redis_enabled()) {
+        supplycore_redis_set_json($key, $payload, $ttlSeconds ?? supplycore_analytics_cache_ttl());
+    }
+
+    return $payload;
+}
+
 function supplycore_cache_version(string $namespace): int
 {
     if (!supplycore_redis_enabled()) {
@@ -2655,6 +2695,11 @@ function dashboard_intelligence_data_build(): array
 
 function dashboard_snapshot_payload(): array
 {
+    $cached = supplycore_cached_json_read(supplycore_dashboard_top_cache_key());
+    if (is_array($cached) && $cached !== []) {
+        return $cached;
+    }
+
     return supplycore_materialized_snapshot_read_or_bootstrap(
         dashboard_snapshot_key(),
         static fn (): array => dashboard_intelligence_data_build(),
@@ -2666,13 +2711,16 @@ function dashboard_refresh_summary(string $reason = 'manual'): array
 {
     supplycore_materialized_snapshot_mark_updating(dashboard_snapshot_key(), $reason);
     $snapshot = dashboard_intelligence_data_build();
-
-    return supplycore_materialized_snapshot_store(dashboard_snapshot_key(), $snapshot, [
+    $stored = supplycore_materialized_snapshot_store(dashboard_snapshot_key(), $snapshot, [
         'reason' => $reason,
         'queue_count' => count((array) ($snapshot['priority_queues']['opportunities'] ?? []))
             + count((array) ($snapshot['priority_queues']['risks'] ?? []))
             + count((array) ($snapshot['priority_queues']['missing_items'] ?? [])),
     ]);
+
+    supplycore_cached_json_write(supplycore_dashboard_top_cache_key(), $stored);
+
+    return $stored;
 }
 
 function dashboard_refresh_summary_job_result(string $reason = 'manual'): array
@@ -14031,6 +14079,8 @@ function analytics_bucket_refresh_job_result(string $resolution = '1h', string $
     $result = db_time_series_refresh_all($resolution);
     $meta = is_array($result['meta'] ?? null) ? $result['meta'] : [];
     $safeResolution = $resolution === '1d' ? '1d' : '1h';
+    $killmailMeta = is_array($meta['killmail'] ?? null) ? $meta['killmail'] : [];
+    $marketMeta = is_array($meta['market'] ?? null) ? $meta['market'] : [];
 
     return sync_result_shape() + [
         'rows_seen' => (int) ($result['rows_seen'] ?? 0),
@@ -14045,6 +14095,13 @@ function analytics_bucket_refresh_job_result(string $resolution = '1h', string $
         'meta' => [
             'outcome_reason' => 'MariaDB analytics bucket tables were incrementally upserted for ' . $safeResolution . ' windows.',
             'resolution' => $safeResolution,
+            'killmail_rows_processed' => (int) ($killmailMeta['source_rows'] ?? $killmailMeta['rows_seen'] ?? 0),
+            'market_rows_processed' => (int) ($marketMeta['source_rows'] ?? $marketMeta['rows_seen'] ?? 0),
+            'killmail_duration_ms' => (int) ($killmailMeta['duration_ms'] ?? 0),
+            'market_duration_ms' => (int) ($marketMeta['duration_ms'] ?? 0),
+            'last_killmail_processed_timestamp' => (string) ($killmailMeta['last_processed_timestamp'] ?? ''),
+            'last_market_processed_timestamp' => (string) ($marketMeta['last_processed_timestamp'] ?? ''),
+            'has_more_work' => !empty($meta['has_more_work']),
         ] + $meta,
     ];
 }
@@ -15981,6 +16038,12 @@ function activity_priority_snapshot_key(): string
 
 function activity_priority_snapshot_payload(): array
 {
+    $doctrineCached = supplycore_cached_json_read(supplycore_activity_doctrine_cache_key());
+    $itemsCached = supplycore_cached_json_read(supplycore_activity_items_cache_key());
+    if (is_array($doctrineCached) && is_array($itemsCached) && $doctrineCached !== [] && $itemsCached !== []) {
+        return $doctrineCached + $itemsCached;
+    }
+
     return supplycore_materialized_snapshot_read_or_bootstrap(
         activity_priority_snapshot_key(),
         static fn (): array => activity_priority_summary_build('bootstrap'),
@@ -15992,12 +16055,26 @@ function activity_priority_refresh_summary(string $reason = 'manual'): array
 {
     supplycore_materialized_snapshot_mark_updating(activity_priority_snapshot_key(), $reason);
     $snapshot = activity_priority_summary_build($reason);
-
-    return supplycore_materialized_snapshot_store(activity_priority_snapshot_key(), $snapshot, [
+    $stored = supplycore_materialized_snapshot_store(activity_priority_snapshot_key(), $snapshot, [
         'reason' => $reason,
         'group_count' => count((array) ($snapshot['active_doctrines'] ?? [])),
         'item_count' => count((array) ($snapshot['priority_items'] ?? [])),
     ]);
+
+    supplycore_cached_json_write(supplycore_activity_doctrine_cache_key(), [
+        'summary_cards' => array_values((array) ($stored['summary_cards'] ?? [])),
+        'active_doctrines' => array_values((array) ($stored['active_doctrines'] ?? [])),
+        'active_fits' => array_values((array) ($stored['active_fits'] ?? [])),
+        'trend_movement' => is_array($stored['trend_movement'] ?? null) ? $stored['trend_movement'] : [],
+        '_freshness' => is_array($stored['_freshness'] ?? null) ? $stored['_freshness'] : [],
+    ]);
+    supplycore_cached_json_write(supplycore_activity_items_cache_key(), [
+        'priority_items' => array_values((array) ($stored['priority_items'] ?? [])),
+        'questions_answered' => is_array($stored['questions_answered'] ?? null) ? $stored['questions_answered'] : [],
+        '_freshness' => is_array($stored['_freshness'] ?? null) ? $stored['_freshness'] : [],
+    ]);
+
+    return $stored;
 }
 
 function activity_priority_refresh_summary_job_result(string $reason = 'manual'): array
