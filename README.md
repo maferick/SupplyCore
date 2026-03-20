@@ -186,7 +186,7 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
    ```
 
    ```cron
-   * * * * * cd /var/www/supplycore && /usr/bin/php bin/cron_tick.php >> storage/logs/cron.log 2>&1
+   * * * * * cd /var/www/supplycore && /usr/bin/flock -n /tmp/supplycore_cron.lock /usr/bin/php bin/cron_tick.php >> storage/logs/cron.log 2>&1
    ```
 
 3. Ensure the log directory exists and is writable by the cron user:
@@ -204,6 +204,7 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 ### Scheduling model
 
 - Cron is **timer-only**: it triggers `bin/cron_tick.php` once per minute.
+- Production cron must use `/usr/bin/flock -n /tmp/supplycore_cron.lock ...` as the first single-run guard, while `bin/cron_tick.php` also acquires the MariaDB advisory lock `GET_LOCK('supplycore:cron_tick', 0)` as an application-level safety net before any scheduler work begins.
 - The scheduler (`bin/cron_tick.php`) decides which jobs are due, runs standard jobs inline, and dispatches async-capable AI jobs to `bin/scheduler_job_runner.php` background workers so long-polling providers do not block the rest of the queue.
 - Interval and enable/disable controls are configured in **Settings → Data Sync** (`/settings?section=data-sync`) via scheduler rows in `sync_schedules`.
 - SupplyCore now separates cadences by workload:

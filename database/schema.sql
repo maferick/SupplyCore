@@ -695,7 +695,9 @@ CREATE TABLE IF NOT EXISTS killmail_item_loss_1h (
     killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (bucket_start, type_id, doctrine_fit_id, doctrine_group_id, hull_type_id),
+    KEY idx_killmail_item_loss_1h_bucket_type (bucket_start, type_id),
     KEY idx_killmail_item_loss_1h_type_bucket (type_id, bucket_start),
+    KEY idx_killmail_item_loss_1h_bucket (bucket_start),
     KEY idx_killmail_item_loss_1h_group_bucket (doctrine_group_id, bucket_start),
     KEY idx_killmail_item_loss_1h_fit_bucket (doctrine_fit_id, bucket_start),
     KEY idx_killmail_item_loss_1h_hull_bucket (hull_type_id, bucket_start)
@@ -713,7 +715,9 @@ CREATE TABLE IF NOT EXISTS killmail_item_loss_1d (
     killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (bucket_start, type_id, doctrine_fit_id, doctrine_group_id, hull_type_id),
+    KEY idx_killmail_item_loss_1d_bucket_type (bucket_start, type_id),
     KEY idx_killmail_item_loss_1d_type_bucket (type_id, bucket_start),
+    KEY idx_killmail_item_loss_1d_bucket (bucket_start),
     KEY idx_killmail_item_loss_1d_group_bucket (doctrine_group_id, bucket_start),
     KEY idx_killmail_item_loss_1d_fit_bucket (doctrine_fit_id, bucket_start),
     KEY idx_killmail_item_loss_1d_hull_bucket (hull_type_id, bucket_start)
@@ -729,6 +733,7 @@ CREATE TABLE IF NOT EXISTS killmail_hull_loss_1d (
     killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (bucket_start, hull_type_id, doctrine_fit_id, doctrine_group_id),
+    KEY idx_killmail_hull_loss_1d_bucket (bucket_start),
     KEY idx_killmail_hull_loss_1d_hull_bucket (hull_type_id, bucket_start),
     KEY idx_killmail_hull_loss_1d_group_bucket (doctrine_group_id, bucket_start),
     KEY idx_killmail_hull_loss_1d_fit_bucket (doctrine_fit_id, bucket_start)
@@ -745,6 +750,9 @@ CREATE TABLE IF NOT EXISTS killmail_doctrine_activity_1d (
     killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (bucket_start, doctrine_fit_id, doctrine_group_id, hull_type_id),
+    KEY idx_killmail_doctrine_activity_1d_bucket_fit (bucket_start, doctrine_fit_id),
+    KEY idx_killmail_doctrine_activity_1d_bucket_group (bucket_start, doctrine_group_id),
+    KEY idx_killmail_doctrine_activity_1d_bucket (bucket_start),
     KEY idx_killmail_doctrine_activity_1d_group_bucket (doctrine_group_id, bucket_start),
     KEY idx_killmail_doctrine_activity_1d_fit_bucket (doctrine_fit_id, bucket_start),
     KEY idx_killmail_doctrine_activity_1d_hull_bucket (hull_type_id, bucket_start)
@@ -755,11 +763,16 @@ CREATE TABLE IF NOT EXISTS market_item_stock_1h (
     source_type ENUM('alliance_structure', 'market_hub') NOT NULL,
     source_id BIGINT UNSIGNED NOT NULL,
     type_id INT UNSIGNED NOT NULL,
+    sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+    stock_units_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
+    listing_count_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
     local_stock_units BIGINT NOT NULL DEFAULT 0,
     listing_count INT UNSIGNED NOT NULL DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+    KEY idx_market_item_stock_1h_bucket_type (bucket_start, type_id),
     KEY idx_market_item_stock_1h_type_bucket (type_id, bucket_start),
+    KEY idx_market_item_stock_1h_bucket (bucket_start),
     KEY idx_market_item_stock_1h_source_bucket (source_type, source_id, bucket_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -768,11 +781,16 @@ CREATE TABLE IF NOT EXISTS market_item_stock_1d (
     source_type ENUM('alliance_structure', 'market_hub') NOT NULL,
     source_id BIGINT UNSIGNED NOT NULL,
     type_id INT UNSIGNED NOT NULL,
+    sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+    stock_units_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
+    listing_count_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
     local_stock_units BIGINT NOT NULL DEFAULT 0,
     listing_count INT UNSIGNED NOT NULL DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+    KEY idx_market_item_stock_1d_bucket_type (bucket_start, type_id),
     KEY idx_market_item_stock_1d_type_bucket (type_id, bucket_start),
+    KEY idx_market_item_stock_1d_bucket (bucket_start),
     KEY idx_market_item_stock_1d_source_bucket (source_type, source_id, bucket_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -781,6 +799,11 @@ CREATE TABLE IF NOT EXISTS market_item_price_1h (
     source_type ENUM('alliance_structure', 'market_hub') NOT NULL,
     source_id BIGINT UNSIGNED NOT NULL,
     type_id INT UNSIGNED NOT NULL,
+    sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+    listing_count_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
+    avg_price_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
+    weighted_price_numerator DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
+    weighted_price_denominator DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
     listing_count INT UNSIGNED NOT NULL DEFAULT 0,
     min_price DECIMAL(20, 2) DEFAULT NULL,
     max_price DECIMAL(20, 2) DEFAULT NULL,
@@ -788,7 +811,9 @@ CREATE TABLE IF NOT EXISTS market_item_price_1h (
     weighted_price DECIMAL(20, 2) DEFAULT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+    KEY idx_market_item_price_1h_bucket_type (bucket_start, type_id),
     KEY idx_market_item_price_1h_type_bucket (type_id, bucket_start),
+    KEY idx_market_item_price_1h_bucket (bucket_start),
     KEY idx_market_item_price_1h_source_bucket (source_type, source_id, bucket_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -797,6 +822,11 @@ CREATE TABLE IF NOT EXISTS market_item_price_1d (
     source_type ENUM('alliance_structure', 'market_hub') NOT NULL,
     source_id BIGINT UNSIGNED NOT NULL,
     type_id INT UNSIGNED NOT NULL,
+    sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+    listing_count_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
+    avg_price_sum DECIMAL(20, 2) NOT NULL DEFAULT 0.00,
+    weighted_price_numerator DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
+    weighted_price_denominator DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
     listing_count INT UNSIGNED NOT NULL DEFAULT 0,
     min_price DECIMAL(20, 2) DEFAULT NULL,
     max_price DECIMAL(20, 2) DEFAULT NULL,
@@ -804,7 +834,9 @@ CREATE TABLE IF NOT EXISTS market_item_price_1d (
     weighted_price DECIMAL(20, 2) DEFAULT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+    KEY idx_market_item_price_1d_bucket_type (bucket_start, type_id),
     KEY idx_market_item_price_1d_type_bucket (type_id, bucket_start),
+    KEY idx_market_item_price_1d_bucket (bucket_start),
     KEY idx_market_item_price_1d_source_bucket (source_type, source_id, bucket_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -838,6 +870,9 @@ CREATE TABLE IF NOT EXISTS doctrine_fit_activity_1d (
     priority_score DECIMAL(8,2) NOT NULL DEFAULT 0.00,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (bucket_start, fit_id),
+    KEY idx_doctrine_fit_activity_1d_bucket_fit (bucket_start, fit_id),
+    KEY idx_doctrine_fit_activity_1d_bucket_group (bucket_start, doctrine_group_id),
+    KEY idx_doctrine_fit_activity_1d_bucket (bucket_start),
     KEY idx_doctrine_fit_activity_1d_group_bucket (doctrine_group_id, bucket_start),
     KEY idx_doctrine_fit_activity_1d_hull_bucket (hull_type_id, bucket_start),
     KEY idx_doctrine_fit_activity_1d_priority (priority_score, bucket_start)
@@ -856,6 +891,8 @@ CREATE TABLE IF NOT EXISTS doctrine_group_activity_1d (
     priority_score DECIMAL(8,2) NOT NULL DEFAULT 0.00,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (bucket_start, group_id),
+    KEY idx_doctrine_group_activity_1d_bucket_group (bucket_start, group_id),
+    KEY idx_doctrine_group_activity_1d_bucket (bucket_start),
     KEY idx_doctrine_group_activity_1d_priority (priority_score, bucket_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -909,7 +946,12 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('killmail_ingestion_max_sequences_per_run', '120'),
     ('killmail_demand_prediction_mode', 'baseline'),
     ('analytics_bucket_1h_retention_days', '14'),
-    ('analytics_bucket_1d_retention_days', '400'),
+    ('analytics_bucket_1d_retention_days', '180'),
+    ('analytics_bucket_max_runtime_seconds', '15'),
+    ('analytics_bucket_killmail_max_rows_per_run', '1000'),
+    ('analytics_bucket_market_max_rows_per_run', '1000'),
+    ('analytics_bucket_doctrine_rollup_max_rows_per_run', '500'),
+    ('analytics_bucket_cache_ttl_seconds', '300'),
     ('raw_order_snapshot_retention_days', '30'),
     ('market_compare_deviation_percent', '5'),
     ('market_compare_min_alliance_sell_volume', '50'),
