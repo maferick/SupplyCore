@@ -1486,7 +1486,7 @@ INSERT INTO sync_schedules (
     ('alliance_historical_sync', 1, 360, 21600, 300, 5, 'normal', 'background', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('market_hub_historical_sync', 1, 360, 21600, 0, 0, 'normal', 'background', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('forecasting_ai_sync', 1, 60, 3600, 0, 0, 'normal', 'background', 300, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('deal_alerts_sync', 1, 5, 300, 60, 1, 'high', 'single', 90, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
+    ('deal_alerts_sync', 1, 5, 300, 60, 1, 'high', 'single', 90, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('activity_priority_summary_sync', 1, 15, 900, 780, 13, 'normal', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
     ('analytics_bucket_1h_sync', 1, 15, 900, 900, 15, 'normal', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
     ('analytics_bucket_1d_sync', 1, 60, 3600, 960, 16, 'normal', 'single', 240, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL)

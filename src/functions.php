@@ -2426,7 +2426,7 @@ function scheduler_registry_definitions(): array
 {
     return [
         'market_hub_current_sync' => ['label' => 'Market Hub Current', 'default_interval_minutes' => 8, 'default_offset_minutes' => 0, 'priority' => 'high', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 8],
-        'deal_alerts_sync' => ['label' => 'Deal Alerts', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
+        'deal_alerts_sync' => ['label' => 'Deal Alerts', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
         'alliance_current_sync' => ['label' => 'Alliance Current', 'default_interval_minutes' => 4, 'default_offset_minutes' => 2, 'priority' => 'medium', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
         'killmail_r2z2_sync' => ['label' => 'Killmail R2Z2 Stream', 'default_interval_minutes' => 3, 'default_offset_minutes' => 3, 'priority' => 'highest', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 3],
         'configured_structure_destination_id_for_esi_sync' => ['label' => 'Configured Structure Destination for ESI', 'default_interval_minutes' => 30, 'default_offset_minutes' => 4, 'priority' => 'normal', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
@@ -7384,9 +7384,10 @@ function scheduler_reconcile_baseline_rows(array $definitions, array $existingRo
 {
     $legacyFixes = [
         'deal_alerts_sync' => static function (array $row): bool {
-            return (int) ($row['interval_minutes'] ?? 0) === 5
-                && (int) ($row['offset_minutes'] ?? 0) === 1
-                && (string) ($row['priority'] ?? 'normal') === 'normal';
+            return ((int) ($row['interval_minutes'] ?? 0) === 5
+                    && (int) ($row['offset_minutes'] ?? 0) === 1
+                    && (string) ($row['priority'] ?? 'normal') === 'normal')
+                || empty($row['explicitly_configured']);
         },
         'alliance_historical_sync' => static function (array $row): bool {
             return (int) ($row['interval_minutes'] ?? 0) === 360
@@ -7415,7 +7416,7 @@ function scheduler_reconcile_baseline_rows(array $definitions, array $existingRo
                 'concurrency_policy' => (string) ($row['concurrency_policy'] ?? $definition['concurrency_policy'] ?? 'single'),
                 'tuning_mode' => (string) ($row['tuning_mode'] ?? $definition['tuning_mode'] ?? 'automatic'),
                 'discovered_from_code' => true,
-                'explicitly_configured' => !empty($row['explicitly_configured']),
+                'explicitly_configured' => (bool) ($definition['explicitly_configured'] ?? !empty($row['explicitly_configured'])),
             ]
         );
 
