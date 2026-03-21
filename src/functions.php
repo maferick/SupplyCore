@@ -2037,6 +2037,165 @@ function sanitize_incremental_chunk_size(mixed $value): string
     return (string) $chunk;
 }
 
+function scheduler_operational_profile_options(): array
+{
+    return [
+        'low' => [
+            'label' => 'Low',
+            'description' => 'Conservative cadence for smaller servers or quieter hours. Uses fewer concurrent workers and slower summary refreshes.',
+        ],
+        'medium' => [
+            'label' => 'Medium',
+            'description' => 'Balanced default for most installations. Keeps fast operational data fresh without overdriving the host.',
+        ],
+        'high' => [
+            'label' => 'High',
+            'description' => 'Aggressive cadence for larger hosts that need tighter market, killmail, and dashboard freshness.',
+        ],
+    ];
+}
+
+function sanitize_scheduler_operational_profile(?string $value): string
+{
+    $profile = strtolower(trim((string) $value));
+
+    return array_key_exists($profile, scheduler_operational_profile_options()) ? $profile : 'medium';
+}
+
+function scheduler_selected_operational_profile(): string
+{
+    return sanitize_scheduler_operational_profile(get_setting('scheduler_operational_profile', 'medium'));
+}
+
+function scheduler_operational_profile_matrix(string $profile): array
+{
+    $safeProfile = sanitize_scheduler_operational_profile($profile);
+
+    $runtime = [
+        'low' => [
+            'max_concurrent_jobs' => 2,
+            'cpu_budget_percent' => 140.0,
+            'memory_budget_fraction' => 0.42,
+            'daemon_memory_limit_fraction' => 0.52,
+            'daemon_poll_interval_seconds' => 8,
+            'daemon_running_poll_interval_seconds' => 3,
+            'daemon_max_runtime_seconds' => 43200,
+        ],
+        'medium' => [
+            'max_concurrent_jobs' => 4,
+            'cpu_budget_percent' => 240.0,
+            'memory_budget_fraction' => 0.55,
+            'daemon_memory_limit_fraction' => 0.62,
+            'daemon_poll_interval_seconds' => 5,
+            'daemon_running_poll_interval_seconds' => 2,
+            'daemon_max_runtime_seconds' => 64800,
+        ],
+        'high' => [
+            'max_concurrent_jobs' => 6,
+            'cpu_budget_percent' => 360.0,
+            'memory_budget_fraction' => 0.68,
+            'daemon_memory_limit_fraction' => 0.74,
+            'daemon_poll_interval_seconds' => 3,
+            'daemon_running_poll_interval_seconds' => 1,
+            'daemon_max_runtime_seconds' => 86400,
+        ],
+    ];
+
+    $jobs = [
+        'market_hub_current_sync' => [
+            'low' => ['interval_minutes' => 10, 'timeout_seconds' => 240, 'priority' => 'high'],
+            'medium' => ['interval_minutes' => 6, 'timeout_seconds' => 240, 'priority' => 'high'],
+            'high' => ['interval_minutes' => 3, 'timeout_seconds' => 300, 'priority' => 'high'],
+        ],
+        'deal_alerts_sync' => [
+            'low' => ['interval_minutes' => 12, 'timeout_seconds' => 90, 'priority' => 'medium'],
+            'medium' => ['interval_minutes' => 5, 'timeout_seconds' => 90, 'priority' => 'high'],
+            'high' => ['interval_minutes' => 3, 'timeout_seconds' => 120, 'priority' => 'high'],
+        ],
+        'alliance_current_sync' => [
+            'low' => ['interval_minutes' => 10, 'timeout_seconds' => 180, 'priority' => 'medium'],
+            'medium' => ['interval_minutes' => 6, 'timeout_seconds' => 180, 'priority' => 'medium'],
+            'high' => ['interval_minutes' => 4, 'timeout_seconds' => 240, 'priority' => 'high'],
+        ],
+        'killmail_r2z2_sync' => [
+            'low' => ['interval_minutes' => 5, 'timeout_seconds' => 120, 'priority' => 'high'],
+            'medium' => ['interval_minutes' => 2, 'timeout_seconds' => 120, 'priority' => 'highest'],
+            'high' => ['interval_minutes' => 1, 'timeout_seconds' => 150, 'priority' => 'highest'],
+        ],
+        'current_state_refresh_sync' => [
+            'low' => ['interval_minutes' => 15, 'timeout_seconds' => 120, 'priority' => 'medium'],
+            'medium' => ['interval_minutes' => 8, 'timeout_seconds' => 120, 'priority' => 'medium'],
+            'high' => ['interval_minutes' => 5, 'timeout_seconds' => 150, 'priority' => 'high'],
+        ],
+        'doctrine_intelligence_sync' => [
+            'low' => ['interval_minutes' => 20, 'timeout_seconds' => 180, 'priority' => 'normal'],
+            'medium' => ['interval_minutes' => 15, 'timeout_seconds' => 180, 'priority' => 'normal'],
+            'high' => ['interval_minutes' => 10, 'timeout_seconds' => 240, 'priority' => 'medium'],
+        ],
+        'market_comparison_summary_sync' => [
+            'low' => ['interval_minutes' => 20, 'timeout_seconds' => 180, 'priority' => 'normal'],
+            'medium' => ['interval_minutes' => 15, 'timeout_seconds' => 180, 'priority' => 'normal'],
+            'high' => ['interval_minutes' => 10, 'timeout_seconds' => 240, 'priority' => 'medium'],
+        ],
+        'loss_demand_summary_sync' => [
+            'low' => ['interval_minutes' => 20, 'timeout_seconds' => 180, 'priority' => 'normal'],
+            'medium' => ['interval_minutes' => 15, 'timeout_seconds' => 180, 'priority' => 'normal'],
+            'high' => ['interval_minutes' => 10, 'timeout_seconds' => 240, 'priority' => 'medium'],
+        ],
+        'dashboard_summary_sync' => [
+            'low' => ['interval_minutes' => 20, 'timeout_seconds' => 180, 'priority' => 'normal'],
+            'medium' => ['interval_minutes' => 12, 'timeout_seconds' => 180, 'priority' => 'high'],
+            'high' => ['interval_minutes' => 6, 'timeout_seconds' => 240, 'priority' => 'high'],
+        ],
+        'rebuild_ai_briefings' => [
+            'low' => ['interval_minutes' => 30, 'timeout_seconds' => 240, 'priority' => 'normal'],
+            'medium' => ['interval_minutes' => 20, 'timeout_seconds' => 300, 'priority' => 'normal'],
+            'high' => ['interval_minutes' => 15, 'timeout_seconds' => 420, 'priority' => 'medium'],
+        ],
+        'market_hub_local_history_sync' => [
+            'low' => ['interval_minutes' => 30, 'timeout_seconds' => 1500, 'priority' => 'normal'],
+            'medium' => ['interval_minutes' => 12, 'timeout_seconds' => 1800, 'priority' => 'normal'],
+            'high' => ['interval_minutes' => 5, 'timeout_seconds' => 1800, 'priority' => 'medium'],
+        ],
+        'alliance_historical_sync' => [
+            'low' => ['interval_minutes' => 480, 'timeout_seconds' => 3600, 'priority' => 'normal'],
+            'medium' => ['interval_minutes' => 360, 'timeout_seconds' => 3600, 'priority' => 'normal'],
+            'high' => ['interval_minutes' => 240, 'timeout_seconds' => 4200, 'priority' => 'medium'],
+        ],
+        'market_hub_historical_sync' => [
+            'low' => ['interval_minutes' => 480, 'timeout_seconds' => 3600, 'priority' => 'normal'],
+            'medium' => ['interval_minutes' => 360, 'timeout_seconds' => 3600, 'priority' => 'normal'],
+            'high' => ['interval_minutes' => 240, 'timeout_seconds' => 4200, 'priority' => 'medium'],
+        ],
+        'forecasting_ai_sync' => [
+            'low' => ['interval_minutes' => 120, 'timeout_seconds' => 300, 'priority' => 'normal'],
+            'medium' => ['interval_minutes' => 60, 'timeout_seconds' => 300, 'priority' => 'normal'],
+            'high' => ['interval_minutes' => 45, 'timeout_seconds' => 420, 'priority' => 'normal'],
+        ],
+        'activity_priority_summary_sync' => [
+            'low' => ['interval_minutes' => 20, 'timeout_seconds' => 180, 'priority' => 'normal'],
+            'medium' => ['interval_minutes' => 15, 'timeout_seconds' => 180, 'priority' => 'normal'],
+            'high' => ['interval_minutes' => 10, 'timeout_seconds' => 240, 'priority' => 'medium'],
+        ],
+        'analytics_bucket_1h_sync' => [
+            'low' => ['interval_minutes' => 20, 'timeout_seconds' => 180, 'priority' => 'normal'],
+            'medium' => ['interval_minutes' => 15, 'timeout_seconds' => 180, 'priority' => 'normal'],
+            'high' => ['interval_minutes' => 10, 'timeout_seconds' => 240, 'priority' => 'medium'],
+        ],
+        'analytics_bucket_1d_sync' => [
+            'low' => ['interval_minutes' => 120, 'timeout_seconds' => 240, 'priority' => 'normal'],
+            'medium' => ['interval_minutes' => 60, 'timeout_seconds' => 240, 'priority' => 'normal'],
+            'high' => ['interval_minutes' => 45, 'timeout_seconds' => 300, 'priority' => 'normal'],
+        ],
+    ];
+
+    return [
+        'profile' => $safeProfile,
+        'runtime' => $runtime[$safeProfile] ?? $runtime['medium'],
+        'jobs' => array_map(static fn (array $jobConfig): array => $jobConfig[$safeProfile] ?? $jobConfig['medium'], $jobs),
+    ];
+}
+
 function sanitize_sync_schedule_enabled(mixed $value): int
 {
     return $value === '1' || $value === 1 || $value === true || $value === 'on' ? 1 : 0;
@@ -2096,6 +2255,7 @@ function sanitize_enabled_flag(mixed $value): string
 function data_sync_pipeline_setting_defaults(): array
 {
     return [
+        'scheduler_operational_profile' => 'medium',
         'incremental_updates_enabled' => '1',
         'incremental_strategy' => 'watermark_upsert',
         'incremental_delete_policy' => 'reconcile',
@@ -2122,6 +2282,7 @@ function data_sync_pipeline_setting_value(array $settings, string $key): string
     $value = $settings[$key] ?? ($defaults[$key] ?? '');
 
     return match ($key) {
+        'scheduler_operational_profile' => sanitize_scheduler_operational_profile((string) $value),
         'incremental_updates_enabled',
         'alliance_current_pipeline_enabled',
         'alliance_history_pipeline_enabled',
@@ -2485,6 +2646,10 @@ function scheduler_daemon_lease_ttl_seconds(): int
 function scheduler_daemon_poll_interval_seconds(): int
 {
     $configured = (int) config('scheduler.daemon_poll_interval_seconds', (int) getenv('SCHEDULER_DAEMON_POLL_INTERVAL_SECONDS'));
+    if ($configured <= 0) {
+        $profile = scheduler_operational_profile_matrix(scheduler_selected_operational_profile());
+        $configured = (int) ($profile['runtime']['daemon_poll_interval_seconds'] ?? 5);
+    }
 
     return max(2, min(30, $configured > 0 ? $configured : 5));
 }
@@ -2492,6 +2657,10 @@ function scheduler_daemon_poll_interval_seconds(): int
 function scheduler_daemon_running_poll_interval_seconds(): int
 {
     $configured = (int) config('scheduler.daemon_running_poll_interval_seconds', (int) getenv('SCHEDULER_DAEMON_RUNNING_POLL_INTERVAL_SECONDS'));
+    if ($configured <= 0) {
+        $profile = scheduler_operational_profile_matrix(scheduler_selected_operational_profile());
+        $configured = (int) ($profile['runtime']['daemon_running_poll_interval_seconds'] ?? 2);
+    }
 
     return max(1, min(10, $configured > 0 ? $configured : 2));
 }
@@ -2499,6 +2668,10 @@ function scheduler_daemon_running_poll_interval_seconds(): int
 function scheduler_daemon_max_runtime_seconds(): int
 {
     $configured = (int) config('scheduler.daemon_max_runtime_seconds', (int) getenv('SCHEDULER_DAEMON_MAX_RUNTIME_SECONDS'));
+    if ($configured <= 0) {
+        $profile = scheduler_operational_profile_matrix(scheduler_selected_operational_profile());
+        $configured = (int) ($profile['runtime']['daemon_max_runtime_seconds'] ?? 21600);
+    }
 
     return max(300, $configured > 0 ? $configured : 21600);
 }
@@ -2517,9 +2690,11 @@ function scheduler_daemon_memory_recycle_bytes(): int
         return $configured;
     }
 
+    $profile = scheduler_operational_profile_matrix(scheduler_selected_operational_profile());
+    $fraction = (float) ($profile['runtime']['daemon_memory_limit_fraction'] ?? 0.62);
     $memoryLimit = scheduler_parse_memory_limit_bytes((string) ini_get('memory_limit'));
     if ($memoryLimit !== null && $memoryLimit > 0) {
-        return max(134217728, (int) round($memoryLimit * 0.7));
+        return max(134217728, (int) round($memoryLimit * min(0.85, max(0.35, $fraction))));
     }
 
     return 268435456;
@@ -2769,6 +2944,21 @@ function scheduler_daemon_spawn_detached(): array
     ];
 }
 
+function scheduler_daemon_should_self_respawn(string $exitReason, int $exitCode): bool
+{
+    if ($exitCode !== 0) {
+        return false;
+    }
+
+    return in_array($exitReason, [
+        'max_runtime_reached',
+        'max_loop_count_reached',
+        'memory_recycle_threshold_reached',
+        'signal_restart_requested',
+        'database_restart_requested',
+    ], true);
+}
+
 function scheduler_watchdog_start_daemon(): array
 {
     if (!function_exists('exec')) {
@@ -2986,12 +3176,17 @@ function scheduler_daemon_run(?callable $logger = null): int
     } finally {
         $finalStatus = $exitCode === 0 ? 'stopped' : 'failed';
         db_scheduler_daemon_release(scheduler_daemon_key(), $ownerToken, $finalStatus, $exitCode, $exitReason);
+        $respawnResult = null;
+        if (scheduler_daemon_should_self_respawn($exitReason, $exitCode)) {
+            $respawnResult = scheduler_daemon_spawn_detached();
+        }
         if ($logger !== null) {
             $logger('scheduler_daemon.stopped', [
                 'status' => $finalStatus,
                 'exit_code' => $exitCode,
                 'exit_reason' => $exitReason,
                 'loop_count' => $loopCount,
+                'respawn' => $respawnResult,
             ]);
         }
     }
@@ -3339,18 +3534,23 @@ function scheduler_capacity_model(): array
     }
 
     $cores = scheduler_cpu_core_count();
+    $profile = scheduler_operational_profile_matrix(scheduler_selected_operational_profile());
+    $runtimeProfile = (array) ($profile['runtime'] ?? []);
     $memoryLimit = scheduler_parse_memory_limit_bytes((string) ini_get('memory_limit'));
     $cpuBudget = (float) config('scheduler.cpu_budget_percent', (float) getenv('SCHEDULER_CPU_BUDGET_PERCENT'));
     if ($cpuBudget <= 0) {
-        $cpuBudget = min(400.0, max(100.0, $cores * 70.0));
+        $profileCpuBudget = (float) ($runtimeProfile['cpu_budget_percent'] ?? 0.0);
+        $cpuBudget = $profileCpuBudget > 0 ? $profileCpuBudget : min(400.0, max(100.0, $cores * 70.0));
     }
     $memoryBudget = (int) config('scheduler.memory_budget_bytes', (int) getenv('SCHEDULER_MEMORY_BUDGET_BYTES'));
     if ($memoryBudget <= 0) {
-        $memoryBudget = $memoryLimit !== null ? (int) round($memoryLimit * 0.6) : (512 * 1024 * 1024);
+        $memoryFraction = (float) ($runtimeProfile['memory_budget_fraction'] ?? 0.6);
+        $memoryBudget = $memoryLimit !== null ? (int) round($memoryLimit * min(0.85, max(0.30, $memoryFraction))) : (512 * 1024 * 1024);
     }
     $maxConcurrent = (int) config('scheduler.max_concurrent_jobs', (int) getenv('SCHEDULER_MAX_CONCURRENT_JOBS'));
     if ($maxConcurrent <= 0) {
-        $maxConcurrent = max(1, min(6, $cores + 1));
+        $profileConcurrent = (int) ($runtimeProfile['max_concurrent_jobs'] ?? 0);
+        $maxConcurrent = $profileConcurrent > 0 ? $profileConcurrent : max(1, min(6, $cores + 1));
     }
 
     $reservedCpu = (float) config('scheduler.reserved_critical_cpu_percent', (float) getenv('SCHEDULER_RESERVED_CRITICAL_CPU_PERCENT'));
@@ -4664,6 +4864,8 @@ function scheduler_profiling_tick(?callable $logger = null): ?array
 function sync_schedule_settings_view_model(): array
 {
     scheduler_registry_bootstrap();
+    $selectedProfile = scheduler_selected_operational_profile();
+    $profileMatrix = scheduler_operational_profile_matrix($selectedProfile);
 
     try {
         $rows = db_sync_schedule_fetch_all();
@@ -4800,6 +5002,9 @@ function sync_schedule_settings_view_model(): array
             'recent_outcomes' => $outcomeSummary[$jobKey] ?? ['failed_runs' => 0, 'successful_runs' => 0, 'total_runs' => 0],
             'discovery_classification' => (string) ($definition['discovery_classification'] ?? (scheduler_is_internal_mechanic_job($jobKey) ? 'internal' : 'operational')),
             'protected_offset' => scheduler_is_protected_job($jobKey),
+            'profile_interval_minutes' => (int) (($profileMatrix['jobs'][$jobKey]['interval_minutes'] ?? ($definition['default_interval_minutes'] ?? 30))),
+            'profile_timeout_seconds' => (int) (($profileMatrix['jobs'][$jobKey]['timeout_seconds'] ?? ($definition['timeout_seconds'] ?? 300))),
+            'profile_priority' => (string) (($profileMatrix['jobs'][$jobKey]['priority'] ?? ($definition['priority'] ?? 'normal'))),
         ];
         $resourceProfile = scheduler_job_recent_resource_profile($jobKey, $row);
         $urgency = scheduler_job_urgency_snapshot($row, $recentDecisionCounts);
@@ -4875,6 +5080,9 @@ function sync_schedule_settings_view_model(): array
     }
 
     return [
+        'selected_profile' => $selectedProfile,
+        'profile_options' => scheduler_operational_profile_options(),
+        'profile_runtime' => (array) ($profileMatrix['runtime'] ?? []),
         'configured_jobs' => $configuredJobs,
         'discovered_jobs' => $discoveredJobs,
         'internal_jobs' => $internalJobs,
@@ -4907,31 +5115,32 @@ function scheduler_request_int(array $request, string $key, int $default, int $m
     return max($min, min($max, $value));
 }
 
-function save_data_sync_schedule_settings(array $request): bool
+function scheduler_apply_operational_profile(string $profile): bool
 {
+    $safeProfile = sanitize_scheduler_operational_profile($profile);
+    $definitions = data_sync_schedule_job_definitions();
+    $profileMatrix = scheduler_operational_profile_matrix($safeProfile);
+    $profileJobs = (array) ($profileMatrix['jobs'] ?? []);
+
     try {
-        db_transaction(function () use ($request): void {
-            foreach (data_sync_schedule_job_definitions() as $jobKey => $definition) {
-                if (!array_key_exists($definition['enabled_key'], $request) && !array_key_exists($definition['interval_minutes_key'], $request)) {
+        db_transaction(function () use ($safeProfile, $definitions, $profileJobs): void {
+            foreach ($definitions as $jobKey => $definition) {
+                if (!($definition['explicitly_configured'] ?? false)) {
                     continue;
                 }
 
-                $enabled = scheduler_request_bool($request, (string) $definition['enabled_key']);
-                $intervalMinutes = scheduler_request_int($request, (string) $definition['interval_minutes_key'], (int) ($definition['default_interval_minutes'] ?? 30), 1, 1440);
-                $offsetMinutes = scheduler_request_int($request, (string) $definition['offset_minutes_key'], (int) ($definition['default_offset_minutes'] ?? 0), 0, 1439);
-                $timeoutSeconds = scheduler_request_int($request, (string) $definition['timeout_key'], (int) ($definition['timeout_seconds'] ?? 300), 30, 7200);
-                $priority = trim((string) ($request[$definition['priority_key']] ?? ($definition['priority'] ?? 'normal')));
+                $jobProfile = (array) ($profileJobs[$jobKey] ?? []);
+                $intervalMinutes = max(1, min(1440, (int) ($jobProfile['interval_minutes'] ?? ($definition['default_interval_minutes'] ?? 30))));
+                $timeoutSeconds = max(30, min(7200, (int) ($jobProfile['timeout_seconds'] ?? ($definition['timeout_seconds'] ?? 300))));
+                $priority = trim((string) ($jobProfile['priority'] ?? ($definition['priority'] ?? 'normal')));
                 if (!array_key_exists($priority, scheduler_priority_options())) {
                     $priority = (string) ($definition['priority'] ?? 'normal');
                 }
-                $tuningMode = trim((string) ($request[$definition['mode_key']] ?? ($definition['tuning_mode'] ?? 'automatic')));
-                if (!array_key_exists($tuningMode, scheduler_tuning_mode_options())) {
-                    $tuningMode = (string) ($definition['tuning_mode'] ?? 'automatic');
-                }
+                $offsetMinutes = max(0, min(1439, (int) ($definition['default_offset_minutes'] ?? 0)));
 
                 db_sync_schedule_upsert(
                     $jobKey,
-                    $enabled,
+                    1,
                     $intervalMinutes * 60,
                     $offsetMinutes * 60,
                     [
@@ -4940,25 +5149,26 @@ function save_data_sync_schedule_settings(array $request): bool
                         'priority' => $priority,
                         'timeout_seconds' => $timeoutSeconds,
                         'concurrency_policy' => (string) ($definition['concurrency_policy'] ?? 'single'),
-                        'tuning_mode' => $tuningMode,
+                        'tuning_mode' => 'automatic',
                         'discovered_from_code' => 1,
-                        'explicitly_configured' => (bool) ($definition['explicitly_configured'] ?? false),
+                        'explicitly_configured' => true,
+                        'last_auto_tune_reason' => 'Applied scheduler profile "' . $safeProfile . '" from Settings.',
                     ]
                 );
 
                 db_scheduler_tuning_action_log(
                     $jobKey,
                     'admin',
-                    'manual_update',
-                    'Admin updated scheduler controls from the sync control panel.',
+                    'profile_apply',
+                    'Admin applied the "' . $safeProfile . '" scheduler profile from the sync control panel.',
                     [],
                     [
-                        'enabled' => $enabled,
+                        'profile' => $safeProfile,
                         'interval_minutes' => $intervalMinutes,
                         'offset_minutes' => $offsetMinutes,
                         'priority' => $priority,
                         'timeout_seconds' => $timeoutSeconds,
-                        'tuning_mode' => $tuningMode,
+                        'tuning_mode' => 'automatic',
                     ],
                     []
                 );
@@ -4969,6 +5179,11 @@ function save_data_sync_schedule_settings(array $request): bool
     }
 
     return true;
+}
+
+function save_data_sync_schedule_settings(array $request): bool
+{
+    return scheduler_apply_operational_profile((string) ($request['scheduler_operational_profile'] ?? 'medium'));
 }
 
 function sanitize_redis_host(?string $value): string
@@ -5006,6 +5221,7 @@ function data_sync_settings_from_request(array $request): array
     $baselineDate = sync_automation_enabled_since_date();
 
     return [
+        'scheduler_operational_profile' => sanitize_scheduler_operational_profile($request['scheduler_operational_profile'] ?? 'medium'),
         'incremental_updates_enabled' => sanitize_pipeline_enabled($request['incremental_updates_enabled'] ?? null),
         'incremental_strategy' => sanitize_incremental_strategy($request['incremental_strategy'] ?? null),
         'incremental_delete_policy' => sanitize_incremental_delete_policy($request['incremental_delete_policy'] ?? null),
