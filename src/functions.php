@@ -4325,7 +4325,10 @@ function scheduler_profiling_insert_sample(int $runId, array $job, string $phase
 function scheduler_profiling_run_isolated_sample(array $run, array $job): array
 {
     $jobKey = (string) ($job['job_key'] ?? '');
-    $lockTtl = scheduler_job_lock_ttl_seconds((int) ($job['timeout_seconds'] ?? 300) + 120, (int) ($job['timeout_seconds'] ?? 300));
+    $definitions = scheduler_job_definitions();
+    $timeoutResolution = scheduler_resolve_job_timeout($jobKey, $job, $definitions[$jobKey] ?? null);
+    $timeoutSeconds = (int) ($timeoutResolution['enforced_timeout_seconds'] ?? 300);
+    $lockTtl = scheduler_job_lock_ttl_seconds($timeoutSeconds + 120, $timeoutSeconds);
     $claimed = db_sync_schedule_claim_job_forced((int) ($job['id'] ?? 0), $lockTtl);
     if ($claimed === null) {
         throw new RuntimeException('Could not claim ' . $jobKey . ' for isolated profiling.');
@@ -4379,8 +4382,12 @@ function scheduler_profiling_pair_candidates(array $targets, array $isolatedSumm
 
 function scheduler_profiling_run_pair_probe(array $run, array $primary, array $secondary): array
 {
-    $primaryClaim = db_sync_schedule_claim_job_forced((int) ($primary['id'] ?? 0), (int) (($primary['timeout_seconds'] ?? 300) + ($secondary['timeout_seconds'] ?? 300) + 180));
-    $secondaryClaim = db_sync_schedule_claim_job_forced((int) ($secondary['id'] ?? 0), (int) (($primary['timeout_seconds'] ?? 300) + ($secondary['timeout_seconds'] ?? 300) + 180));
+    $definitions = scheduler_job_definitions();
+    $primaryTimeout = (int) (scheduler_resolve_job_timeout((string) ($primary['job_key'] ?? ''), $primary, $definitions[(string) ($primary['job_key'] ?? '')] ?? null)['enforced_timeout_seconds'] ?? 300);
+    $secondaryTimeout = (int) (scheduler_resolve_job_timeout((string) ($secondary['job_key'] ?? ''), $secondary, $definitions[(string) ($secondary['job_key'] ?? '')] ?? null)['enforced_timeout_seconds'] ?? 300);
+    $combinedTimeout = $primaryTimeout + $secondaryTimeout + 180;
+    $primaryClaim = db_sync_schedule_claim_job_forced((int) ($primary['id'] ?? 0), $combinedTimeout);
+    $secondaryClaim = db_sync_schedule_claim_job_forced((int) ($secondary['id'] ?? 0), $combinedTimeout);
     if ($primaryClaim === null || $secondaryClaim === null) {
         if ($primaryClaim !== null) {
             db_sync_schedule_release_claim((int) ($primaryClaim['id'] ?? 0), gmdate('Y-m-d H:i:s', time() + 60), 'profiling-claim-released');
@@ -4394,7 +4401,7 @@ function scheduler_profiling_run_pair_probe(array $run, array $primary, array $s
     $dispatchResult = scheduler_dispatch_background_job($primaryClaim);
     usleep(300000);
     $inlineResult = scheduler_run_job($secondaryClaim);
-    $primaryRow = scheduler_profiling_wait_for_job_finish((int) ($primaryClaim['id'] ?? 0), (int) (($primary['timeout_seconds'] ?? 300) + 120)) ?? [];
+    $primaryRow = scheduler_profiling_wait_for_job_finish((int) ($primaryClaim['id'] ?? 0), $primaryTimeout + 120) ?? [];
     if ((string) ($primaryRow['current_state'] ?? '') === 'running') {
         $primaryRow['last_status'] = 'failed';
         $primaryRow['last_error'] = 'Compatibility probe timed out while waiting for the background job to finish.';
@@ -4949,6 +4956,7 @@ function sync_schedule_settings_view_model(): array
         $currentState = (string) ($row['current_state'] ?? ((int) ($row['enabled'] ?? 1) === 1 ? 'waiting' : 'stopped'));
         $nextDueAt = $row['next_due_at'] ?? $row['next_run_at'] ?? null;
         $latenessSeconds = $nextDueAt !== null ? max(0, time() - (int) strtotime((string) $nextDueAt)) : 0;
+        $timeoutResolution = scheduler_resolve_job_timeout($jobKey, $row, $definition);
         $lastAction = null;
         foreach ($recentActions as $action) {
             if (($action['job_key'] ?? '') === $jobKey) {
@@ -4972,6 +4980,17 @@ function sync_schedule_settings_view_model(): array
             'average_duration_seconds' => $row['average_duration_seconds'] ?? $jobRunStats['average_duration_seconds'],
             'p95_duration_seconds' => $row['p95_duration_seconds'] ?? $jobRunStats['p95_duration_seconds'],
             'timeout_seconds' => (int) ($row['timeout_seconds'] ?? ($definition['timeout_seconds'] ?? 300)),
+            'resolved_timeout_seconds' => (int) ($timeoutResolution['resolved_timeout_seconds'] ?? ($row['timeout_seconds'] ?? ($definition['timeout_seconds'] ?? 300))),
+            'enforced_timeout_seconds' => (int) ($timeoutResolution['enforced_timeout_seconds'] ?? ($row['timeout_seconds'] ?? ($definition['timeout_seconds'] ?? 300))),
+            'timeout_source' => (string) ($timeoutResolution['timeout_source'] ?? 'unknown'),
+            'definition_timeout_seconds' => (int) ($timeoutResolution['definition_timeout_seconds'] ?? ($definition['timeout_seconds'] ?? 300)),
+            'schedule_timeout_seconds' => isset($timeoutResolution['schedule_timeout_seconds']) && $timeoutResolution['schedule_timeout_seconds'] !== null
+                ? (int) $timeoutResolution['schedule_timeout_seconds']
+                : null,
+            'global_default_timeout_seconds' => (int) ($timeoutResolution['global_default_timeout_seconds'] ?? scheduler_global_timeout_default_seconds()),
+            'env_timeout_seconds' => isset($timeoutResolution['env_timeout_seconds']) && $timeoutResolution['env_timeout_seconds'] !== null
+                ? (int) $timeoutResolution['env_timeout_seconds']
+                : null,
             'last_result' => (string) ($row['last_result'] ?? $row['last_status'] ?? 'never'),
             'last_error' => (string) ($row['last_error'] ?? ''),
             'current_state' => $currentState,
@@ -9220,17 +9239,58 @@ function scheduler_timeout_env_key(string $jobKey): string
     return 'SCHEDULER_TIMEOUT_' . trim($normalizedKey, '_');
 }
 
-function scheduler_job_timeout_seconds(string $jobKey, int $defaultSeconds = 300): int
+function scheduler_global_timeout_default_seconds(int $fallbackSeconds = 300): int
 {
-    $fallback = max(30, min(3600, $defaultSeconds));
-    $configuredDefault = max(30, min(3600, (int) config('scheduler.default_timeout_seconds', $fallback)));
-    $envValue = getenv(scheduler_timeout_env_key($jobKey));
+    $fallback = max(30, min(7200, $fallbackSeconds));
 
-    if ($envValue === false || trim((string) $envValue) === '') {
-        return $configuredDefault;
+    return max(30, min(7200, (int) config('scheduler.default_timeout_seconds', $fallback)));
+}
+
+function scheduler_resolve_job_timeout(string $jobKey, ?array $job = null, ?array $definition = null, int $fallbackSeconds = 300): array
+{
+    $globalDefault = scheduler_global_timeout_default_seconds($fallbackSeconds);
+    $definitionTimeout = max(30, min(7200, (int) (($definition['timeout_seconds'] ?? 0) ?: $fallbackSeconds)));
+    $scheduleTimeout = null;
+    if (is_array($job) && array_key_exists('timeout_seconds', $job) && $job['timeout_seconds'] !== null) {
+        $scheduleTimeout = max(30, min(7200, (int) $job['timeout_seconds']));
     }
 
-    return max(30, min(3600, (int) $envValue));
+    $envValue = getenv(scheduler_timeout_env_key($jobKey));
+    $source = 'global_default';
+    $resolved = $globalDefault;
+
+    if ($definitionTimeout > 0) {
+        $source = 'job_definition';
+        $resolved = $definitionTimeout;
+    }
+
+    if ($scheduleTimeout !== null) {
+        $source = 'persisted_schedule';
+        $resolved = $scheduleTimeout;
+    }
+
+    if ($envValue !== false && trim((string) $envValue) !== '') {
+        $source = 'job_env_override';
+        $resolved = max(30, min(7200, (int) $envValue));
+    }
+
+    return [
+        'job_key' => $jobKey,
+        'resolved_timeout_seconds' => $resolved,
+        'enforced_timeout_seconds' => $resolved,
+        'timeout_source' => $source,
+        'schedule_timeout_seconds' => $scheduleTimeout,
+        'definition_timeout_seconds' => $definitionTimeout,
+        'global_default_timeout_seconds' => $globalDefault,
+        'env_timeout_seconds' => ($envValue !== false && trim((string) $envValue) !== '') ? max(30, min(7200, (int) $envValue)) : null,
+    ];
+}
+
+function scheduler_job_timeout_seconds(string $jobKey, int $defaultSeconds = 300, ?array $job = null, ?array $definition = null): int
+{
+    $resolved = scheduler_resolve_job_timeout($jobKey, $job, $definition, $defaultSeconds);
+
+    return (int) ($resolved['resolved_timeout_seconds'] ?? $defaultSeconds);
 }
 
 function scheduler_job_lock_ttl_seconds(int $defaultSeconds, int $timeoutSeconds): int
@@ -9272,6 +9332,9 @@ function scheduler_dispatch_background_job(array $job): array
         throw new RuntimeException('Background scheduler dispatch requires a valid claimed job.');
     }
 
+    $definitions = scheduler_job_definitions();
+    $timeout = scheduler_resolve_job_timeout($jobKey, $job, $definitions[$jobKey] ?? null);
+
     $phpBinary = PHP_BINARY !== '' ? PHP_BINARY : 'php';
     $scriptPath = scheduler_job_runner_script_path();
     $logPath = scheduler_cron_log_path();
@@ -9305,6 +9368,9 @@ function scheduler_dispatch_background_job(array $job): array
         'meta' => [
             'execution' => 'background',
             'dispatch_duration_ms' => $dispatchDurationMs,
+            'resolved_timeout_seconds' => (int) ($timeout['resolved_timeout_seconds'] ?? 0),
+            'enforced_timeout_seconds' => (int) ($timeout['enforced_timeout_seconds'] ?? 0),
+            'timeout_source' => (string) ($timeout['timeout_source'] ?? 'unknown'),
             'outcome_reason' => 'Job was dispatched to a background PHP worker so other due jobs can continue immediately.',
         ],
         'summary' => 'Dispatched to a background worker.',
@@ -9894,9 +9960,10 @@ function scheduler_due_jobs(): array
         }
 
         $jobKey = (string) ($job['job_key'] ?? '');
-        $defaultTimeout = (int) ($definitions[$jobKey]['timeout_seconds'] ?? ($job['timeout_seconds'] ?? 300));
-        $timeoutSeconds = scheduler_job_timeout_seconds($jobKey, $defaultTimeout);
-        $defaultLockTtl = (int) ($definitions[$jobKey]['lock_ttl_seconds'] ?? max(120, $timeoutSeconds + 60));
+        $definition = $definitions[$jobKey] ?? null;
+        $defaultTimeout = (int) (($definition['timeout_seconds'] ?? 0) ?: ($job['timeout_seconds'] ?? 300));
+        $timeoutSeconds = scheduler_job_timeout_seconds($jobKey, $defaultTimeout, $job, $definition);
+        $defaultLockTtl = (int) (($definition['lock_ttl_seconds'] ?? 0) ?: max(120, $timeoutSeconds + 60));
         $lockTtl = scheduler_job_lock_ttl_seconds($defaultLockTtl, $timeoutSeconds);
         $claimedJob = db_sync_schedule_claim_job($scheduleId, $lockTtl);
         if ($claimedJob !== null) {
@@ -10003,9 +10070,10 @@ function scheduler_idle_backfill_jobs(?callable $logger = null, int $limit = 12)
             continue;
         }
 
-        $defaultTimeout = (int) ($definitions[$jobKey]['timeout_seconds'] ?? ($job['timeout_seconds'] ?? 300));
-        $timeoutSeconds = scheduler_job_timeout_seconds($jobKey, $defaultTimeout);
-        $defaultLockTtl = (int) ($definitions[$jobKey]['lock_ttl_seconds'] ?? max(120, $timeoutSeconds + 60));
+        $definition = $definitions[$jobKey] ?? null;
+        $defaultTimeout = (int) (($definition['timeout_seconds'] ?? 0) ?: ($job['timeout_seconds'] ?? 300));
+        $timeoutSeconds = scheduler_job_timeout_seconds($jobKey, $defaultTimeout, $job, $definition);
+        $defaultLockTtl = (int) (($definition['lock_ttl_seconds'] ?? 0) ?: max(120, $timeoutSeconds + 60));
         $lockTtl = scheduler_job_lock_ttl_seconds($defaultLockTtl, $timeoutSeconds);
         $claimedJob = db_sync_schedule_claim_job_forced($scheduleId, $lockTtl);
         if ($claimedJob === null) {
@@ -10104,12 +10172,18 @@ function scheduler_job_runtime_snapshot(string $jobKey, string $resultLabel, boo
 {
     $stats = db_sync_schedule_recent_job_run_stats($jobKey, 20);
     $profile = scheduler_job_recent_resource_profile($jobKey);
+    $definitions = scheduler_job_definitions();
+    $schedules = db_sync_schedule_fetch_by_job_keys([$jobKey]);
+    $timeoutResolution = scheduler_resolve_job_timeout($jobKey, $schedules[0] ?? null, $definitions[$jobKey] ?? null);
 
     return [
         'last_result' => $resultLabel,
         'average_duration_seconds' => $stats['average_duration_seconds'] ?? $profile['average_duration_seconds'] ?? null,
         'p95_duration_seconds' => $stats['p95_duration_seconds'] ?? $profile['p95_duration_seconds'] ?? null,
         'timeout' => $timeout,
+        'resolved_timeout_seconds' => $timeoutResolution['resolved_timeout_seconds'] ?? null,
+        'enforced_timeout_seconds' => $timeoutResolution['enforced_timeout_seconds'] ?? null,
+        'timeout_source' => $timeoutResolution['timeout_source'] ?? null,
     ];
 }
 
@@ -10182,7 +10256,8 @@ function scheduler_run_job(array $job): array
         ];
     }
 
-    $timeoutSeconds = scheduler_job_timeout_seconds($jobKey, (int) ($definition['timeout_seconds'] ?? 300));
+    $timeoutResolution = scheduler_resolve_job_timeout($jobKey, $job, $definition, (int) ($definition['timeout_seconds'] ?? 300));
+    $timeoutSeconds = (int) ($timeoutResolution['enforced_timeout_seconds'] ?? 300);
     $startedAt = microtime(true);
 
     try {
@@ -10197,6 +10272,9 @@ function scheduler_run_job(array $job): array
             'projected_cpu_percent' => $projectedCpuPercent,
             'projected_memory_bytes' => $projectedMemoryBytes,
             'pressure_state' => $pressureState,
+            'resolved_timeout_seconds' => $timeoutResolution['resolved_timeout_seconds'] ?? null,
+            'enforced_timeout_seconds' => $timeoutResolution['enforced_timeout_seconds'] ?? null,
+            'timeout_source' => $timeoutResolution['timeout_source'] ?? null,
         ], $latenessSeconds, null);
 
         $handler = $definition['handler'];
@@ -10288,6 +10366,11 @@ function scheduler_run_job(array $job): array
                     'overlap_count' => $resourceMetric['overlap_count'] ?? null,
                     'pressure_state' => $pressureState,
                 ],
+                'timeout' => [
+                    'resolved_timeout_seconds' => $timeoutResolution['resolved_timeout_seconds'] ?? null,
+                    'enforced_timeout_seconds' => $timeoutResolution['enforced_timeout_seconds'] ?? null,
+                    'timeout_source' => $timeoutResolution['timeout_source'] ?? null,
+                ],
             ],
         ];
         $result['summary'] = scheduler_job_summary_message($result);
@@ -10320,7 +10403,14 @@ function scheduler_run_job(array $job): array
         if ($scheduleId > 0) {
             db_sync_schedule_mark_failure($scheduleId, $message, scheduler_job_runtime_snapshot($jobKey, 'failed', $isTimeout) + ['last_duration_seconds' => $durationSeconds]);
         }
-        db_scheduler_job_event_insert($jobKey, $isTimeout ? 'timeout' : 'failure', ['error' => $message, 'cpu_percent' => $resourceMetric['cpu_percent'] ?? null, 'memory_peak_delta_bytes' => $resourceMetric['memory_peak_delta_bytes'] ?? null], $latenessSeconds, $durationSeconds);
+        db_scheduler_job_event_insert($jobKey, $isTimeout ? 'timeout' : 'failure', [
+            'error' => $message,
+            'cpu_percent' => $resourceMetric['cpu_percent'] ?? null,
+            'memory_peak_delta_bytes' => $resourceMetric['memory_peak_delta_bytes'] ?? null,
+            'resolved_timeout_seconds' => $timeoutResolution['resolved_timeout_seconds'] ?? null,
+            'enforced_timeout_seconds' => $timeoutResolution['enforced_timeout_seconds'] ?? null,
+            'timeout_source' => $timeoutResolution['timeout_source'] ?? null,
+        ], $latenessSeconds, $durationSeconds);
 
         return [
             'job_id' => $scheduleId,
@@ -10344,6 +10434,11 @@ function scheduler_run_job(array $job): array
                     'lock_wait_seconds' => $resourceMetric['lock_wait_seconds'] ?? null,
                     'overlap_count' => $resourceMetric['overlap_count'] ?? null,
                     'pressure_state' => $pressureState,
+                ],
+                'timeout' => [
+                    'resolved_timeout_seconds' => $timeoutResolution['resolved_timeout_seconds'] ?? null,
+                    'enforced_timeout_seconds' => $timeoutResolution['enforced_timeout_seconds'] ?? null,
+                    'timeout_source' => $timeoutResolution['timeout_source'] ?? null,
                 ],
             ],
             'summary' => $message,
