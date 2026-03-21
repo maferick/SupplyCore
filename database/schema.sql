@@ -1620,6 +1620,7 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('brand_favicon_path', '/assets/branding/supplycore-favicon.svg'),
     ('app_timezone', 'UTC'),
     ('default_currency', 'ISK'),
+    ('scheduler_operational_profile', 'medium'),
     ('incremental_updates_enabled', '1'),
     ('incremental_strategy', 'watermark_upsert'),
     ('incremental_delete_policy', 'reconcile'),

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-return [
+$config = [
     'app' => [
         'name' => 'SupplyCore',
         'env' => getenv('APP_ENV') ?: 'development',
@@ -32,3 +32,13 @@ return [
         'default_timeout_seconds' => max(30, (int) (getenv('SCHEDULER_DEFAULT_TIMEOUT_SECONDS') ?: 300)),
     ],
 ];
+
+$localConfigPath = __DIR__ . '/local.php';
+if (is_file($localConfigPath)) {
+    $localConfig = require $localConfigPath;
+    if (is_array($localConfig)) {
+        $config = array_replace_recursive($config, $localConfig);
+    }
+}
+
+return $config;

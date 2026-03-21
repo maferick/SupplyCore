@@ -43,7 +43,8 @@ src/
   cache.php                 # Redis client + low-level cache/lock primitives
   db.php                    # Config + PDO + query helpers + transactions
   functions.php             # Navigation, settings services, shared helpers
-  config/app.php            # Environment-driven app/db config
+  config/app.php            # Base app/db config with optional local PHP override
+  config/local.php.example  # Copy to local.php for server-specific secrets/settings
   views/partials/           # Header / sidebar / footer layout partials
 database/
   schema.sql                # Tables + starter data
@@ -61,21 +62,40 @@ README.md
 
 > Upgrading an existing installation? Apply schema changes before the next sync run so local snapshot history can keep rebuilding cleanly from your stored ESI order snapshots.
 
-2. **Set environment variables** (example)
+2. **Configure the app in PHP (no `.env` file required or expected)**
    ```bash
-   export APP_ENV=development
-   export APP_BASE_URL=http://localhost:8080
-   export DB_HOST=127.0.0.1
-   export DB_PORT=3306
-   export DB_DATABASE=supplycore
-   export DB_USERNAME=root
-   export DB_PASSWORD=secret
-   export REDIS_ENABLED=1
-   export REDIS_HOST=127.0.0.1
-   export REDIS_PORT=6379
-   export REDIS_DATABASE=0
-   export REDIS_PREFIX=supplycore
+   cp src/config/local.php.example src/config/local.php
    ```
+
+   Then edit `src/config/local.php` and set the values for your server:
+   ```bash
+   nano src/config/local.php
+   ```
+
+   Minimal example:
+   ```php
+   <?php
+   return [
+       'app' => [
+           'env' => 'development',
+           'base_url' => 'http://localhost:8080',
+           'timezone' => 'UTC',
+       ],
+       'db' => [
+           'host' => '127.0.0.1',
+           'port' => 3306,
+           'database' => 'supplycore',
+           'username' => 'root',
+           'password' => 'secret',
+       ],
+   ];
+   ```
+
+   Notes:
+   - `src/config/app.php` loads the repository defaults first.
+   - If `src/config/local.php` exists, it is merged on top of those defaults.
+   - Environment variables still work, but they are optional. For most installs, editing `src/config/local.php` is simpler and matches this repository’s recommended workflow.
+   - Keep `src/config/local.php` out of version control.
 
 3. **Run with PHP built-in server (dev only)**
    ```bash
@@ -135,11 +155,20 @@ README.md
   - `--entity-type` + `--entity-id` targets a specific fit or doctrine group from the current snapshot.
   - `--store` writes the generated result back into `doctrine_ai_briefings`, which is useful when validating fallback behavior outside the scheduler.
 
+## Configuration Strategy
+
+- SupplyCore does **not** require a separate `.env` file.
+- The recommended approach is:
+  1. keep shared defaults in `src/config/app.php`,
+  2. put machine-specific values in `src/config/local.php`,
+  3. optionally use environment variables only when your deployment platform already provides them.
+- This keeps deployment simple on plain PHP + Apache2 + MySQL hosts and avoids confusion around missing shell environment in cron/systemd.
+
 ## Apache2 Deployment Notes
 
 - Point Apache `DocumentRoot` to `public/`.
 - Ensure `mod_rewrite` is enabled and `AllowOverride All` is set for the site directory.
-- Keep `.env`/secrets out of version control and supply config via environment variables.
+- Keep `src/config/local.php` out of version control if it contains secrets.
 
 ## Deployment / Operations
 
@@ -207,18 +236,22 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 
 - `bin/scheduler_daemon.php` is now the **primary scheduler master loop**. It stays alive, renews a database lease/heartbeat in `scheduler_daemon_state`, continuously re-evaluates due work, dispatches follow-up jobs immediately when capacity opens, and recycles itself cleanly when runtime, loop-count, or memory thresholds are reached.
 - Cron is now **watchdog-only**. `bin/cron_tick.php` no longer performs primary dispatch; it runs `bin/scheduler_watchdog.php` semantics to verify the daemon heartbeat, recover stale scheduler state, and start the daemon again when needed.
+- Clean recycle exits are now also **self-respawning**. If the daemon exits because of a memory recycle threshold, loop ceiling, runtime ceiling, or an explicit restart request, it immediately spawns a replacement process before relying on cron/systemd. This prevents the “stopped after recycle” gap you were seeing when the external supervisor did not relaunch it quickly enough.
 - `bin/scheduler_health.php` prints the daemon health JSON and exits non-zero when the daemon is degraded or stopped, which makes it suitable for `systemd` health probes or manual checks.
 - The continuous daemon still reuses the existing scheduler intelligence: it claims due jobs from `sync_schedules`, preserves priority/fairness/latest-allowed-start behavior, keeps protected-job and incompatibility rules, uses the same resource-aware concurrency planner, and still dispatches async-capable AI jobs to `bin/scheduler_job_runner.php` background workers so long-polling providers do not block the rest of the queue.
 - The daemon does not busy-spin. When nothing is due it can now opportunistically claim a single **idle backfill** job (for example dashboard/summary warmers that are explicitly marked backfill-safe) so the app keeps refreshing useful derived data while otherwise idle. If no due or backfill-safe work is runnable, it sleeps until the earliest of the next due timestamp, a short fallback poll interval, or a wake signal recorded by the watchdog/background workers after completions.
-- Interval and enable/disable controls are configured in **Settings → Data Sync** (`/settings?section=data-sync`) via scheduler rows in `sync_schedules`.
-- SupplyCore now separates cadences by workload:
-  - **Fast ingestion / current state**: `killmail_r2z2_sync` runs every minute, while `alliance_current_sync`, `market_hub_current_sync`, and `current_state_refresh_sync` default to every 5 minutes.
-  - **Deal anomaly detection**: `deal_alerts_sync` defaults to every 5 minutes and is also forced due after current alliance/hub order syncs so mispriced sell listings are checked against SupplyCore’s own recent historical baseline immediately after fresh market data arrives.
-  - **Slow history refresh**: `alliance_historical_sync` and `market_hub_historical_sync` default to every 6 hours, while `market_hub_local_history_sync` defaults to every 5 minutes so local snapshot history stays warm.
-  - **Materialized intelligence refresh**: `doctrine_intelligence_sync`, `market_comparison_summary_sync`, `loss_demand_summary_sync`, `dashboard_summary_sync`, `activity_priority_summary_sync`, and `analytics_bucket_1h_sync` default to every 10 minutes.
-  - **MariaDB analytics buckets**: `analytics_bucket_1d_sync` defaults to every 60 minutes and rolls daily killmail, market, and doctrine aggregate tables forward for trend pages, depletion logic, and scoring windows.
-  - **Doctrine AI briefings**: `rebuild_ai_briefings` defaults to every 15 minutes, ranks doctrine fits/groups through the centralized capability-tier strategy, scales prompt/context richness and batch size to the configured model, stores the latest result in MySQL, refreshes the dashboard briefing panel, skips that cycle when a history rebuild job is still running, and now continues in a background worker after the scheduler claims it.
-  - **Slow forecasting / AI**: `forecasting_ai_sync` defaults to every 60 minutes and derives slower-moving target-adjustment, anomaly, briefing, and explanation layers from the latest medium snapshot instead of raw minute-by-minute ingestion, and it also continues in its own background worker after dispatch.
+- Scheduler cadence controls in **Settings → Data Sync** are intentionally simplified to one selector:
+  - **Low**: conservative cadence, lower concurrency, wider poll intervals, and more headroom for smaller VPS/container deployments.
+  - **Medium**: balanced default for most installs.
+  - **High**: tighter current-state refresh cadence, faster summaries, and more aggressive concurrency for stronger hosts.
+- SupplyCore computes the rest in PHP:
+  - per-job interval minutes,
+  - per-job timeout seconds,
+  - daemon idle/running poll intervals,
+  - concurrency ceiling,
+  - CPU/memory budgets,
+  - daemon recycle thresholds.
+- You no longer need to hand-tune every scheduler row just to keep the daemon healthy.
 - The scheduler now stores per-job phase offsets in `sync_schedules.offset_seconds`, so fresh installs can spread expensive work across the hour instead of stacking everything on the same minute. The defaults use minute `0/5` for current-sync jobs, minute `2/12/22/...` for 10-minute intelligence batches, and minute `7/22/37/52` for AI briefings.
 - Scheduler registry state now lives directly on `sync_schedules` with interval/offset minutes, priority, concurrency policy, timeout, current state (`running` / `waiting` / `stopped`), rolling duration metrics, next due time, auto-tuning metadata, and discovered-from-code markers so the sync control panel can explain every scheduling decision.
 - Automatic discovery scans scheduler registration points and code patterns (`sync`, `refresh`, `summary`, `briefing`, `forecast`, `history`, `cron`, `job`) and persists unconfigured jobs with conservative defaults instead of silently hiding them.
@@ -271,17 +304,18 @@ sudo systemctl status supplycore-scheduler.service
 
 ### Required cron runtime environment
 
-Cron must run with the same environment the app expects:
+If you use the recommended `src/config/local.php` approach, cron and systemd do **not** need a large exported environment block for normal operation.
 
-- App config vars: `APP_ENV`, `APP_BASE_URL`, `APP_TIMEZONE`
-- Database vars: `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`
-- Scheduler timeout vars (optional): `SCHEDULER_DEFAULT_TIMEOUT_SECONDS` for a global override, plus per-job overrides such as `SCHEDULER_TIMEOUT_MARKET_HUB_CURRENT_SYNC=480` when a single pipeline needs more runtime.
+Only supply runtime environment variables when you explicitly want them to override the PHP config file.
+
+The remaining environment-sensitive source values are:
+
 - Pipeline source vars (when those pipelines are enabled):
   - `SUPPLYCORE_ALLIANCE_SOURCE_ID` (for `alliance-current` and `alliance-history`)
   - `SUPPLYCORE_HUB_SOURCE_ID` (for `hub-current`, `hub-history`, and hub snapshot-history generation)
 
 The canonical log path for the daemon and watchdog is `storage/logs/cron.log` (relative to app root).
-If logs show `Job exceeded timeout of ... seconds.`, raise the matching scheduler timeout environment variable and restart the `supplycore-scheduler.service` (or let the watchdog/systemd respawn it) so new worker processes inherit it.
+If logs show `Job exceeded timeout of ... seconds.`, move the deployment to a stronger scheduler profile first (`Low` → `Medium` → `High`) and only use hard environment overrides if you have a very specific reason.
 Raw order snapshots are pruned according to `raw_order_snapshot_retention_days` from Settings → Data Sync.
 Daily history rows are built from those local snapshots for both the alliance market and the reference hub, so keep the current-sync and history schedules enabled together for continuous trend updates.
 
@@ -312,6 +346,19 @@ mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABA
 ```
 
 ### Troubleshooting
+
+If the UI says the scheduler daemon is **stopped** while no jobs are running:
+
+1. Check `storage/logs/cron.log` for the last `scheduler_daemon.stopped` event.
+2. Look at `exit_reason`.
+   - `memory_recycle_threshold_reached` means the daemon intentionally recycled itself.
+   - With the current design, that recycle should now immediately self-respawn.
+3. If it still stays stopped, verify:
+   - the cron watchdog is installed,
+   - the `supplycore-scheduler.service` unit is enabled if you use systemd,
+   - `exec()` is not disabled in PHP, because detached respawn depends on it outside systemd.
+4. If the host is small, set **Settings → Data Sync → Scheduler run profile** to **Low** and save.
+5. After changes, use **Run selected now** or wait for the watchdog minute tick.
 
 Check cron service status:
 
