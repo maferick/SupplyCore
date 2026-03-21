@@ -1691,7 +1691,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <div class="grid gap-2 text-xs text-muted sm:grid-cols-2 xl:grid-cols-4">
                                         <div><span class="block text-[11px] uppercase tracking-[0.14em]">Live cadence</span><span class="text-slate-100">every <?= (int) ($schedule['interval_minutes'] ?? 0) ?>m</span></div>
                                         <div><span class="block text-[11px] uppercase tracking-[0.14em]">Profile target</span><span class="text-slate-100">every <?= (int) ($schedule['profile_interval_minutes'] ?? 0) ?>m</span></div>
-                                        <div><span class="block text-[11px] uppercase tracking-[0.14em]">Timeout</span><span class="text-slate-100"><?= (int) ($schedule['timeout_seconds'] ?? 0) ?>s / target <?= (int) ($schedule['profile_timeout_seconds'] ?? 0) ?>s</span></div>
+                                        <div>
+                                            <span class="block text-[11px] uppercase tracking-[0.14em]">Timeout</span>
+                                            <span class="text-slate-100">resolved <?= (int) ($schedule['resolved_timeout_seconds'] ?? 0) ?>s · enforced <?= (int) ($schedule['enforced_timeout_seconds'] ?? 0) ?>s</span>
+                                            <span class="mt-1 block">schedule <?= (int) ($schedule['timeout_seconds'] ?? 0) ?>s · target <?= (int) ($schedule['profile_timeout_seconds'] ?? 0) ?>s · source <?= htmlspecialchars((string) ($schedule['timeout_source'] ?? 'unknown'), ENT_QUOTES) ?></span>
+                                        </div>
                                         <div><span class="block text-[11px] uppercase tracking-[0.14em]">Next due</span><span class="text-slate-100"><?= htmlspecialchars((string) ($schedule['next_due_at'] ?? 'Not scheduled'), ENT_QUOTES) ?></span></div>
                                     </div>
                                 </div>
