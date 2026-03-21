@@ -205,7 +205,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <thead class="bg-white/[0.03] text-left text-xs uppercase tracking-[0.16em] text-slate-500">
                         <tr>
                             <th class="px-4 py-3">Item</th>
-                            <th class="px-4 py-3">Qty</th>
+                            <th class="px-4 py-3">Planner qty</th>
                             <th class="px-4 py-3">Priority</th>
                             <th class="px-4 py-3">Buy</th>
                             <th class="px-4 py-3">Sell</th>
@@ -221,18 +221,18 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <td class="px-4 py-3 align-top">
                                     <p class="font-semibold text-white"><?= htmlspecialchars((string) ($item['item_name'] ?? ''), ENT_QUOTES) ?></p>
                                     <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($item['reason_code'] ?? ''), ENT_QUOTES) ?></p>
-                                    <?php if (!empty($item['linked_fit_names'])): ?>
-                                        <p class="mt-1 text-xs text-slate-500">Fits: <?= htmlspecialchars(implode(', ', array_slice((array) ($item['linked_fit_names'] ?? []), 0, 3)), ENT_QUOTES) ?></p>
-                                    <?php endif; ?>
+                                    <p class="mt-1 text-xs text-slate-500">Hull class <?= htmlspecialchars((string) ($item['hull_class_label'] ?? 'Subcap'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($item['valid_doctrine_count'] ?? 0), ENT_QUOTES) ?> doctrines · <?= htmlspecialchars((string) ($item['valid_fits_count'] ?? 0), ENT_QUOTES) ?> fits</p>
                                 </td>
                                 <td class="px-4 py-3 align-top">
-                                    <p class="font-semibold text-white"><?= htmlspecialchars((string) ($item['quantity'] ?? 0), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500">Exact deficit <?= htmlspecialchars((string) ($item['exact_deficit_quantity'] ?? 0), ENT_QUOTES) ?></p>
+                                    <p class="font-semibold text-white"><?= htmlspecialchars((string) ($item['final_planner_quantity'] ?? $item['quantity'] ?? 0), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500">Exact deficit <?= htmlspecialchars((string) ($item['exact_deficit_quantity'] ?? 0), ENT_QUOTES) ?> · Operational <?= htmlspecialchars((string) ($item['operational_recommended_quantity'] ?? 0), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500">Economic <?= htmlspecialchars((string) ($item['economic_recommended_quantity'] ?? 0), ENT_QUOTES) ?></p>
                                 </td>
                                 <td class="px-4 py-3 align-top">
                                     <p class="font-semibold text-white">N <?= htmlspecialchars(number_format((float) ($item['necessity_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500">P <?= htmlspecialchars(number_format((float) ($item['profit_score'] ?? 0.0), 1), ENT_QUOTES) ?> · B <?= htmlspecialchars(number_format((float) ($item['blended_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500">Blocked fits <?= htmlspecialchars((string) ($item['blocked_fit_impact'] ?? 0), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500">P <?= htmlspecialchars(number_format((float) ($item['profit_score'] ?? 0.0), 1), ENT_QUOTES) ?> · B <?= htmlspecialchars(number_format((float) ($item['blended_score'] ?? 0.0), 1), ENT_QUOTES) ?> · Final <?= htmlspecialchars(number_format((float) ($item['final_priority_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500">Target fits <?= htmlspecialchars((string) ($item['target_ready_fits'] ?? 0), ENT_QUOTES) ?> · Deterministic blocked <?= htmlspecialchars((string) ($item['deterministic_blocked_fits'] ?? $item['blocked_fit_impact'] ?? 0), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500">Activity modifier <?= htmlspecialchars(number_format((float) ($item['activity_pressure_modifier'] ?? 1.0), 2), ENT_QUOTES) ?>x</p>
                                 </td>
                                 <td class="px-4 py-3 align-top">
                                     <p class="font-semibold text-white"><?= htmlspecialchars(market_format_isk(isset($item['buy_price']) ? (float) $item['buy_price'] : null), ENT_QUOTES) ?></p>
@@ -256,7 +256,20 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 </td>
                                 <td class="px-4 py-3 align-top">
                                     <p class="text-sm text-slate-200"><?= htmlspecialchars((string) ($item['reason_text'] ?? ''), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500">Doctrine impact <?= htmlspecialchars((string) ($item['doctrine_fit_impact'] ?? 0), ENT_QUOTES) ?> · Pricing <?= htmlspecialchars((string) ($item['pricing_completeness'] ?? 'partial'), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500">Pricing <?= htmlspecialchars((string) ($item['pricing_completeness'] ?? 'partial'), ENT_QUOTES) ?> · Doctrine impact <?= htmlspecialchars((string) ($item['doctrine_fit_impact'] ?? 0), ENT_QUOTES) ?></p>
+                                    <?php $affectedFits = array_values((array) ($item['affected_fits'] ?? [])); ?>
+                                    <?php if ($affectedFits !== []): ?>
+                                        <div class="mt-2 space-y-2">
+                                            <?php foreach ($affectedFits as $affectedFit): ?>
+                                                <div class="rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2">
+                                                    <p class="text-xs font-semibold text-slate-100"><?= htmlspecialchars((string) ($affectedFit['fit_name'] ?? 'Doctrine fit'), ENT_QUOTES) ?></p>
+                                                    <p class="mt-1 text-xs text-slate-400"><?= htmlspecialchars(implode(', ', array_values((array) ($affectedFit['group_names'] ?? []))) ?: 'No doctrine group recorded', ENT_QUOTES) ?></p>
+                                                    <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($affectedFit['hull_class_label'] ?? 'Subcap'), ENT_QUOTES) ?> · Req <?= htmlspecialchars((string) ($affectedFit['required_quantity'] ?? 0), ENT_QUOTES) ?> · Local <?= htmlspecialchars((string) ($affectedFit['local_stock'] ?? 0), ENT_QUOTES) ?></p>
+                                                    <p class="mt-1 text-xs text-slate-500">Ready <?= htmlspecialchars((string) ($affectedFit['fit_ready_capacity'] ?? 0), ENT_QUOTES) ?> / Target <?= htmlspecialchars((string) ($affectedFit['target_ready_fits'] ?? 0), ENT_QUOTES) ?> · Blocked <?= htmlspecialchars((string) ($affectedFit['deterministic_blocked_fits'] ?? 0), ENT_QUOTES) ?></p>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    <?php endif; ?>
                                 </td>
                             </tr>
                         <?php endforeach; ?>

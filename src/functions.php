@@ -16065,12 +16065,107 @@ function doctrine_fit_depletion_signal(array $items, array $depletionByType): ar
     ];
 }
 
-function doctrine_recommended_target_fit_count(array $availability, array $trend, array $lossSignals, array $restockSignal): array
+function doctrine_class_profiles(): array
+{
+    return [
+        'subcap' => ['baseline' => 3, 'minimum' => 2, 'maximum' => 12, 'loss_cap' => 4, 'depletion_cap' => 3, 'trend_bonus' => 1],
+        'capital' => ['baseline' => 1, 'minimum' => 1, 'maximum' => 4, 'loss_cap' => 2, 'depletion_cap' => 1, 'trend_bonus' => 1],
+        'super' => ['baseline' => 1, 'minimum' => 1, 'maximum' => 2, 'loss_cap' => 1, 'depletion_cap' => 1, 'trend_bonus' => 0],
+        'titan' => ['baseline' => 1, 'minimum' => 1, 'maximum' => 1, 'loss_cap' => 0, 'depletion_cap' => 0, 'trend_bonus' => 0],
+        'implants_support' => ['baseline' => 2, 'minimum' => 1, 'maximum' => 6, 'loss_cap' => 2, 'depletion_cap' => 2, 'trend_bonus' => 1],
+    ];
+}
+
+function doctrine_readiness_profile_for_class(string $doctrineClass): array
+{
+    $profiles = doctrine_class_profiles();
+    $profile = $profiles[$doctrineClass] ?? $profiles['subcap'];
+
+    return [
+        'class' => $doctrineClass,
+        'baseline_target_fit_count' => max(1, (int) ($profile['baseline'] ?? 3)),
+        'minimum_target_fit_count' => max(1, (int) ($profile['minimum'] ?? 2)),
+        'maximum_target_fit_count' => max(1, (int) ($profile['maximum'] ?? 12)),
+        'loss_adjustment_cap' => max(0, (int) ($profile['loss_cap'] ?? 4)),
+        'depletion_adjustment_cap' => max(0, (int) ($profile['depletion_cap'] ?? 3)),
+        'trend_bonus' => max(0, (int) ($profile['trend_bonus'] ?? 1)),
+    ];
+}
+
+function doctrine_hull_class_from_metadata(array $metadata, array $items = []): string
+{
+    $texts = [
+        (string) ($metadata['type_name'] ?? ''),
+        (string) ($metadata['group_name'] ?? ''),
+        (string) ($metadata['category_name'] ?? ''),
+        (string) ($metadata['market_group_name'] ?? ''),
+        implode(' ', (array) ($metadata['market_group_path_names'] ?? [])),
+    ];
+    foreach ($items as $item) {
+        $texts[] = (string) ($item['slot_category'] ?? '');
+        $texts[] = (string) ($item['source_role'] ?? '');
+        $texts[] = (string) ($item['item_name'] ?? '');
+    }
+    $joined = doctrine_normalize_item_name(implode(' ', array_filter($texts, static fn ($value): bool => trim((string) $value) !== '')));
+
+    $roles = array_values(array_unique(array_filter(array_map(static fn (array $item): string => doctrine_normalize_label((string) ($item['source_role'] ?? '')), $items))));
+    if ($joined === '' && $roles !== []) {
+        $joined = implode(' ', $roles);
+    }
+
+    if ($joined !== '') {
+        if (str_contains($joined, 'titan')) {
+            return 'titan';
+        }
+        if (str_contains($joined, 'supercarrier') || str_contains($joined, 'super carrier') || preg_match('/\bsuper\b/', $joined) === 1) {
+            return 'super';
+        }
+        if (
+            str_contains($joined, 'dreadnought')
+            || str_contains($joined, 'force auxiliary')
+            || str_contains($joined, 'fax')
+            || str_contains($joined, 'carrier')
+            || str_contains($joined, 'capital industrial')
+            || str_contains($joined, 'capital')
+        ) {
+            return 'capital';
+        }
+    }
+
+    $supportRoles = array_intersect($roles, ['implant', 'booster', 'cargo', 'service']);
+    if ($roles !== [] && count($supportRoles) === count($roles)) {
+        return 'implants_support';
+    }
+
+    return 'subcap';
+}
+
+function doctrine_fit_hull_class(array $fit, array $items = [], ?array $metadataByType = null): string
+{
+    $shipTypeId = isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : 0;
+    $metadata = $shipTypeId > 0 ? item_scope_type_metadata($shipTypeId, $metadataByType) : [];
+
+    return doctrine_hull_class_from_metadata($metadata, $items);
+}
+
+function doctrine_hull_class_label(string $class): string
+{
+    return match ($class) {
+        'capital' => 'Capital',
+        'super' => 'Super',
+        'titan' => 'Titan',
+        'implants_support' => 'Implants/Support',
+        default => 'Subcap',
+    };
+}
+
+function doctrine_recommended_target_fit_count(array $availability, array $trend, array $lossSignals, array $restockSignal, string $doctrineClass = 'subcap'): array
 {
     $depletionSignal = is_array($restockSignal['depletion_signal'] ?? null) ? $restockSignal['depletion_signal'] : [];
-    $baselineTarget = 3;
-    $minimumTarget = 2;
-    $maximumTarget = 12;
+    $profile = doctrine_readiness_profile_for_class($doctrineClass);
+    $baselineTarget = (int) ($profile['baseline_target_fit_count'] ?? 3);
+    $minimumTarget = (int) ($profile['minimum_target_fit_count'] ?? 2);
+    $maximumTarget = (int) ($profile['maximum_target_fit_count'] ?? 12);
     $lossFloor = max(
         0,
         (int) ceil(max(
@@ -16085,22 +16180,23 @@ function doctrine_recommended_target_fit_count(array $availability, array $trend
             (int) ($lossSignals['item_equivalent_fit_losses_24h'] ?? 0)
         ))
     );
-    $lossAdjustment = min(4, (int) ceil(($lossFloor * 0.5) + ($recentPressure * 0.8)));
+    $lossAdjustment = min((int) ($profile['loss_adjustment_cap'] ?? 4), (int) ceil(($lossFloor * 0.5) + ($recentPressure * 0.8)));
     $depletionAdjustment = 0;
     if (($depletionSignal['classification'] ?? 'stable') === 'draining') {
-        $depletionAdjustment = min(3, max(1, (int) ceil((float) ($depletionSignal['fit_equivalent_7d'] ?? 0.0))));
+        $depletionAdjustment = min((int) ($profile['depletion_adjustment_cap'] ?? 3), max(1, (int) ceil((float) ($depletionSignal['fit_equivalent_7d'] ?? 0.0))));
     }
     $recoveryAdjustment = 0;
     if (($depletionSignal['classification'] ?? 'stable') === 'recovering' && ($trend['direction'] ?? 'unknown') !== 'down') {
         $recoveryAdjustment = min(2, max(1, (int) round(abs((float) ($depletionSignal['fit_equivalent_7d'] ?? 0.0)))));
     }
-    $trendAdjustment = ($trend['direction'] ?? 'unknown') === 'down' ? 1 : 0;
+    $trendAdjustment = ($trend['direction'] ?? 'unknown') === 'down' ? (int) ($profile['trend_bonus'] ?? 1) : 0;
     $recommended = $baselineTarget + $lossAdjustment + $depletionAdjustment + $trendAdjustment - $recoveryAdjustment;
     $recommended = max($minimumTarget, min($maximumTarget, max($recommended, $lossFloor, $recentPressure + 1)));
     $completeFits = max(0, (int) ($availability['complete_fits_available'] ?? 0));
     $gap = max(0, $recommended - $completeFits);
 
     return [
+        'doctrine_class' => $doctrineClass,
         'recommended_target_fit_count' => $recommended,
         'gap_to_target_fit_count' => $gap,
         'baseline_target_fit_count' => $baselineTarget,
@@ -16110,6 +16206,7 @@ function doctrine_recommended_target_fit_count(array $availability, array $trend
         'trend_adjustment' => $trendAdjustment,
         'minimum_target_fit_count' => $minimumTarget,
         'maximum_target_fit_count' => $maximumTarget,
+        'readiness_profile' => $profile,
     ];
 }
 
@@ -16267,6 +16364,8 @@ function doctrine_operational_supply(array $rows, array $items, array $fit, arra
 {
     $hullItem = doctrine_find_hull_item($items);
     $hullIsStockTracked = !is_array($hullItem) || !array_key_exists('is_stock_tracked', $hullItem) || (bool) $hullItem['is_stock_tracked'];
+    $doctrineClass = doctrine_fit_hull_class($fit, $items);
+    $readinessProfile = doctrine_readiness_profile_for_class($doctrineClass);
     $trackedRows = doctrine_filter_stock_tracked_rows($rows);
     $trackedItems = doctrine_filter_stock_tracked_items($items);
     $base = doctrine_supply_summary($trackedRows);
@@ -16291,7 +16390,7 @@ function doctrine_operational_supply(array $rows, array $items, array $fit, arra
     $depletionSignal = doctrine_fit_depletion_signal($trackedItems, $depletionByType);
     $restockSignal = doctrine_bottleneck_restock_signal($availability, $historyByTypeId);
     $restockSignal['depletion_signal'] = $depletionSignal;
-    $targetPlan = doctrine_recommended_target_fit_count($availability, $trend, $lossSignals, $restockSignal);
+    $targetPlan = doctrine_recommended_target_fit_count($availability, $trend, $lossSignals, $restockSignal, $doctrineClass);
     $readiness = doctrine_readiness_state($availability, $targetPlan);
     $pressure = doctrine_resupply_pressure($base, $availability, $trend, $lossSignals, $restockSignal, $targetPlan);
     $combined = doctrine_combined_supply_status($readiness, $pressure);
@@ -16310,6 +16409,11 @@ function doctrine_operational_supply(array $rows, array $items, array $fit, arra
     $totalScore = round($scoreLossPressure + $scoreStockGap + $scoreDepletion + $scoreBottleneck, 2);
 
     return $base + $availability + $targetPlan + [
+        'hull_class' => $doctrineClass,
+        'hull_class_label' => doctrine_hull_class_label($doctrineClass),
+        'doctrine_class' => $doctrineClass,
+        'doctrine_class_label' => doctrine_hull_class_label($doctrineClass),
+        'readiness_profile' => $readinessProfile,
         'status' => (string) ($readiness['state'] ?? 'market_ready'),
         'status_label' => (string) ($readiness['label'] ?? 'Market ready'),
         'readiness_state' => (string) ($readiness['state'] ?? 'market_ready'),
@@ -19537,16 +19641,233 @@ function buy_all_latest_market_history_by_type(string $sourceType, int $sourceId
     return $indexed;
 }
 
+function buy_all_fit_activity_pressure_modifier(array $fit, string $hullClass): float
+{
+    $supply = is_array($fit['supply'] ?? null) ? $fit['supply'] : [];
+    $recent24h = max(
+        0.0,
+        (float) ($supply['recent_hull_losses_24h'] ?? 0),
+        (float) ($supply['recent_item_fit_losses_24h'] ?? 0)
+    );
+    $recent7d = max(
+        0.0,
+        (float) ($supply['recent_hull_losses_7d'] ?? 0),
+        (float) ($supply['recent_item_fit_losses_7d'] ?? 0)
+    );
+    $pressureBonus = match ((string) ($supply['resupply_pressure_state'] ?? 'stable')) {
+        'urgent_resupply' => 0.18,
+        'resupply_soon' => 0.12,
+        'elevated' => 0.06,
+        default => 0.0,
+    };
+    $trendBonus = (($supply['readiness_trend_direction'] ?? 'unknown') === 'down') ? 0.04 : 0.0;
+    $classScale = match ($hullClass) {
+        'titan' => 0.35,
+        'super' => 0.50,
+        'capital' => 0.70,
+        'implants_support' => 0.60,
+        default => 1.0,
+    };
+    $modifier = 1.0 + (($recent24h * 0.10) + ($recent7d * 0.025)) * $classScale + $pressureBonus + $trendBonus;
+
+    return round(min(1.45, max(1.0, $modifier)), 2);
+}
+
+function buy_all_primary_hull_class(array $classes): string
+{
+    $classes = array_values(array_unique(array_filter(array_map(static fn ($value): string => trim((string) $value), $classes))));
+    if ($classes === []) {
+        return 'subcap';
+    }
+    if (count($classes) === 1) {
+        return $classes[0];
+    }
+
+    $weights = ['titan' => 5, 'super' => 4, 'capital' => 3, 'subcap' => 2, 'implants_support' => 1];
+    usort($classes, static fn (string $a, string $b): int => (($weights[$b] ?? 0) <=> ($weights[$a] ?? 0)) ?: strcasecmp($a, $b));
+
+    return 'mixed:' . implode(',', $classes);
+}
+
+function buy_all_hull_class_label(string $class): string
+{
+    if (str_starts_with($class, 'mixed:')) {
+        $parts = explode(',', substr($class, 6));
+        $labels = array_map(static fn (string $part): string => doctrine_hull_class_label($part), array_filter($parts, static fn (string $part): bool => $part !== ''));
+
+        return 'Mixed (' . implode(', ', $labels) . ')';
+    }
+
+    return doctrine_hull_class_label($class);
+}
+
+function buy_all_item_impact_map(array $fits, array $itemsByFitId, array $marketByTypeId, array $metadataByType = []): array
+{
+    $impactByType = [];
+
+    foreach ($fits as $fit) {
+        $fitId = (int) ($fit['id'] ?? 0);
+        if ($fitId <= 0) {
+            continue;
+        }
+
+        $fitItems = array_values((array) ($itemsByFitId[$fitId] ?? []));
+        if ($fitItems === []) {
+            continue;
+        }
+
+        $supply = is_array($fit['supply'] ?? null) ? $fit['supply'] : [];
+        $targetReadyFits = max(0, (int) ($supply['recommended_target_fit_count'] ?? 0));
+        $fitReadyCapacity = max(0, (int) ($supply['complete_fits_available'] ?? 0));
+        $targetShortfall = max(0, $targetReadyFits - $fitReadyCapacity);
+        $fitName = (string) ($fit['fit_name'] ?? ('Fit #' . $fitId));
+        $groupNames = array_values((array) ($fit['group_names'] ?? []));
+        $hullClass = doctrine_fit_hull_class($fit, $fitItems, $metadataByType);
+        $activityModifier = buy_all_fit_activity_pressure_modifier($fit, $hullClass);
+
+        foreach ($fitItems as $item) {
+            if (array_key_exists('is_stock_tracked', $item) && !(bool) $item['is_stock_tracked']) {
+                continue;
+            }
+
+            $typeId = (int) ($item['type_id'] ?? 0);
+            if ($typeId <= 0) {
+                continue;
+            }
+
+            $requiredQty = max(1, (int) ($item['quantity'] ?? 1));
+            $localStock = max(0, (int) (($marketByTypeId[$typeId]['alliance_total_sell_volume'] ?? 0)));
+            $itemFitCapacity = intdiv($localStock, $requiredQty);
+            $exactDeficitQuantity = max(0, ($targetReadyFits * $requiredQty) - $localStock);
+            $deterministicBlockedFits = 0;
+            if ($targetShortfall > 0 && $itemFitCapacity <= $fitReadyCapacity) {
+                $deterministicBlockedFits = min($targetShortfall, max(0, $targetReadyFits - $itemFitCapacity));
+            }
+
+            if (!isset($impactByType[$typeId])) {
+                $impactByType[$typeId] = [
+                    'type_id' => $typeId,
+                    'valid_doctrine_names' => [],
+                    'valid_fit_names' => [],
+                    'valid_fit_ids' => [],
+                    'fit_hull_classes' => [],
+                    'target_ready_fits' => 0,
+                    'total_target_shortfall' => 0,
+                    'deterministic_blocked_fits' => 0,
+                    'exact_deficit_quantity' => 0,
+                    'exact_deficit_fit_count' => 0,
+                    'blocked_fit_count' => 0,
+                    'bottleneck_fit_count' => 0,
+                    'required_quantity_total' => 0,
+                    'activity_modifier_total' => 0.0,
+                    'activity_modifier_count' => 0,
+                    'activity_pressure_modifier' => 1.0,
+                    'affected_fits' => [],
+                ];
+            }
+
+            $impactByType[$typeId]['target_ready_fits'] += $targetReadyFits;
+            $impactByType[$typeId]['total_target_shortfall'] += $targetShortfall;
+            $impactByType[$typeId]['deterministic_blocked_fits'] += $deterministicBlockedFits;
+            $impactByType[$typeId]['exact_deficit_quantity'] += $exactDeficitQuantity;
+            $impactByType[$typeId]['required_quantity_total'] += $requiredQty;
+            $impactByType[$typeId]['valid_fit_names'][$fitName] = true;
+            $impactByType[$typeId]['valid_fit_ids'][$fitId] = true;
+            $impactByType[$typeId]['fit_hull_classes'][$hullClass] = true;
+            $impactByType[$typeId]['activity_modifier_total'] += $activityModifier;
+            $impactByType[$typeId]['activity_modifier_count']++;
+            if ($exactDeficitQuantity > 0) {
+                $impactByType[$typeId]['exact_deficit_fit_count']++;
+            }
+            if ($deterministicBlockedFits > 0) {
+                $impactByType[$typeId]['blocked_fit_count']++;
+            }
+            if ((int) ($supply['bottleneck_type_id'] ?? 0) === $typeId && (($supply['bottleneck_is_stock_tracked'] ?? true) === true)) {
+                $impactByType[$typeId]['bottleneck_fit_count']++;
+            }
+            foreach ($groupNames as $groupName) {
+                $safeName = trim((string) $groupName);
+                if ($safeName !== '') {
+                    $impactByType[$typeId]['valid_doctrine_names'][$safeName] = true;
+                }
+            }
+            $impactByType[$typeId]['affected_fits'][] = [
+                'fit_id' => $fitId,
+                'fit_name' => $fitName,
+                'group_names' => $groupNames,
+                'hull_class' => $hullClass,
+                'hull_class_label' => doctrine_hull_class_label($hullClass),
+                'required_quantity' => $requiredQty,
+                'local_stock' => $localStock,
+                'item_fit_capacity' => $itemFitCapacity,
+                'fit_ready_capacity' => $fitReadyCapacity,
+                'target_ready_fits' => $targetReadyFits,
+                'target_shortfall' => $targetShortfall,
+                'exact_deficit_quantity' => $exactDeficitQuantity,
+                'deterministic_blocked_fits' => $deterministicBlockedFits,
+                'activity_pressure_modifier' => $activityModifier,
+            ];
+        }
+    }
+
+    foreach ($impactByType as $typeId => &$impact) {
+        $impact['valid_doctrine_count'] = count((array) ($impact['valid_doctrine_names'] ?? []));
+        $impact['valid_fits_count'] = count((array) ($impact['valid_fit_ids'] ?? []));
+        $impact['deterministic_blocked_fits'] = min(
+            max(0, (int) ($impact['deterministic_blocked_fits'] ?? 0)),
+            max(0, (int) ($impact['total_target_shortfall'] ?? 0))
+        );
+        $impact['activity_pressure_modifier'] = round(
+            (float) ($impact['activity_modifier_count'] ?? 0) > 0
+                ? ((float) ($impact['activity_modifier_total'] ?? 0.0) / (float) ($impact['activity_modifier_count'] ?? 1))
+                : 1.0,
+            2
+        );
+        $impact['hull_class'] = buy_all_primary_hull_class(array_keys((array) ($impact['fit_hull_classes'] ?? [])));
+        $impact['hull_class_label'] = buy_all_hull_class_label((string) ($impact['hull_class'] ?? 'subcap'));
+        $impact['valid_doctrine_names'] = array_values(array_keys((array) ($impact['valid_doctrine_names'] ?? [])));
+        $impact['valid_fit_names'] = array_values(array_keys((array) ($impact['valid_fit_names'] ?? [])));
+        $impact['valid_fit_ids'] = array_values(array_keys((array) ($impact['valid_fit_ids'] ?? [])));
+        $impact['fit_hull_classes'] = array_values(array_keys((array) ($impact['fit_hull_classes'] ?? [])));
+        $impact['affected_fits'] = array_values(array_filter(
+            (array) ($impact['affected_fits'] ?? []),
+            static fn (array $fit): bool => (int) ($fit['deterministic_blocked_fits'] ?? 0) > 0 || (int) ($fit['exact_deficit_quantity'] ?? 0) > 0
+        ));
+    }
+    unset($impact);
+
+    return $impactByType;
+}
+
 function buy_all_reason_meta(array $candidate): array
 {
-    if ((int) ($candidate['bottleneck_fit_count'] ?? 0) > 0) {
-        return ['code' => 'doctrine_bottleneck', 'text' => 'Doctrine bottleneck blocking complete fits.', 'theme' => 'Doctrine bottlenecks'];
+    $blockedFits = max(0, (int) ($candidate['deterministic_blocked_fits'] ?? $candidate['blocked_fit_impact'] ?? 0));
+    $targetReadyFits = max(0, (int) ($candidate['target_ready_fits'] ?? 0));
+    $validDoctrineCount = max(0, (int) ($candidate['valid_doctrine_count'] ?? 0));
+    $exactDeficitQuantity = max(0, (int) ($candidate['exact_deficit_quantity'] ?? 0));
+    $exactDeficitFitCount = max(0, (int) ($candidate['exact_deficit_fit_count'] ?? 0));
+    $hullClassLabel = strtolower((string) ($candidate['hull_class_label'] ?? 'doctrine'));
+    $activityModifier = max(1.0, (float) ($candidate['activity_pressure_modifier'] ?? 1.0));
+
+    if ($blockedFits > 0) {
+        return [
+            'code' => 'deterministic_doctrine_blocking',
+            'text' => 'Blocks ' . doctrine_format_quantity($blockedFits) . ' of ' . doctrine_format_quantity($targetReadyFits) . ' target ' . $hullClassLabel . ' fits across ' . doctrine_format_quantity($validDoctrineCount) . ' valid doctrines.',
+            'theme' => 'Deterministic doctrine blocking',
+        ];
     }
-    if ((int) ($candidate['blocked_fit_impact'] ?? 0) >= 3) {
-        return ['code' => 'high_blocked_fit_impact', 'text' => 'High blocked-fit impact across doctrine gaps.', 'theme' => 'Blocked fits'];
+    if ($exactDeficitQuantity > 0) {
+        return [
+            'code' => 'exact_doctrine_deficit',
+            'text' => 'Exact doctrine deficit for ' . doctrine_format_quantity($exactDeficitFitCount) . ' ' . $hullClassLabel . ' fits.',
+            'theme' => 'Exact doctrine deficit',
+        ];
     }
     if ((bool) ($candidate['missing_in_alliance'] ?? false) && (($candidate['net_profit_total'] ?? null) !== null) && (float) ($candidate['net_profit_total'] ?? 0.0) > 0.0) {
-        return ['code' => 'profitable_import_spread', 'text' => 'Missing alliance stock with positive import spread after hauling.', 'theme' => 'Profitable seeding'];
+        return ['code' => 'profitable_import_spread', 'text' => 'Profitable import candidate but not doctrine-blocking.', 'theme' => 'Profitable seeding'];
+    }
+    if ($activityModifier > 1.05) {
+        return ['code' => 'activity_elevated_low_deficit', 'text' => 'Activity elevated for hull family but deterministic deficit is low.', 'theme' => 'Activity elevated'];
     }
     if ((bool) ($candidate['missing_in_alliance'] ?? false)) {
         return ['code' => 'missing_alliance_stock', 'text' => 'Missing alliance stock with hub availability to seed.', 'theme' => 'Seed backlog'];
@@ -19555,7 +19876,7 @@ function buy_all_reason_meta(array $candidate): array
         return ['code' => 'low_volume_high_margin_import', 'text' => 'Low-volume, high-margin import candidate.', 'theme' => 'High-margin imports'];
     }
     if (!empty($candidate['is_doctrine_linked'])) {
-        return ['code' => 'enabled_item_replenishment_candidate', 'text' => 'Doctrine-linked replenishment candidate from enabled-item and market signals.', 'theme' => 'Doctrine replenishment'];
+        return ['code' => 'enabled_item_replenishment_candidate', 'text' => 'Doctrine-linked replenishment candidate from valid fit relationships.', 'theme' => 'Doctrine replenishment'];
     }
 
     return ['code' => 'local_price_dislocation', 'text' => 'Local price dislocation or stock pressure suggests action.', 'theme' => 'Market dislocations'];
@@ -19828,56 +20149,14 @@ function buy_all_planner_data(array $query = []): array
         $itemsByFitId = [];
     }
 
-    $doctrineDemandByType = [];
-    foreach ($fits as $fit) {
-        $fitId = (int) ($fit['id'] ?? 0);
-        $supply = is_array($fit['supply'] ?? null) ? $fit['supply'] : [];
-        $gapFitCount = max(0, (int) ($supply['gap_to_target_fit_count'] ?? 0));
-        if ($gapFitCount <= 0) {
-            continue;
-        }
-        $fitName = (string) ($fit['fit_name'] ?? ('Fit #' . $fitId));
-        $groupNames = array_values((array) ($fit['group_names'] ?? []));
-        foreach ((array) ($itemsByFitId[$fitId] ?? []) as $item) {
-            if (array_key_exists('is_stock_tracked', $item) && !(bool) $item['is_stock_tracked']) {
-                continue;
-            }
-            $typeId = (int) ($item['type_id'] ?? 0);
-            if ($typeId <= 0) {
-                continue;
-            }
-            if (!isset($doctrineDemandByType[$typeId])) {
-                $doctrineDemandByType[$typeId] = [
-                    'exact_deficit_quantity' => 0,
-                    'blocked_fit_impact' => 0,
-                    'doctrine_fit_impact' => 0,
-                    'bottleneck_fit_count' => 0,
-                    'linked_fit_names' => [],
-                    'linked_group_names' => [],
-                ];
-            }
-            $requiredQty = max(1, (int) ($item['quantity'] ?? 1));
-            $doctrineDemandByType[$typeId]['exact_deficit_quantity'] += $requiredQty * $gapFitCount;
-            $doctrineDemandByType[$typeId]['blocked_fit_impact'] += $gapFitCount;
-            $doctrineDemandByType[$typeId]['doctrine_fit_impact']++;
-            $doctrineDemandByType[$typeId]['linked_fit_names'][$fitName] = true;
-            foreach ($groupNames as $groupName) {
-                $safeName = trim((string) $groupName);
-                if ($safeName !== '') {
-                    $doctrineDemandByType[$typeId]['linked_group_names'][$safeName] = true;
-                }
-            }
-            if ((int) ($supply['bottleneck_type_id'] ?? 0) === $typeId && (($supply['bottleneck_is_stock_tracked'] ?? true) === true)) {
-                $doctrineDemandByType[$typeId]['bottleneck_fit_count']++;
-            }
-        }
-    }
-
-    $candidateTypeIds = array_values(array_unique(array_merge($candidateTypeIds, array_keys($globalByTypeId), array_keys($topMissingByTypeId), array_keys($doctrineDemandByType))));
+    $candidateTypeIds = array_values(array_unique(array_merge($candidateTypeIds, array_keys($globalByTypeId), array_keys($topMissingByTypeId))));
     $typeMetaById = [];
     foreach (db_ref_item_types_by_ids($candidateTypeIds) as $row) {
         $typeMetaById[(int) ($row['type_id'] ?? 0)] = $row;
     }
+    $typeMetadataById = item_scope_metadata_by_type_ids($candidateTypeIds);
+    $doctrineDemandByType = buy_all_item_impact_map($fits, $itemsByFitId, $marketByTypeId, $typeMetadataById);
+    $candidateTypeIds = array_values(array_unique(array_merge($candidateTypeIds, array_keys($doctrineDemandByType))));
 
     $allianceStructureId = configured_structure_destination_id_for_esi_sync();
     $hubSourceId = sync_source_id_from_hub_ref(market_hub_setting_reference());
@@ -19898,22 +20177,35 @@ function buy_all_planner_data(array $query = []): array
 
         $unitVolume = max(0.0, (float) ($meta['volume'] ?? 0.0));
         $localQty = max(0, (int) ($market['alliance_total_sell_volume'] ?? 0));
-        $exactDeficitQuantity = max(0, (int) ($demand['exact_deficit_quantity'] ?? (int) ($missing['missing_qty'] ?? 0)));
+        $exactDeficitQuantity = max(0, (int) ($demand['exact_deficit_quantity'] ?? 0));
         $seedFloor = max(0, (int) ($thresholds['min_alliance_sell_volume'] ?? 0) - $localQty);
         $referenceVolume = max(0, (int) ($market['reference_total_sell_volume'] ?? 0));
         $velocityBuffer = max(0, min(500, (int) ceil($referenceVolume * (((bool) ($market['missing_in_alliance'] ?? false)) ? 0.20 : 0.12))));
-        $bufferQty = max($seedFloor, $velocityBuffer, $exactDeficitQuantity > 0 ? min(250, (int) ceil($exactDeficitQuantity * 0.20)) : 0);
-        $recommendedCap = max($exactDeficitQuantity, min(500, max($bufferQty, $exactDeficitQuantity)));
-        $roundedRecommended = buy_all_round_quantity(max($exactDeficitQuantity, $recommendedCap));
-        if ($unitVolume >= 50000.0 && $roundedRecommended > 5) {
-            $roundedRecommended = min($roundedRecommended, 5);
-        } elseif ($unitVolume >= 10000.0 && $roundedRecommended > 20) {
-            $roundedRecommended = min($roundedRecommended, 20);
+        $economicRecommendedQuantity = max(0, min(500, max($seedFloor, $velocityBuffer)));
+        $blockedFitImpact = max(0, (int) ($demand['deterministic_blocked_fits'] ?? 0));
+        $targetReadyFits = max(0, (int) ($demand['target_ready_fits'] ?? 0));
+        $activityPressureModifier = max(1.0, (float) ($demand['activity_pressure_modifier'] ?? 1.0));
+        $operationalBuffer = $exactDeficitQuantity > 0
+            ? (int) ceil($exactDeficitQuantity * max(0.0, min(0.35, $activityPressureModifier - 1.0)))
+            : 0;
+        $operationalRecommendedQuantity = $exactDeficitQuantity > 0
+            ? ($exactDeficitQuantity + $operationalBuffer)
+            : ($blockedFitImpact > 0 ? (int) max(1, ceil(((int) ($demand['required_quantity_total'] ?? 0) / max(1, (int) ($demand['valid_fits_count'] ?? 1))) * $blockedFitImpact)) : 0);
+        $economicRecommendedQuantity = buy_all_round_quantity(max(0, $economicRecommendedQuantity));
+        $operationalRecommendedQuantity = buy_all_round_quantity(max(0, $operationalRecommendedQuantity));
+        $finalPlannerQuantity = max($operationalRecommendedQuantity, $economicRecommendedQuantity);
+        if ($blockedFitImpact <= 0 && $exactDeficitQuantity <= 0 && $economicRecommendedQuantity <= 0 && !((bool) ($market['missing_in_alliance'] ?? false))) {
+            $finalPlannerQuantity = 0;
+        }
+        if ($unitVolume >= 50000.0 && $finalPlannerQuantity > 5) {
+            $finalPlannerQuantity = min($finalPlannerQuantity, 5);
+        } elseif ($unitVolume >= 10000.0 && $finalPlannerQuantity > 20) {
+            $finalPlannerQuantity = min($finalPlannerQuantity, 20);
         }
         if ($exactDeficitQuantity > 0) {
-            $roundedRecommended = max($exactDeficitQuantity, $roundedRecommended);
+            $finalPlannerQuantity = max($exactDeficitQuantity, $finalPlannerQuantity);
         }
-        if ($roundedRecommended <= 0) {
+        if ($finalPlannerQuantity <= 0) {
             continue;
         }
 
@@ -19949,24 +20241,25 @@ function buy_all_planner_data(array $query = []): array
         $haulingCostPerUnit = $unitVolume * buy_all_hauling_cost_per_m3();
         $grossProfitPerUnit = ($buyPrice !== null && $sellPrice !== null) ? ($sellPrice - $buyPrice) : null;
         $netProfitPerUnit = ($buyPrice !== null && $sellPrice !== null) ? ($sellPrice - $buyPrice - $haulingCostPerUnit) : null;
-        $grossProfitTotal = $grossProfitPerUnit !== null ? $grossProfitPerUnit * $roundedRecommended : null;
-        $netProfitTotal = $netProfitPerUnit !== null ? $netProfitPerUnit * $roundedRecommended : null;
+        $grossProfitTotal = $grossProfitPerUnit !== null ? $grossProfitPerUnit * $finalPlannerQuantity : null;
+        $netProfitTotal = $netProfitPerUnit !== null ? $netProfitPerUnit * $finalPlannerQuantity : null;
         $grossMarginPercent = ($grossProfitPerUnit !== null && $buyPrice !== null && $buyPrice > 0.0) ? (($grossProfitPerUnit / $buyPrice) * 100.0) : null;
         $netMarginPercent = ($netProfitPerUnit !== null && $buyPrice !== null && $buyPrice > 0.0) ? (($netProfitPerUnit / $buyPrice) * 100.0) : null;
-        $volumeEfficiency = ($netProfitTotal !== null && ($roundedRecommended * max(1.0, $unitVolume)) > 0.0) ? ($netProfitTotal / ($roundedRecommended * max(1.0, $unitVolume))) : null;
-        $iskEfficiency = ($netProfitTotal !== null && $buyPrice !== null && $buyPrice > 0.0) ? (($netProfitTotal / ($buyPrice * $roundedRecommended)) * 100.0) : null;
+        $volumeEfficiency = ($netProfitTotal !== null && ($finalPlannerQuantity * max(1.0, $unitVolume)) > 0.0) ? ($netProfitTotal / ($finalPlannerQuantity * max(1.0, $unitVolume))) : null;
+        $iskEfficiency = ($netProfitTotal !== null && $buyPrice !== null && $buyPrice > 0.0) ? (($netProfitTotal / ($buyPrice * $finalPlannerQuantity)) * 100.0) : null;
 
-        $blockedFitImpact = max(0, (int) ($demand['blocked_fit_impact'] ?? 0));
-        $doctrineFitImpact = max(0, (int) ($demand['doctrine_fit_impact'] ?? 0));
+        $doctrineFitImpact = max(0, (int) ($demand['valid_fits_count'] ?? 0));
         $bottleneckFitCount = max(0, (int) ($demand['bottleneck_fit_count'] ?? 0));
         $globalPriority = max(0.0, min(100.0, (float) ($global['priority_score'] ?? 0.0)));
-        $necessityScore = min(100.0,
+        $baseNecessityScore = min(100.0,
             min(40.0, $exactDeficitQuantity * 1.2)
-            + min(24.0, $blockedFitImpact * 7.0)
+            + min(28.0, $blockedFitImpact * 8.0)
             + min(18.0, $bottleneckFitCount * 9.0)
+            + min(12.0, max(0, (int) ($demand['total_target_shortfall'] ?? 0)) * 2.5)
             + min(10.0, (((bool) ($market['missing_in_alliance'] ?? false) || (bool) ($market['weak_alliance_stock'] ?? false)) ? 10.0 : 0.0))
-            + min(8.0, $globalPriority * 0.12)
+            + min(8.0, $globalPriority * 0.08)
         );
+        $necessityScore = min(100.0, round($baseNecessityScore * $activityPressureModifier, 2));
 
         $profitBase = 0.0;
         if ($netProfitTotal !== null) {
@@ -19988,6 +20281,7 @@ function buy_all_planner_data(array $query = []): array
         if ($request['mode'] === 'opportunity' && $netProfitTotal !== null && $netProfitTotal > 0.0) {
             $modeRankScore += 10.0;
         }
+        $finalPriorityScore = min(100.0, max(0.0, round($modeRankScore, 2)));
         $blendedScore = min(100.0, max(0.0, round(($necessityScore * 0.56) + ($profitScore * 0.44), 2)));
         $isDoctrineCritical = $exactDeficitQuantity > 0 || $bottleneckFitCount > 0 || $blockedFitImpact > 0;
 
@@ -19995,17 +20289,19 @@ function buy_all_planner_data(array $query = []): array
             'item_id' => $typeId,
             'type_id' => $typeId,
             'item_name' => $itemName,
-            'quantity' => $roundedRecommended,
+            'quantity' => $finalPlannerQuantity,
             'exact_deficit_quantity' => $exactDeficitQuantity,
-            'capped_recommended_quantity' => $recommendedCap,
+            'operational_recommended_quantity' => $operationalRecommendedQuantity,
+            'economic_recommended_quantity' => $economicRecommendedQuantity,
+            'final_planner_quantity' => $finalPlannerQuantity,
             'buy_price' => $buyPrice,
             'buy_price_basis' => $buyPriceBasis,
             'sell_price' => $sellPrice,
             'sell_price_basis' => $sellPriceBasis,
             'unit_volume' => $unitVolume,
-            'total_volume' => $unitVolume * $roundedRecommended,
+            'total_volume' => $unitVolume * $finalPlannerQuantity,
             'hauling_cost_per_unit' => $haulingCostPerUnit,
-            'hauling_cost_total' => $haulingCostPerUnit * $roundedRecommended,
+            'hauling_cost_total' => $haulingCostPerUnit * $finalPlannerQuantity,
             'gross_profit_per_unit' => $grossProfitPerUnit,
             'net_profit_per_unit' => $netProfitPerUnit,
             'gross_profit_total' => $grossProfitTotal,
@@ -20015,15 +20311,24 @@ function buy_all_planner_data(array $query = []): array
             'necessity_score' => round($necessityScore, 2),
             'profit_score' => round($profitScore, 2),
             'blended_score' => $blendedScore,
-            'mode_rank_score' => round($modeRankScore, 2),
+            'mode_rank_score' => $finalPriorityScore,
+            'final_priority_score' => $finalPriorityScore,
             'doctrine_fit_impact' => $doctrineFitImpact,
             'blocked_fit_impact' => $blockedFitImpact,
+            'deterministic_blocked_fits' => $blockedFitImpact,
             'bottleneck_fit_count' => $bottleneckFitCount,
             'reason_code' => '',
             'reason_text' => '',
             'reason_theme' => '',
             'is_doctrine_linked' => $doctrineFitImpact > 0 || !empty($global['is_doctrine_item']),
             'is_doctrine_critical' => $isDoctrineCritical,
+            'hull_class' => (string) ($demand['hull_class'] ?? 'subcap'),
+            'hull_class_label' => (string) ($demand['hull_class_label'] ?? 'Subcap'),
+            'valid_doctrine_count' => max(0, (int) ($demand['valid_doctrine_count'] ?? 0)),
+            'valid_fits_count' => max(0, (int) ($demand['valid_fits_count'] ?? 0)),
+            'target_ready_fits' => $targetReadyFits,
+            'activity_pressure_modifier' => $activityPressureModifier,
+            'exact_deficit_fit_count' => max(0, (int) ($demand['exact_deficit_fit_count'] ?? 0)),
             'missing_in_alliance' => (bool) ($market['missing_in_alliance'] ?? false),
             'weak_alliance_stock' => (bool) ($market['weak_alliance_stock'] ?? false),
             'opportunity_score' => (int) ($market['opportunity_score'] ?? 0),
@@ -20031,8 +20336,9 @@ function buy_all_planner_data(array $query = []): array
             'volume_score' => (int) ($market['volume_score'] ?? 0),
             'volume_efficiency' => $volumeEfficiency,
             'isk_efficiency' => $iskEfficiency,
-            'linked_fit_names' => array_values(array_keys((array) ($demand['linked_fit_names'] ?? []))),
-            'linked_group_names' => array_values(array_keys((array) ($demand['linked_group_names'] ?? []))),
+            'linked_fit_names' => array_values((array) ($demand['valid_fit_names'] ?? [])),
+            'linked_group_names' => array_values((array) ($demand['valid_doctrine_names'] ?? [])),
+            'affected_fits' => array_values((array) ($demand['affected_fits'] ?? [])),
             'pricing_completeness' => $buyPrice !== null && $sellPrice !== null ? 'complete' : 'partial',
             'hub_price_observed_at' => $market['reference_last_observed_at'] ?? ($hubHistoryByType[$typeId]['observed_at'] ?? null),
             'alliance_price_observed_at' => $market['alliance_last_observed_at'] ?? ($allianceHistoryByType[$typeId]['observed_at'] ?? null),
@@ -20364,10 +20670,15 @@ function activity_priority_item_explanation(array $row): string
 {
     $parts = [];
     if ((bool) ($row['is_doctrine_linked'] ?? false)) {
-        $parts[] = 'linked to ' . doctrine_format_quantity((int) ($row['linked_doctrine_count'] ?? 0)) . ' doctrine fits';
+        $parts[] = 'valid for ' . doctrine_format_quantity((int) ($row['valid_fits_count'] ?? $row['linked_doctrine_count'] ?? 0)) . ' fits across ' . doctrine_format_quantity((int) ($row['valid_doctrine_count'] ?? 0)) . ' doctrines';
     }
     if ((int) ($row['linked_active_doctrine_count'] ?? 0) > 0) {
         $parts[] = doctrine_format_quantity((int) ($row['linked_active_doctrine_count'] ?? 0)) . ' linked doctrines are active now';
+    }
+    if ((int) ($row['deterministic_blocked_fits'] ?? 0) > 0) {
+        $parts[] = 'deterministically blocks ' . doctrine_format_quantity((int) ($row['deterministic_blocked_fits'] ?? 0)) . ' target fits';
+    } elseif ((int) ($row['exact_deficit_quantity'] ?? 0) > 0) {
+        $parts[] = 'exact doctrine deficit is ' . doctrine_format_quantity((int) ($row['exact_deficit_quantity'] ?? 0)) . ' units';
     }
     if ((int) ($row['recent_loss_qty_24h'] ?? 0) > 0 || (int) ($row['recent_loss_qty_7d'] ?? 0) > 0) {
         $parts[] = doctrine_format_quantity((int) ($row['recent_loss_qty_24h'] ?? 0)) . ' units lost in 24h and ' . doctrine_format_quantity((int) ($row['recent_loss_qty_7d'] ?? 0)) . ' in 7d';
@@ -20377,8 +20688,8 @@ function activity_priority_item_explanation(array $row): string
     } elseif ((string) ($row['depletion_state'] ?? 'stable') === 'draining') {
         $parts[] = 'local stock is draining versus the prior window';
     }
-    if ((int) ($row['bottleneck_fit_count'] ?? 0) > 0) {
-        $parts[] = 'it is already blocking complete fits';
+    if ((float) ($row['activity_pressure_modifier'] ?? 1.0) > 1.05) {
+        $parts[] = 'activity modifier is ' . number_format((float) ($row['activity_pressure_modifier'] ?? 1.0), 2) . 'x for this hull family';
     }
 
     return ucfirst(implode(' · ', array_slice($parts, 0, 5))) . ($parts === [] ? 'Signals are steady, so the item remains on watch rather than elevated.' : '.');
@@ -20651,54 +20962,29 @@ function activity_priority_summary_build(string $reason = 'manual'): array
     unset($row);
 
     $activeFitIds = array_fill_keys(array_map(static fn (array $fit): int => (int) ($fit['entity_id'] ?? 0), array_filter($fitRows, static fn (array $fit): bool => in_array((string) ($fit['activity_level'] ?? 'low'), ['active', 'highly active'], true))), true);
-    $doctrineItemMeta = [];
-    foreach ($fits as $fit) {
-        $fitId = (int) ($fit['id'] ?? 0);
-        $supply = is_array($fit['supply'] ?? null) ? $fit['supply'] : [];
-        $groupNames = array_values((array) ($fit['group_names'] ?? []));
-        foreach ($itemsByFitId[$fitId] ?? [] as $item) {
-            $typeId = (int) ($item['type_id'] ?? 0);
-            if ($typeId <= 0) {
-                continue;
-            }
-            if (!isset($doctrineItemMeta[$typeId])) {
-                $doctrineItemMeta[$typeId] = [
-                    'linked_fit_ids' => [],
-                    'linked_group_names' => [],
-                    'active_fit_ids' => [],
-                    'bottleneck_fit_count' => 0,
-                    'readiness_gap_fit_count' => 0,
-                    'max_doctrine_activity_score' => 0.0,
-                    'avg_doctrine_activity_score' => 0.0,
-                    'activity_score_total' => 0.0,
-                    'activity_score_count' => 0,
-                ];
-            }
-            $doctrineItemMeta[$typeId]['linked_fit_ids'][$fitId] = (string) ($fit['fit_name'] ?? 'Doctrine fit');
-            foreach ($groupNames as $groupName) {
-                $safeName = trim((string) $groupName);
-                if ($safeName !== '') {
-                    $doctrineItemMeta[$typeId]['linked_group_names'][$safeName] = true;
-                }
+    $typeMetadataById = item_scope_metadata_by_type_ids($enabledTypeIds);
+    $doctrineItemMeta = buy_all_item_impact_map($fits, $itemsByFitId, $marketByTypeId, $typeMetadataById);
+    foreach ($doctrineItemMeta as $typeId => &$meta) {
+        $activityScores = [];
+        foreach ((array) ($meta['valid_fit_ids'] ?? []) as $fitId) {
+            $fitId = (int) $fitId;
+            $fitScore = (float) (($fitById[$fitId]['activity_score'] ?? 0.0));
+            if ($fitScore > 0.0) {
+                $activityScores[] = $fitScore;
             }
             if (isset($activeFitIds[$fitId])) {
-                $doctrineItemMeta[$typeId]['active_fit_ids'][$fitId] = true;
+                $meta['active_fit_ids'][$fitId] = true;
             }
-            if ((int) ($supply['bottleneck_type_id'] ?? 0) === $typeId && (($supply['bottleneck_is_stock_tracked'] ?? true) === true)) {
-                $doctrineItemMeta[$typeId]['bottleneck_fit_count']++;
-            }
-            if ((int) ($supply['gap_to_target_fit_count'] ?? 0) > 0) {
-                $doctrineItemMeta[$typeId]['readiness_gap_fit_count']++;
-            }
-            $fitScore = (float) (($fitById[$fitId]['activity_score'] ?? 0.0));
-            $doctrineItemMeta[$typeId]['max_doctrine_activity_score'] = max((float) $doctrineItemMeta[$typeId]['max_doctrine_activity_score'], $fitScore);
-            $doctrineItemMeta[$typeId]['activity_score_total'] += $fitScore;
-            $doctrineItemMeta[$typeId]['activity_score_count']++;
         }
-    }
-    foreach ($doctrineItemMeta as $typeId => &$meta) {
-        $count = max(1, (int) ($meta['activity_score_count'] ?? 1));
-        $meta['avg_doctrine_activity_score'] = round(((float) ($meta['activity_score_total'] ?? 0.0)) / $count, 2);
+        $meta['linked_fit_ids'] = array_combine(
+            array_map('intval', (array) ($meta['valid_fit_ids'] ?? [])),
+            array_values((array) ($meta['valid_fit_names'] ?? []))
+        ) ?: [];
+        $meta['linked_group_names'] = array_fill_keys(array_values((array) ($meta['valid_doctrine_names'] ?? [])), true);
+        $meta['linked_active_doctrine_count'] = count((array) ($meta['active_fit_ids'] ?? []));
+        $meta['readiness_gap_fit_count'] = max(0, (int) ($meta['blocked_fit_count'] ?? 0));
+        $meta['max_doctrine_activity_score'] = $activityScores !== [] ? max($activityScores) : 0.0;
+        $meta['avg_doctrine_activity_score'] = $activityScores !== [] ? round(array_sum($activityScores) / count($activityScores), 2) : 0.0;
     }
     unset($meta);
 
@@ -20717,10 +21003,10 @@ function activity_priority_summary_build(string $reason = 'manual'): array
         $depletion = $depletionByType[$typeId] ?? [];
         $doctrineMeta = $doctrineItemMeta[$typeId] ?? [];
         $isDoctrineLinked = isset($doctrineMeta['linked_fit_ids']) && $doctrineMeta['linked_fit_ids'] !== [];
-        $linkedDoctrineCount = $isDoctrineLinked ? count((array) ($doctrineMeta['linked_fit_ids'] ?? [])) : 0;
-        $linkedActiveDoctrineCount = $isDoctrineLinked ? count((array) ($doctrineMeta['active_fit_ids'] ?? [])) : 0;
+        $linkedDoctrineCount = $isDoctrineLinked ? max(0, (int) ($doctrineMeta['valid_fits_count'] ?? count((array) ($doctrineMeta['linked_fit_ids'] ?? []))) ) : 0;
+        $linkedActiveDoctrineCount = $isDoctrineLinked ? max(0, (int) ($doctrineMeta['linked_active_doctrine_count'] ?? count((array) ($doctrineMeta['active_fit_ids'] ?? [])))) : 0;
         $doctrineActivityWeight = $isDoctrineLinked
-            ? min(26.0, (((float) ($doctrineMeta['max_doctrine_activity_score'] ?? 0.0)) * 0.18) + (((float) ($doctrineMeta['avg_doctrine_activity_score'] ?? 0.0)) * 0.10) + ($linkedActiveDoctrineCount * 2.8))
+            ? min(26.0, ((((float) ($doctrineMeta['max_doctrine_activity_score'] ?? 0.0)) * 0.15) + (((float) ($doctrineMeta['avg_doctrine_activity_score'] ?? 0.0)) * 0.08) + ($linkedActiveDoctrineCount * 2.2)) * (float) ($doctrineMeta['activity_pressure_modifier'] ?? 1.0))
             : 0.0;
         $directLossWeight = min(24.0,
             ((int) ($loss['quantity_24h'] ?? 0) * 2.2)
@@ -20738,8 +21024,8 @@ function activity_priority_summary_build(string $reason = 'manual'): array
             'recovering' => -4.0,
             default => 0.0,
         };
-        $bottleneckWeight = min(18.0, ((int) ($doctrineMeta['bottleneck_fit_count'] ?? 0) * 6.0) + ((int) ($doctrineMeta['readiness_gap_fit_count'] ?? 0) * 2.0));
-        $doctrinePriorityBonus = $isDoctrineLinked ? (10.0 + min(8.0, $linkedDoctrineCount * 1.5)) : 0.0;
+        $bottleneckWeight = min(18.0, ((int) ($doctrineMeta['bottleneck_fit_count'] ?? 0) * 6.0) + ((int) ($doctrineMeta['deterministic_blocked_fits'] ?? 0) * 3.0));
+        $doctrinePriorityBonus = $isDoctrineLinked ? (8.0 + min(10.0, ((int) ($doctrineMeta['valid_doctrine_count'] ?? 0) * 1.6))) : 0.0;
         $consumablePenalty = item_scope_type_is_durable_loss_relevant($typeId) ? 0.0 : 12.0;
         $priorityScore = round(max(0.0, min(100.0, $doctrineActivityWeight + $directLossWeight + $stockGapWeight + $depletionWeight + $bottleneckWeight + $doctrinePriorityBonus - $consumablePenalty)), 2);
         $components = [
@@ -20760,7 +21046,13 @@ function activity_priority_summary_build(string $reason = 'manual'): array
             'is_doctrine_linked' => $isDoctrineLinked,
             'linked_doctrine_count' => $linkedDoctrineCount,
             'linked_active_doctrine_count' => $linkedActiveDoctrineCount,
-            'linked_doctrine_names' => array_slice(array_keys((array) ($doctrineMeta['linked_group_names'] ?? [])), 0, 5),
+            'linked_doctrine_names' => array_slice(array_values((array) ($doctrineMeta['valid_doctrine_names'] ?? [])), 0, 5),
+            'valid_doctrine_count' => max(0, (int) ($doctrineMeta['valid_doctrine_count'] ?? 0)),
+            'valid_fits_count' => max(0, (int) ($doctrineMeta['valid_fits_count'] ?? 0)),
+            'deterministic_blocked_fits' => max(0, (int) ($doctrineMeta['deterministic_blocked_fits'] ?? 0)),
+            'exact_deficit_quantity' => max(0, (int) ($doctrineMeta['exact_deficit_quantity'] ?? 0)),
+            'activity_pressure_modifier' => max(1.0, (float) ($doctrineMeta['activity_pressure_modifier'] ?? 1.0)),
+            'hull_class_label' => (string) ($doctrineMeta['hull_class_label'] ?? 'Subcap'),
             'local_available_qty' => max(0, (int) ($row['alliance_total_sell_volume'] ?? 0)),
             'local_sell_orders' => max(0, (int) ($row['alliance_sell_order_count'] ?? 0)),
             'local_sell_volume' => max(0, (int) ($row['alliance_total_sell_volume'] ?? 0)),
@@ -20770,7 +21062,7 @@ function activity_priority_summary_build(string $reason = 'manual'): array
             'recent_loss_events_24h' => max(0, (int) ($loss['losses_24h'] ?? 0)),
             'recent_loss_events_3d' => max(0, (int) ($loss['losses_3d'] ?? 0)),
             'recent_loss_events_7d' => max(0, (int) ($loss['losses_7d'] ?? 0)),
-            'readiness_gap_fit_count' => max(0, (int) ($doctrineMeta['readiness_gap_fit_count'] ?? 0)),
+            'readiness_gap_fit_count' => max(0, (int) ($doctrineMeta['blocked_fit_count'] ?? 0)),
             'bottleneck_fit_count' => max(0, (int) ($doctrineMeta['bottleneck_fit_count'] ?? 0)),
             'depletion_state' => (string) ($depletion['classification'] ?? 'stable'),
             'score_components' => $components,
