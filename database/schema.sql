@@ -945,6 +945,33 @@ CREATE TABLE IF NOT EXISTS killmail_events (
     KEY idx_system_region (solar_system_id, region_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS killmail_event_payloads (
+    sequence_id BIGINT UNSIGNED NOT NULL,
+    killmail_id BIGINT UNSIGNED NOT NULL,
+    killmail_hash VARCHAR(128) NOT NULL,
+    zkb_json LONGTEXT NOT NULL,
+    raw_killmail_json LONGTEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (sequence_id),
+    UNIQUE KEY uniq_killmail_event_payloads_killmail (killmail_id, killmail_hash),
+    CONSTRAINT fk_killmail_event_payloads_sequence
+        FOREIGN KEY (sequence_id) REFERENCES killmail_events (sequence_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO killmail_event_payloads (sequence_id, killmail_id, killmail_hash, zkb_json, raw_killmail_json)
+SELECT
+    e.sequence_id,
+    e.killmail_id,
+    e.killmail_hash,
+    COALESCE(e.zkb_json, '{}'),
+    COALESCE(e.raw_killmail_json, '{}')
+FROM killmail_events e
+LEFT JOIN killmail_event_payloads p ON p.sequence_id = e.sequence_id
+WHERE p.sequence_id IS NULL
+  AND (e.zkb_json IS NOT NULL OR e.raw_killmail_json IS NOT NULL);
+
 CREATE TABLE IF NOT EXISTS killmail_attackers (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     sequence_id BIGINT UNSIGNED NOT NULL,
