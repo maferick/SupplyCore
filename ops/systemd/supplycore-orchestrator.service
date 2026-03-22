@@ -16,8 +16,8 @@ Restart=always
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=90
-StandardOutput=journal
-StandardError=journal
+StandardOutput=append:/var/www/SupplyCore/storage/logs/cron.log
+StandardError=append:/var/www/SupplyCore/storage/logs/cron.log
 
 [Install]
 WantedBy=multi-user.target

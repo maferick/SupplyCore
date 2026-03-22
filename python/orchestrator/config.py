@@ -46,6 +46,10 @@ class OrchestratorConfig:
         return Path(self.raw["orchestrator"]["lock_file"]).resolve()
 
     @property
+    def log_file(self) -> Path:
+        return Path(self.raw["paths"]["log_file"]).resolve()
+
+    @property
     def worker_grace_seconds(self) -> int:
         return int(self.raw["orchestrator"]["worker_grace_seconds"])
 

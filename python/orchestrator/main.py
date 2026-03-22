@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .config import load_php_runtime_config
 from .logging_utils import configure_logging
 from .supervisor import run_supervisor
 
@@ -20,5 +21,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    logger = configure_logging(verbose=args.verbose)
-    return run_supervisor(app_root=Path(args.app_root), logger=logger)
+    app_root = Path(args.app_root).resolve()
+    config = load_php_runtime_config(app_root)
+    logger = configure_logging(verbose=args.verbose, log_file=config.log_file)
+    return run_supervisor(app_root=app_root, logger=logger)

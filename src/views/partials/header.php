@@ -2,6 +2,21 @@
 $notice = flash('success');
 $dealAlertPopupRows = deal_alert_popup_view_model();
 $dealAlertDismissMinutes = (int) (deal_alert_settings()['deal_alert_popup_dismiss_minutes'] ?? 120);
+$pageHeaderSummary = trim((string) ($pageHeaderSummary ?? brand_tagline()));
+$pageHeaderBadge = trim((string) ($pageHeaderBadge ?? 'Operations aligned'));
+$pageHeaderBadgeTone = trim((string) ($pageHeaderBadgeTone ?? 'border-cyan/20 bg-cyan/10 text-cyan-100'));
+$pageHeaderMeta = is_array($pageHeaderMeta ?? null) ? $pageHeaderMeta : [
+    [
+        'label' => 'Deployment profile',
+        'value' => 'PHP 8 · MySQL · Apache2',
+        'caption' => 'Aligned with the supported production stack.',
+    ],
+    [
+        'label' => 'Scheduler log',
+        'value' => scheduler_daemon_log_label(),
+        'caption' => 'Cron jobs and the orchestrator append to the same runtime log.',
+    ],
+];
 ?>
 <!doctype html>
 <html lang="en">
@@ -21,32 +36,42 @@ $dealAlertDismissMinutes = (int) (deal_alert_settings()['deal_alert_popup_dismis
     <?php include __DIR__ . '/sidebar.php'; ?>
     <main class="relative flex-1 px-5 py-6 sm:px-6 lg:px-8 xl:px-10 xl:py-8">
         <header class="page-header mb-8">
-            <div class="relative z-10 flex flex-wrap items-start justify-between gap-5">
+            <div class="relative z-10 grid gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.95fr)] xl:items-start">
                 <div class="max-w-3xl">
                     <p class="eyebrow text-cyan/80"><?= htmlspecialchars(brand_console_label(), ENT_QUOTES) ?></p>
                     <div class="mt-3 flex flex-wrap items-center gap-3">
                         <h1 class="text-3xl font-semibold tracking-tight text-white sm:text-[2.1rem]"><?= htmlspecialchars($title ?? 'Dashboard', ENT_QUOTES) ?></h1>
-                        <span class="status-chip border-cyan/20 bg-cyan/10 text-cyan-100">
+                        <span class="status-chip <?= htmlspecialchars($pageHeaderBadgeTone, ENT_QUOTES) ?>">
                             <span class="h-2 w-2 rounded-full bg-cyan shadow-[0_0_12px_rgba(34,211,238,0.65)]"></span>
-                            Alliance logistics intelligence
+                            <?= htmlspecialchars($pageHeaderBadge, ENT_QUOTES) ?>
                         </span>
                     </div>
-                    <p class="mt-3 max-w-2xl text-sm leading-6 text-slate-300/88">Alliance logistics intelligence for coverage, risk, and market readiness.</p>
+                    <p class="mt-3 max-w-2xl text-sm leading-6 text-slate-300/88"><?= htmlspecialchars($pageHeaderSummary, ENT_QUOTES) ?></p>
                 </div>
-                <div class="flex flex-col gap-3 sm:items-end">
-                    <div class="surface-tertiary relative z-10 flex flex-col items-start gap-3 px-4 py-3 text-sm text-slate-300 sm:items-end">
-                        <span class="eyebrow">Deployment profile</span>
-                        <span class="font-medium text-slate-100">PHP 8 · MySQL · Apache2</span>
-                        <span class="text-xs text-slate-500">Premium operational command layer</span>
-                    </div>
+                <div class="grid gap-3 xl:grid-cols-2">
+                    <?php foreach ($pageHeaderMeta as $metaCard): ?>
+                        <div class="surface-tertiary relative z-10 px-4 py-3 text-sm text-slate-300">
+                            <span class="eyebrow"><?= htmlspecialchars((string) ($metaCard['label'] ?? 'Operational context'), ENT_QUOTES) ?></span>
+                            <p class="mt-3 font-medium text-slate-100"><?= htmlspecialchars((string) ($metaCard['value'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+                            <?php if (trim((string) ($metaCard['caption'] ?? '')) !== ''): ?>
+                                <p class="mt-2 text-xs leading-5 text-slate-500"><?= htmlspecialchars((string) ($metaCard['caption'] ?? ''), ENT_QUOTES) ?></p>
+                            <?php endif; ?>
+                        </div>
+                    <?php endforeach; ?>
                     <?php if (supplycore_live_refresh_should_include($liveRefreshConfig ?? null)): ?>
-                        <section class="live-refresh-panel relative z-10 min-w-[280px] text-left text-xs text-slate-300" data-ui-refresh-diagnostics>
-                            <p class="eyebrow text-cyan-100/80">Live refresh diagnostics</p>
-                            <div class="mt-3 space-y-2">
-                                <p><span class="text-slate-500">Transport</span> · <span class="text-slate-100" data-live-refresh-transport>Starting…</span></p>
-                                <p><span class="text-slate-500">Last event</span> · <span class="text-slate-100" data-live-refresh-last-event>No published refresh event yet</span></p>
-                                <p><span class="text-slate-500">Section refresh</span> · <span class="text-slate-100" data-live-refresh-last-refresh>No section refreshed yet</span></p>
-                                <p><span class="text-slate-500">Version markers</span> · <span class="text-slate-100" data-live-refresh-versions>Loading…</span></p>
+                        <section class="live-refresh-panel relative z-10 xl:col-span-2 text-left text-xs text-slate-300" data-ui-refresh-diagnostics>
+                            <div class="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                    <p class="eyebrow text-cyan-100/80">Live refresh diagnostics</p>
+                                    <p class="mt-2 text-xs leading-5 text-slate-500">Track the active transport, latest publish event, and version markers without leaving the page.</p>
+                                </div>
+                                <span class="badge border-white/10 bg-white/[0.04] text-slate-200">Diagnostics</span>
+                            </div>
+                            <div class="mt-4 grid gap-3 sm:grid-cols-2">
+                                <p><span class="text-slate-500">Transport</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-transport>Starting…</span></p>
+                                <p><span class="text-slate-500">Last event</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-last-event>No published refresh event yet</span></p>
+                                <p><span class="text-slate-500">Section refresh</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-last-refresh>No section refreshed yet</span></p>
+                                <p><span class="text-slate-500">Version markers</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-versions>Loading…</span></p>
                             </div>
                         </section>
                     <?php endif; ?>

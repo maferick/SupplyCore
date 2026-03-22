@@ -4,6 +4,7 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 
@@ -32,12 +33,20 @@ class LoggerAdapter(logging.LoggerAdapter):
         return msg, kwargs
 
 
-def configure_logging(verbose: bool = False) -> LoggerAdapter:
+def configure_logging(verbose: bool = False, log_file: Path | None = None) -> LoggerAdapter:
     logger = logging.getLogger("supplycore.orchestrator")
     logger.handlers.clear()
     logger.setLevel(logging.DEBUG if verbose else logging.INFO)
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(JsonFormatter())
-    logger.addHandler(handler)
+
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(JsonFormatter())
+    logger.addHandler(stream_handler)
+
+    if log_file is not None:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setFormatter(JsonFormatter())
+        logger.addHandler(file_handler)
+
     logger.propagate = False
     return LoggerAdapter(logger, {})

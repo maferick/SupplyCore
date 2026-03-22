@@ -373,8 +373,8 @@ Restart=always
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=90
-StandardOutput=journal
-StandardError=journal
+StandardOutput=append:/var/www/SupplyCore/storage/logs/cron.log
+StandardError=append:/var/www/SupplyCore/storage/logs/cron.log
 
 [Install]
 WantedBy=multi-user.target
@@ -452,8 +452,8 @@ The remaining environment-sensitive source values are:
   - `SUPPLYCORE_ALLIANCE_SOURCE_ID` (for `alliance-current` and `alliance-history`)
   - `SUPPLYCORE_HUB_SOURCE_ID` (for `hub-current`, `hub-history`, and hub snapshot-history generation)
 
-The canonical log path for the daemon and watchdog is `storage/logs/cron.log` (relative to app root).
-When the Python orchestrator is enabled, the canonical service log stream moves to `journalctl -u supplycore-orchestrator.service`, while PHP scheduler events still include their structured JSON payloads in child stdout/stderr captured by Python.
+The canonical log path for cron ticks, the PHP scheduler daemon, and the Python orchestrator supervisor is `storage/logs/cron.log` (relative to app root).
+When the Python orchestrator is enabled, the systemd unit appends its stdout/stderr to that same file, so operator tails stay in one place.
 If logs show `Job exceeded timeout of ... seconds.`, move the deployment to a stronger scheduler profile first (`Low` → `Medium` → `High`) and only use hard environment overrides if you have a very specific reason.
 Market history retention is tiered from Settings → Data Sync:
 
@@ -495,11 +495,14 @@ mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABA
 
 If the UI says the scheduler daemon is **stopped** while no jobs are running:
 
-1. Check the Python supervisor logs first:
+1. Check `storage/logs/cron.log` for the last `scheduler_daemon.stopped`, `worker.health.failed`, or `orchestrator.stopped` event first:
    ```bash
-   journalctl -u supplycore-orchestrator.service -n 200 --no-pager
+   tail -n 200 /var/www/SupplyCore/storage/logs/cron.log
    ```
-2. Check `storage/logs/cron.log` for the last `scheduler_daemon.stopped` event if you still mirror PHP output there or run transitional cron tooling.
+2. Confirm the systemd unit is still active:
+   ```bash
+   systemctl status supplycore-orchestrator.service --no-pager
+   ```
 3. Look at `exit_reason`.
    - `memory_recycle_threshold_reached` means the daemon intentionally recycled itself.
    - In Python-supervised mode, the orchestrator should detect that exit and restart the managed PHP worker.
@@ -532,7 +535,7 @@ tail -f /var/www/SupplyCore/storage/logs/cron.log
 Tail the orchestrator log stream:
 
 ```bash
-journalctl -u supplycore-orchestrator.service -f
+tail -f /var/www/SupplyCore/storage/logs/cron.log
 ```
 
 Inspect scheduler state tables:

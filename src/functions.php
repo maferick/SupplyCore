@@ -2781,6 +2781,11 @@ function scheduler_daemon_log_path(): string
     return scheduler_cron_log_path();
 }
 
+function scheduler_daemon_log_label(): string
+{
+    return 'storage/logs/' . basename(scheduler_daemon_log_path());
+}
+
 function scheduler_daemon_state_view(?array $state = null): array
 {
     $row = $state ?? db_scheduler_daemon_state_fetch(scheduler_daemon_key()) ?? [];
