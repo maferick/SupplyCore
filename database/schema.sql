@@ -1047,7 +1047,7 @@ CREATE TABLE IF NOT EXISTS killmail_event_payloads (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (sequence_id),
-    UNIQUE KEY uniq_killmail_event_payloads_killmail (killmail_id, killmail_hash),
+    KEY idx_killmail_event_payloads_killmail (killmail_id, killmail_hash),
     CONSTRAINT fk_killmail_event_payloads_sequence
         FOREIGN KEY (sequence_id) REFERENCES killmail_events (sequence_id)
         ON DELETE CASCADE
