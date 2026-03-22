@@ -11,6 +11,20 @@ $doctrine = $intel['doctrine'] ?? doctrine_groups_overview_data();
 $pageFreshness = supplycore_page_freshness_view_model((array) ($intel['_freshness'] ?? []));
 $buyAll = buy_all_dashboard_summary();
 $liveRefreshConfig = supplycore_live_refresh_page_config('dashboard');
+$pageHeaderBadge = 'Alliance logistics intelligence';
+$pageHeaderSummary = 'Prioritized coverage, doctrine readiness, queue risk, and procurement signals aligned to the latest sync output.';
+$pageHeaderMeta = [
+    [
+        'label' => 'Deployment profile',
+        'value' => 'PHP 8 · MySQL · Apache2',
+        'caption' => 'Production stack aligned with the supported SupplyCore deployment target.',
+    ],
+    [
+        'label' => 'Scheduler log',
+        'value' => scheduler_daemon_log_label(),
+        'caption' => 'Cron jobs and the Python supervisor now share the same runtime logfile destination.',
+    ],
+];
 
 include __DIR__ . '/../src/views/partials/header.php';
 ?>
