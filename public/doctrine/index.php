@@ -15,6 +15,21 @@ $highestPriorityRestockItems = $data['highest_priority_restock_items'] ?? [];
 $ungroupedFits = $data['ungrouped_fits'] ?? [];
 $pageFreshness = supplycore_page_freshness_view_model((array) ($data['freshness'] ?? []));
 $liveRefreshConfig = supplycore_live_refresh_page_config('doctrine_index');
+$liveRefreshSummary = supplycore_live_refresh_summary($liveRefreshConfig);
+$pageHeaderBadge = 'Doctrine readiness';
+$pageHeaderSummary = 'Keep doctrine pages centered on fieldable hulls, blockers, missing items, and support dependencies.';
+$pageHeaderMeta = [
+    [
+        'label' => 'Last updated',
+        'value' => $pageFreshness['computed_relative'],
+        'caption' => $pageFreshness['computed_at'],
+    ],
+    [
+        'label' => 'Live updates',
+        'value' => $liveRefreshSummary['mode_label'],
+        'caption' => $liveRefreshSummary['health_message'],
+    ],
+];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validate_csrf($_POST['_token'] ?? null)) {
@@ -57,7 +72,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <div>
                 <p class="eyebrow">Doctrine registry</p>
                 <h2 class="mt-2 section-title">Alliance doctrine groups</h2>
-                <p class="mt-2 text-sm text-slate-400">Every card now uses strict primary ownership. Support/reference fits stay visible, but only primary fits can block readiness or inflate bottlenecks.</p>
+                <p class="mt-2 text-sm text-slate-400">See what can field now, what is blocked, and where support stock is limiting fleet readiness.</p>
             </div>
             <div class="flex flex-wrap gap-3">
                 <a href="/doctrine/fits" class="btn-secondary">Fit overview</a>
@@ -113,28 +128,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
     </article>
 
     <aside class="space-y-6">
-        <article class="surface-secondary">
-            <div class="section-header">
-                <div>
-                    <p class="eyebrow">New group</p>
-                    <h2 class="mt-2 section-title">Create doctrine group</h2>
-                </div>
-                <span class="badge border-sky-400/18 bg-sky-500/10 text-sky-100">CRUD ready</span>
-            </div>
-            <form method="post" class="space-y-4">
-                <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
-                <label class="block">
-                    <span class="mb-2 block field-label">Group name</span>
-                    <input type="text" name="group_name" class="field-input" maxlength="190" placeholder="e.g. Muninn Mainline">
-                </label>
-                <label class="block">
-                    <span class="mb-2 block field-label">Description</span>
-                    <textarea name="description" class="field-input" style="min-height: 8rem;" placeholder="What this doctrine group covers, when it is used, or who owns the restock workflow."></textarea>
-                </label>
-                <button type="submit" class="btn-primary w-full justify-center">Save group</button>
-            </form>
-        </article>
-
         <article class="surface-secondary">
             <div class="section-header">
                 <div>
@@ -230,13 +223,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
     </article>
 
     <article class="surface-secondary">
-        <div class="section-header">
-            <div>
-                <p class="eyebrow">Enabled-items layer</p>
-                <h2 class="mt-2 section-title">Highest priority restock items</h2>
-                <p class="mt-2 text-sm text-slate-400">Only primary-owned doctrine items can become critical. Support/reference fits never promote their modules into doctrine-critical demand.</p>
-            </div>
-            <span class="badge border-sky-400/18 bg-sky-500/10 text-sky-100">Two-layer engine</span>
+            <div class="section-header">
+                <div>
+                    <p class="eyebrow">Support dependencies</p>
+                    <h2 class="mt-2 section-title">Highest priority support items</h2>
+                    <p class="mt-2 text-sm text-slate-400">Keep shared support stock visible without letting it crowd out doctrine-critical blockers.</p>
+                </div>
+            <span class="badge border-sky-400/18 bg-sky-500/10 text-sky-100">Support watchlist</span>
         </div>
         <div class="space-y-3">
             <?php if ($highestPriorityRestockItems === []): ?>
@@ -258,31 +251,61 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
     </article>
 
-    <article class="surface-secondary">
-        <div class="section-header">
+    <details class="surface-secondary">
+        <summary class="flex cursor-pointer list-none items-center justify-between gap-3">
             <div>
-                <p class="eyebrow">Unowned cleanup</p>
-                <h2 class="mt-2 section-title">Unowned / unmapped fits</h2>
-                <p class="mt-2 text-sm text-slate-400">Fits without a primary doctrine owner are preserved for cleanup here, but they have zero operational impact until a primary owner is assigned.</p>
+                <p class="eyebrow">Doctrine admin</p>
+                <h2 class="mt-2 section-title">Advanced doctrine setup</h2>
+                <p class="mt-2 text-sm text-slate-400">Create groups and clean up unmapped fits without putting admin tasks in the main readiness view.</p>
             </div>
-            <span class="badge border-amber-400/20 bg-amber-500/10 text-amber-100"><?= doctrine_format_quantity(count($ungroupedFits)) ?> excluded</span>
+            <span class="badge border-amber-400/20 bg-amber-500/10 text-amber-100"><?= doctrine_format_quantity(count($ungroupedFits)) ?> cleanup items</span>
+        </summary>
+        <div class="mt-6 grid gap-6 xl:grid-cols-2">
+            <article class="surface-tertiary">
+                <div class="section-header">
+                    <div>
+                        <p class="eyebrow">New group</p>
+                        <h3 class="mt-2 text-lg font-semibold text-white">Create doctrine group</h3>
+                    </div>
+                </div>
+                <form method="post" class="space-y-4">
+                    <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                    <label class="block">
+                        <span class="mb-2 block field-label">Group name</span>
+                        <input type="text" name="group_name" class="field-input" maxlength="190" placeholder="e.g. Muninn Mainline">
+                    </label>
+                    <label class="block">
+                        <span class="mb-2 block field-label">Description</span>
+                        <textarea name="description" class="field-input" style="min-height: 8rem;" placeholder="What this doctrine group covers and who owns the restock workflow."></textarea>
+                    </label>
+                    <button type="submit" class="btn-primary w-full justify-center">Save group</button>
+                </form>
+            </article>
+            <article class="surface-tertiary">
+                <div class="section-header">
+                    <div>
+                        <p class="eyebrow">Unowned cleanup</p>
+                        <h3 class="mt-2 text-lg font-semibold text-white">Unmapped fits</h3>
+                    </div>
+                </div>
+                <div class="space-y-3">
+                    <?php if ($ungroupedFits === []): ?>
+                        <div class="surface-tertiary text-sm text-slate-400">No excluded fits need ownership cleanup.</div>
+                    <?php else: ?>
+                        <?php foreach ($ungroupedFits as $fit): ?>
+                            <a href="/doctrine/fit?fit_id=<?= (int) ($fit['id'] ?? 0) ?>" class="intelligence-row group">
+                                <div class="min-w-0 flex-1">
+                                    <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($fit['fit_name'] ?? ''), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?> · <?= htmlspecialchars(implode(', ', array_map(static fn (array $membership): string => (string) ($membership['group_name'] ?? ''), (array) ($fit['memberships'] ?? []))) ?: 'No memberships', ENT_QUOTES) ?></p>
+                                </div>
+                                <div class="text-slate-500 transition group-hover:text-slate-200">Assign primary ›</div>
+                            </a>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </div>
+            </article>
         </div>
-        <div class="space-y-3">
-            <?php if ($ungroupedFits === []): ?>
-                <div class="surface-tertiary text-sm text-slate-400">No excluded fits need ownership cleanup.</div>
-            <?php else: ?>
-                <?php foreach ($ungroupedFits as $fit): ?>
-                    <a href="/doctrine/fit?fit_id=<?= (int) ($fit['id'] ?? 0) ?>" class="intelligence-row group">
-                        <div class="min-w-0 flex-1">
-                            <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($fit['fit_name'] ?? ''), ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?> · <?= htmlspecialchars(implode(', ', array_map(static fn (array $membership): string => (string) ($membership['group_name'] ?? ''), (array) ($fit['memberships'] ?? []))) ?: 'No memberships', ENT_QUOTES) ?></p>
-                        </div>
-                        <div class="text-slate-500 transition group-hover:text-slate-200">Assign primary ›</div>
-                    </a>
-                <?php endforeach; ?>
-            <?php endif; ?>
-        </div>
-    </article>
+    </details>
 </section>
 <!-- ui-section:doctrine-index-main:end -->
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>

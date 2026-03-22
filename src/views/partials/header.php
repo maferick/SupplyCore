@@ -5,16 +5,17 @@ $dealAlertDismissMinutes = (int) (deal_alert_settings()['deal_alert_popup_dismis
 $pageHeaderSummary = trim((string) ($pageHeaderSummary ?? brand_tagline()));
 $pageHeaderBadge = trim((string) ($pageHeaderBadge ?? 'Operations aligned'));
 $pageHeaderBadgeTone = trim((string) ($pageHeaderBadgeTone ?? 'border-cyan/20 bg-cyan/10 text-cyan-100'));
+$liveRefreshSummary = supplycore_live_refresh_summary($liveRefreshConfig ?? null);
 $pageHeaderMeta = is_array($pageHeaderMeta ?? null) ? $pageHeaderMeta : [
     [
-        'label' => 'Deployment profile',
-        'value' => 'PHP 8 · MySQL · Apache2',
-        'caption' => 'Aligned with the supported production stack.',
+        'label' => 'Data freshness',
+        'value' => $liveRefreshSummary['last_refresh_relative'],
+        'caption' => 'Last visible update ' . $liveRefreshSummary['last_refresh_at'] . '.',
     ],
     [
-        'label' => 'Scheduler log',
-        'value' => scheduler_daemon_log_label(),
-        'caption' => 'Cron jobs and the orchestrator append to the same runtime log.',
+        'label' => 'Live updates',
+        'value' => $liveRefreshSummary['mode_label'],
+        'caption' => $liveRefreshSummary['health_message'],
     ],
 ];
 ?>
@@ -62,17 +63,24 @@ $pageHeaderMeta = is_array($pageHeaderMeta ?? null) ? $pageHeaderMeta : [
                         <section class="live-refresh-panel relative z-10 xl:col-span-2 text-left text-xs text-slate-300" data-ui-refresh-diagnostics>
                             <div class="flex flex-wrap items-start justify-between gap-3">
                                 <div>
-                                    <p class="eyebrow text-cyan-100/80">Live refresh diagnostics</p>
-                                    <p class="mt-2 text-xs leading-5 text-slate-500">Track the active transport, latest publish event, and version markers without leaving the page.</p>
+                                    <p class="eyebrow text-cyan-100/80">Live updates</p>
+                                    <p class="mt-2 text-xs leading-5 text-slate-500">Keep refresh health visible without turning the page into a console.</p>
                                 </div>
-                                <span class="badge border-white/10 bg-white/[0.04] text-slate-200">Diagnostics</span>
+                                <span class="badge <?= htmlspecialchars((string) $liveRefreshSummary['health_tone'], ENT_QUOTES) ?>" data-live-refresh-health-badge><?= htmlspecialchars((string) $liveRefreshSummary['health_label'], ENT_QUOTES) ?></span>
                             </div>
-                            <div class="mt-4 grid gap-3 sm:grid-cols-2">
-                                <p><span class="text-slate-500">Transport</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-transport>Starting…</span></p>
-                                <p><span class="text-slate-500">Last event</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-last-event>No published refresh event yet</span></p>
-                                <p><span class="text-slate-500">Section refresh</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-last-refresh>No section refreshed yet</span></p>
-                                <p><span class="text-slate-500">Version markers</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-versions>Loading…</span></p>
+                            <div class="mt-4 grid gap-3 sm:grid-cols-3">
+                                <p><span class="text-slate-500">Live updates</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-mode><?= htmlspecialchars((string) $liveRefreshSummary['mode_label'], ENT_QUOTES) ?></span></p>
+                                <p><span class="text-slate-500">Last refresh</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-last-refresh><?= htmlspecialchars((string) $liveRefreshSummary['last_refresh_relative'], ENT_QUOTES) ?></span></p>
+                                <p><span class="text-slate-500">Refresh health</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-health><?= htmlspecialchars((string) $liveRefreshSummary['health_message'], ENT_QUOTES) ?></span></p>
                             </div>
+                            <details class="mt-4 rounded-2xl border border-white/8 bg-black/20 p-3" data-live-refresh-advanced <?= !empty($liveRefreshSummary['show_advanced']) ? 'open' : '' ?>>
+                                <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">Advanced diagnostics</summary>
+                                <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                                    <p><span class="text-slate-500">Active transport</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-transport>Starting…</span></p>
+                                    <p><span class="text-slate-500">Last update event</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-last-event>No published refresh event yet</span></p>
+                                    <p class="sm:col-span-2"><span class="text-slate-500">Version markers</span><br><span class="mt-1 inline-block text-sm text-slate-100 break-all" data-live-refresh-versions>Loading…</span></p>
+                                </div>
+                            </details>
                         </section>
                     <?php endif; ?>
                 </div>

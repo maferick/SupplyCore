@@ -11,18 +11,19 @@ $doctrine = $intel['doctrine'] ?? doctrine_groups_overview_data();
 $pageFreshness = supplycore_page_freshness_view_model((array) ($intel['_freshness'] ?? []));
 $buyAll = buy_all_dashboard_summary();
 $liveRefreshConfig = supplycore_live_refresh_page_config('dashboard');
+$liveRefreshSummary = supplycore_live_refresh_summary($liveRefreshConfig);
 $pageHeaderBadge = 'Alliance logistics intelligence';
-$pageHeaderSummary = 'Prioritized coverage, doctrine readiness, queue risk, and procurement signals aligned to the latest sync output.';
+$pageHeaderSummary = 'Focus this page on what changed, what needs action, and where alliance logistics can make or save ISK.';
 $pageHeaderMeta = [
     [
-        'label' => 'Deployment profile',
-        'value' => 'PHP 8 · MySQL · Apache2',
-        'caption' => 'Production stack aligned with the supported SupplyCore deployment target.',
+        'label' => 'Data freshness',
+        'value' => $pageFreshness['label'] . ' · ' . $pageFreshness['computed_relative'],
+        'caption' => 'Last updated ' . $pageFreshness['computed_at'] . '.',
     ],
     [
-        'label' => 'Scheduler log',
-        'value' => scheduler_daemon_log_label(),
-        'caption' => 'Cron jobs and the Python supervisor now share the same runtime logfile destination.',
+        'label' => 'Live updates',
+        'value' => $liveRefreshSummary['mode_label'],
+        'caption' => $liveRefreshSummary['health_message'],
     ],
 ];
 
@@ -186,7 +187,7 @@ $statusThemes = [
             <div>
                 <p class="eyebrow">Front-page action</p>
                 <h2 class="mt-2 section-title">Buy All</h2>
-                <p class="mt-2 section-copy">Generate prioritized, transport-aware procurement pages directly from doctrine readiness, seed backlog, and market opportunity signals.</p>
+                <p class="mt-2 section-copy">Build the next buy run around shortages, profit, and hauling impact.</p>
             </div>
             <a href="<?= htmlspecialchars((string) ($buyAll['planner_href'] ?? '/buy-all?mode=blended&page=1'), ENT_QUOTES) ?>" class="btn-primary">Open Buy All Planner</a>
         </div>
@@ -390,51 +391,39 @@ $statusThemes = [
             <div>
                 <p class="eyebrow">AI-assisted briefings</p>
                 <h2 class="mt-2 section-title">Operational Briefings</h2>
-                <p class="mt-2 section-copy">Background-generated local AI summaries layered on top of deterministic doctrine metrics.</p>
+                <p class="mt-2 section-copy">Secondary summaries for operators who want extra narrative context.</p>
             </div>
             <span class="badge border-violet-400/20 bg-violet-500/10 text-violet-100">Background only</span>
         </div>
-        <div class="mt-5 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-            <?php foreach ((array) ($intel['ai_briefings'] ?? []) as $briefing): ?>
-                <a href="<?= htmlspecialchars((string) ($briefing['href'] ?? '/doctrine'), ENT_QUOTES) ?>" class="block rounded-[1.3rem] border border-white/8 bg-white/[0.03] p-4 transition hover:bg-white/[0.05]">
-                    <div class="flex items-start justify-between gap-3">
-                        <div class="min-w-0">
-                            <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($briefing['entity_name'] ?? 'Doctrine briefing'), ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($briefing['context_name'] ?? ucfirst((string) ($briefing['entity_type'] ?? 'doctrine'))), ENT_QUOTES) ?></p>
+        <details class="mt-5 rounded-[1.4rem] border border-white/8 bg-white/[0.03] p-4">
+            <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">Show briefing details</summary>
+            <div class="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+                <?php foreach ((array) ($intel['ai_briefings'] ?? []) as $briefing): ?>
+                    <a href="<?= htmlspecialchars((string) ($briefing['href'] ?? '/doctrine'), ENT_QUOTES) ?>" class="block rounded-[1.3rem] border border-white/8 bg-white/[0.03] p-4 transition hover:bg-white/[0.05]">
+                        <div class="flex items-start justify-between gap-3">
+                            <div class="min-w-0">
+                                <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($briefing['entity_name'] ?? 'Doctrine briefing'), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($briefing['context_name'] ?? ucfirst((string) ($briefing['entity_type'] ?? 'doctrine'))), ENT_QUOTES) ?></p>
+                            </div>
+                            <span class="badge <?= htmlspecialchars((string) ($briefing['priority_tone'] ?? 'border-slate-400/15 bg-slate-500/10 text-slate-200'), ENT_QUOTES) ?>"><?= htmlspecialchars(strtoupper((string) ($briefing['priority_level'] ?? 'medium')), ENT_QUOTES) ?></span>
                         </div>
-                        <span class="badge <?= htmlspecialchars((string) ($briefing['priority_tone'] ?? 'border-slate-400/15 bg-slate-500/10 text-slate-200'), ENT_QUOTES) ?>"><?= htmlspecialchars(strtoupper((string) ($briefing['priority_level'] ?? 'medium')), ENT_QUOTES) ?></span>
-                    </div>
-                    <p class="mt-4 text-base font-semibold text-white"><?= htmlspecialchars((string) ($briefing['headline'] ?? 'Briefing unavailable'), ENT_QUOTES) ?></p>
-                    <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($briefing['summary'] ?? ''), ENT_QUOTES) ?></p>
-                    <?php if (trim((string) ($briefing['explanation_text'] ?? '')) !== ''): ?>
-                        <div class="mt-4 rounded-2xl border border-white/8 bg-white/[0.02] px-3 py-3">
-                            <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Why this changed</p>
-                            <p class="mt-2 text-sm text-slate-200"><?= htmlspecialchars((string) ($briefing['explanation_text'] ?? ''), ENT_QUOTES) ?></p>
+                        <p class="mt-4 text-base font-semibold text-white"><?= htmlspecialchars((string) ($briefing['headline'] ?? 'Briefing unavailable'), ENT_QUOTES) ?></p>
+                        <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($briefing['summary'] ?? ''), ENT_QUOTES) ?></p>
+                        <div class="mt-4 rounded-2xl border border-white/8 bg-slate-950/60 px-3 py-3">
+                            <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Recommended action</p>
+                            <p class="mt-2 text-sm text-slate-100"><?= htmlspecialchars((string) ($briefing['action_text'] ?? ''), ENT_QUOTES) ?></p>
                         </div>
-                    <?php endif; ?>
-                    <div class="mt-4 rounded-2xl border border-white/8 bg-slate-950/60 px-3 py-3">
-                        <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Recommended action</p>
-                        <p class="mt-2 text-sm text-slate-100"><?= htmlspecialchars((string) ($briefing['action_text'] ?? ''), ENT_QUOTES) ?></p>
-                    </div>
-                    <?php if (trim((string) ($briefing['operator_briefing'] ?? '')) !== ''): ?>
-                        <div class="mt-4 rounded-2xl border border-violet-400/15 bg-violet-500/5 px-3 py-3">
-                            <p class="text-xs uppercase tracking-[0.16em] text-violet-200/70">Operator briefing</p>
-                            <p class="mt-2 text-sm text-violet-50"><?= htmlspecialchars((string) ($briefing['operator_briefing'] ?? ''), ENT_QUOTES) ?></p>
-                        </div>
-                    <?php endif; ?>
-                    <?php if (trim((string) ($briefing['trend_interpretation'] ?? '')) !== ''): ?>
-                        <div class="mt-4 rounded-2xl border border-sky-400/15 bg-sky-500/5 px-3 py-3">
-                            <p class="text-xs uppercase tracking-[0.16em] text-sky-200/70">Trend interpretation</p>
-                            <p class="mt-2 text-sm text-sky-50"><?= htmlspecialchars((string) ($briefing['trend_interpretation'] ?? ''), ENT_QUOTES) ?></p>
-                        </div>
-                    <?php endif; ?>
-                    <p class="mt-3 text-xs text-slate-500">Updated <?= htmlspecialchars((string) ($briefing['computed_relative'] ?? 'Unknown'), ENT_QUOTES) ?><?= (($briefing['generation_status'] ?? 'ready') !== 'ready') ? ' · deterministic fallback' : '' ?></p>
-                </a>
-            <?php endforeach; ?>
-            <?php if (((array) ($intel['ai_briefings'] ?? [])) === []): ?>
-                <div class="surface-tertiary text-sm text-slate-400 lg:col-span-2 xl:col-span-3">No doctrine AI briefings are available yet. Run the background AI briefing job after doctrine intelligence refreshes.</div>
-            <?php endif; ?>
-        </div>
+                        <?php if (trim((string) ($briefing['operator_briefing'] ?? '')) !== ''): ?>
+                            <p class="mt-3 text-sm text-violet-50"><?= htmlspecialchars((string) ($briefing['operator_briefing'] ?? ''), ENT_QUOTES) ?></p>
+                        <?php endif; ?>
+                        <p class="mt-3 text-xs text-slate-500">Updated <?= htmlspecialchars((string) ($briefing['computed_relative'] ?? 'Unknown'), ENT_QUOTES) ?><?= (($briefing['generation_status'] ?? 'ready') !== 'ready') ? ' · deterministic fallback' : '' ?></p>
+                    </a>
+                <?php endforeach; ?>
+                <?php if (((array) ($intel['ai_briefings'] ?? [])) === []): ?>
+                    <div class="surface-tertiary text-sm text-slate-400 lg:col-span-2 xl:col-span-3">No operator briefings are available yet.</div>
+                <?php endif; ?>
+            </div>
+        </details>
     </article>
 </section>
 
@@ -564,7 +553,8 @@ $statusThemes = [
     <?php foreach ($healthPanels as $panelTitle => $panel): ?>
         <?php
         $status = (string) ($panel['status'] ?? 'Awaiting sync');
-        $statusClass = $statusThemes[$status] ?? 'border-red-400/20 bg-red-500/10 text-red-100';
+        $statusView = supplycore_operational_status_view_model($status, $status);
+        $statusClass = $statusView['tone'];
         $wrapperClass = $panelTitle === 'Sync Health' ? 'surface-primary' : 'surface-secondary';
 
         $summaryText = match ($panelTitle) {
@@ -615,7 +605,7 @@ $statusThemes = [
                 </div>
                 <span class="status-chip <?= htmlspecialchars($statusClass, ENT_QUOTES) ?>">
                     <span class="h-2 w-2 rounded-full bg-current opacity-80"></span>
-                    <?= htmlspecialchars($status, ENT_QUOTES) ?>
+                    <?= htmlspecialchars($statusView['label'], ENT_QUOTES) ?>
                 </span>
             </div>
             <div class="mt-5 space-y-3">
