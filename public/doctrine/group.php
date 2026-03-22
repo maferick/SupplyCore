@@ -52,6 +52,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $data = doctrine_group_detail_data($groupId);
 $group = $data['group'] ?? null;
 $fits = $data['fits'] ?? [];
+$supportFits = (array) (($group['support_fits'] ?? []));
+$referenceFits = (array) (($group['reference_fits'] ?? []));
 $title = $group !== null ? ((string) ($group['group_name'] ?? 'Doctrine Group')) : 'Doctrine Group';
 $showDeleteConfirm = isset($_GET['confirm_delete']) && $_GET['confirm_delete'] === '1';
 $pageFreshness = supplycore_page_freshness_view_model((array) ($data['freshness'] ?? []));
@@ -91,7 +93,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <article class="surface-secondary">
             <p class="eyebrow">Target fleet</p>
             <p class="mt-3 text-3xl metric-value"><?= doctrine_format_quantity((int) ($group['target_fit_count'] ?? 0)) ?></p>
-            <p class="mt-2 text-sm text-slate-300">Doctrine-class fleet sizing across linked fits, with per-doctrine overrides when configured.</p>
+            <p class="mt-2 text-sm text-slate-300">Doctrine-class fleet sizing across primary-owned fits only, with per-doctrine overrides when configured.</p>
         </article>
         <article class="surface-secondary">
             <p class="eyebrow">Fleet gap</p>
@@ -111,6 +113,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <span class="badge <?= htmlspecialchars(doctrine_resupply_pressure_tone((string) ($group['pressure_state'] ?? 'stable')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($group['pressure_label'] ?? 'Stable'), ENT_QUOTES) ?></span>
                     </div>
                     <p class="mt-2 text-sm text-slate-400"><?= htmlspecialchars((string) ($group['description'] ?? 'Doctrine fit collection for SupplyCore.'), ENT_QUOTES) ?></p>
+                    <p class="mt-2 text-xs text-slate-500">Primary fits drive readiness and bottlenecks. Support and reference memberships are displayed separately and cannot inflate doctrine failure.</p>
                 </div>
                 <div class="flex flex-wrap gap-3">
                     <a href="/doctrine/import?group_id=<?= (int) ($group['id'] ?? 0) ?>" class="btn-primary">Import another fit</a>
@@ -135,8 +138,17 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <?php endif; ?>
 
             <?php if ($fits === []): ?>
-                <div class="surface-tertiary text-sm text-slate-400">No fits have been imported into this group yet.</div>
+                <div class="surface-tertiary text-sm text-slate-400">No primary-owned fits have been imported into this group yet.</div>
             <?php else: ?>
+                <div class="mb-4 rounded-[1.2rem] border border-emerald-400/15 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-50">
+                    <?= doctrine_format_quantity(count($fits)) ?> primary fits currently drive readiness for this doctrine.
+                    <?php if ($supportFits !== []): ?>
+                        <?= doctrine_format_quantity(count($supportFits)) ?> support fits are tracked separately.
+                    <?php endif; ?>
+                    <?php if ($referenceFits !== []): ?>
+                        <?= doctrine_format_quantity(count($referenceFits)) ?> reference fits are display-only.
+                    <?php endif; ?>
+                </div>
                 <div class="grid gap-4 lg:grid-cols-2">
                     <?php foreach ($fits as $fit): ?>
                         <?php $supply = (array) ($fit['supply'] ?? []); ?>
@@ -199,6 +211,60 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <?php endforeach; ?>
                 </div>
             <?php endif; ?>
+
+            <div class="mt-6 grid gap-4 xl:grid-cols-2">
+                <div class="surface-tertiary">
+                    <div class="flex items-center justify-between gap-3">
+                        <div>
+                            <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Support dependencies</p>
+                            <p class="mt-2 text-sm text-slate-300">Informational only. These fits can signal optional support pressure but never block readiness.</p>
+                        </div>
+                        <span class="badge border-sky-400/20 bg-sky-500/10 text-sky-100"><?= doctrine_format_quantity(count($supportFits)) ?> support</span>
+                    </div>
+                    <div class="mt-4 space-y-3">
+                        <?php if ($supportFits === []): ?>
+                            <p class="text-sm text-slate-500">No support memberships are attached to this doctrine.</p>
+                        <?php else: ?>
+                            <?php foreach ($supportFits as $fit): ?>
+                                <a href="/doctrine/fit?fit_id=<?= (int) ($fit['id'] ?? 0) ?>" class="intelligence-row group">
+                                    <div class="min-w-0 flex-1">
+                                        <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($fit['fit_name'] ?? ''), ENT_QUOTES) ?></p>
+                                        <p class="mt-1 text-xs text-slate-500">Primary owner: <?= htmlspecialchars((string) ($fit['primary_group_name'] ?? 'Unmapped'), ENT_QUOTES) ?></p>
+                                    </div>
+                                    <div class="text-right">
+                                        <p class="text-xs text-slate-400"><?= doctrine_format_quantity((int) (($fit['supply']['total_missing_qty'] ?? 0))) ?> missing units</p>
+                                        <p class="text-xs text-slate-500">Informational only</p>
+                                    </div>
+                                </a>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <div class="surface-tertiary">
+                    <div class="flex items-center justify-between gap-3">
+                        <div>
+                            <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Reference fits</p>
+                            <p class="mt-2 text-sm text-slate-300">Display-only attachments that never affect readiness, bottlenecks, or buy-all priority.</p>
+                        </div>
+                        <span class="badge border-slate-400/20 bg-slate-500/10 text-slate-200"><?= doctrine_format_quantity(count($referenceFits)) ?> reference</span>
+                    </div>
+                    <div class="mt-4 space-y-3">
+                        <?php if ($referenceFits === []): ?>
+                            <p class="text-sm text-slate-500">No reference-only memberships are attached to this doctrine.</p>
+                        <?php else: ?>
+                            <?php foreach ($referenceFits as $fit): ?>
+                                <a href="/doctrine/fit?fit_id=<?= (int) ($fit['id'] ?? 0) ?>" class="intelligence-row group">
+                                    <div class="min-w-0 flex-1">
+                                        <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($fit['fit_name'] ?? ''), ENT_QUOTES) ?></p>
+                                        <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?></p>
+                                    </div>
+                                    <div class="text-slate-500 transition group-hover:text-slate-200">Inspect ›</div>
+                                </a>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
         </article>
 
         <aside class="space-y-6">

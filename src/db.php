@@ -9784,23 +9784,68 @@ function doctrine_db_ensure_schema(): void
     }
 
     db()->exec(
-        'CREATE TABLE IF NOT EXISTS doctrine_fit_groups (
+        "CREATE TABLE IF NOT EXISTS doctrine_fit_groups (
             doctrine_fit_id INT UNSIGNED NOT NULL,
             doctrine_group_id INT UNSIGNED NOT NULL,
+            membership_role ENUM('primary', 'support', 'reference') NOT NULL DEFAULT 'support',
+            primary_fit_id INT UNSIGNED GENERATED ALWAYS AS (CASE WHEN membership_role = 'primary' THEN doctrine_fit_id ELSE NULL END) STORED,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (doctrine_fit_id, doctrine_group_id),
+            UNIQUE KEY uniq_doctrine_fit_groups_primary_fit (primary_fit_id),
             KEY idx_doctrine_fit_groups_group (doctrine_group_id),
+            KEY idx_doctrine_fit_groups_role (membership_role),
             CONSTRAINT fk_doctrine_fit_groups_fit FOREIGN KEY (doctrine_fit_id) REFERENCES doctrine_fits(id) ON DELETE CASCADE,
             CONSTRAINT fk_doctrine_fit_groups_group FOREIGN KEY (doctrine_group_id) REFERENCES doctrine_groups(id) ON DELETE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
     );
 
+    if (db_table_exists('doctrine_fit_groups') && !db_column_exists('doctrine_fit_groups', 'membership_role')) {
+        db()->exec("ALTER TABLE doctrine_fit_groups ADD COLUMN membership_role ENUM('primary', 'support', 'reference') NOT NULL DEFAULT 'support' AFTER doctrine_group_id");
+    }
+
+    if (db_table_exists('doctrine_fit_groups') && !db_column_exists('doctrine_fit_groups', 'primary_fit_id')) {
+        db()->exec("ALTER TABLE doctrine_fit_groups ADD COLUMN primary_fit_id INT UNSIGNED GENERATED ALWAYS AS (CASE WHEN membership_role = 'primary' THEN doctrine_fit_id ELSE NULL END) STORED AFTER membership_role");
+    }
+
+    if (db_table_exists('doctrine_fit_groups') && !db_index_exists('doctrine_fit_groups', 'uniq_doctrine_fit_groups_primary_fit')) {
+        db()->exec('ALTER TABLE doctrine_fit_groups ADD UNIQUE KEY uniq_doctrine_fit_groups_primary_fit (primary_fit_id)');
+    }
+
+    if (db_table_exists('doctrine_fit_groups') && !db_index_exists('doctrine_fit_groups', 'idx_doctrine_fit_groups_role')) {
+        db()->exec('ALTER TABLE doctrine_fit_groups ADD KEY idx_doctrine_fit_groups_role (membership_role)');
+    }
+
     db()->exec(
-        'INSERT IGNORE INTO doctrine_fit_groups (doctrine_fit_id, doctrine_group_id)
-         SELECT id, doctrine_group_id
+        "INSERT IGNORE INTO doctrine_fit_groups (doctrine_fit_id, doctrine_group_id, membership_role)
+         SELECT id, doctrine_group_id, 'primary'
          FROM doctrine_fits
-         WHERE doctrine_group_id IS NOT NULL'
+         WHERE doctrine_group_id IS NOT NULL"
     );
+
+    if (db_table_exists('doctrine_fit_groups')) {
+        db_execute(
+            "UPDATE doctrine_fit_groups dfg
+             INNER JOIN doctrine_fits df ON df.id = dfg.doctrine_fit_id
+             SET dfg.membership_role = CASE
+                 WHEN df.doctrine_group_id IS NOT NULL AND df.doctrine_group_id = dfg.doctrine_group_id THEN 'primary'
+                 ELSE 'support'
+             END
+             WHERE df.doctrine_group_id IS NOT NULL"
+        );
+
+        db_execute(
+            "UPDATE doctrine_fit_groups dfg
+             INNER JOIN (
+                SELECT doctrine_fit_id, MIN(doctrine_group_id) AS only_group_id
+                FROM doctrine_fit_groups
+                GROUP BY doctrine_fit_id
+                HAVING COUNT(*) = 1
+             ) singles ON singles.doctrine_fit_id = dfg.doctrine_fit_id AND singles.only_group_id = dfg.doctrine_group_id
+             LEFT JOIN doctrine_fits df ON df.id = dfg.doctrine_fit_id
+             SET dfg.membership_role = 'primary'
+             WHERE (df.doctrine_group_id IS NULL OR df.doctrine_group_id = 0)"
+        );
+    }
 
     db()->exec(
         'CREATE TABLE IF NOT EXISTS doctrine_fit_snapshots (
@@ -10095,7 +10140,10 @@ function db_doctrine_group_delete(int $groupId): array
 
         foreach ($fitIds as $fitId) {
             $next = db_select_one(
-                'SELECT doctrine_group_id FROM doctrine_fit_groups WHERE doctrine_fit_id = ? ORDER BY doctrine_group_id ASC LIMIT 1',
+                "SELECT doctrine_group_id
+                 FROM doctrine_fit_groups
+                 WHERE doctrine_fit_id = ? AND membership_role = 'primary'
+                 LIMIT 1",
                 [$fitId]
             );
             db_execute(
@@ -10112,6 +10160,62 @@ function db_doctrine_group_delete(int $groupId): array
     });
 }
 
+function db_doctrine_membership_role(string $role): string
+{
+    return in_array($role, ['primary', 'support', 'reference'], true) ? $role : 'support';
+}
+
+function db_doctrine_fit_memberships_normalize(array $memberships): array
+{
+    $normalized = [];
+
+    foreach ($memberships as $key => $membership) {
+        if (is_array($membership)) {
+            $groupId = (int) ($membership['group_id'] ?? $membership['doctrine_group_id'] ?? $membership['id'] ?? 0);
+            $role = db_doctrine_membership_role((string) ($membership['membership_role'] ?? 'support'));
+        } else {
+            $groupId = (int) $membership;
+            $role = 'support';
+            if ($key === 0) {
+                $role = 'primary';
+            }
+        }
+
+        if ($groupId <= 0) {
+            continue;
+        }
+
+        $normalized[$groupId] = [
+            'doctrine_fit_id' => 0,
+            'doctrine_group_id' => $groupId,
+            'membership_role' => $role,
+        ];
+    }
+
+    $primaryCount = 0;
+    foreach ($normalized as $membership) {
+        if (($membership['membership_role'] ?? 'support') === 'primary') {
+            $primaryCount++;
+        }
+    }
+
+    if ($primaryCount > 1) {
+        $firstPrimaryGroupId = 0;
+        foreach ($normalized as $groupId => $membership) {
+            if (($membership['membership_role'] ?? 'support') !== 'primary') {
+                continue;
+            }
+            if ($firstPrimaryGroupId === 0) {
+                $firstPrimaryGroupId = (int) $groupId;
+                continue;
+            }
+            $normalized[$groupId]['membership_role'] = 'support';
+        }
+    }
+
+    return array_values($normalized);
+}
+
 function db_doctrine_fit_membership_rows(int $fitId): array
 {
     doctrine_db_ensure_schema();
@@ -10121,11 +10225,12 @@ function db_doctrine_fit_membership_rows(int $fitId): array
     }
 
     return db_select(
-        'SELECT dg.id, dg.group_name
+        "SELECT dg.id, dg.group_name, dfg.membership_role,
+                CASE WHEN dfg.membership_role = 'primary' THEN 1 ELSE 0 END AS is_primary
          FROM doctrine_fit_groups dfg
          INNER JOIN doctrine_groups dg ON dg.id = dfg.doctrine_group_id
          WHERE dfg.doctrine_fit_id = ?
-         ORDER BY dg.group_name ASC',
+         ORDER BY CASE dfg.membership_role WHEN 'primary' THEN 0 WHEN 'support' THEN 1 ELSE 2 END ASC, dg.group_name ASC",
         [$fitId]
     );
 }
@@ -10140,7 +10245,7 @@ function db_doctrine_fits_all(): array
     doctrine_db_ensure_schema();
 
     return db_select(
-        'SELECT
+        "SELECT
             df.id,
             df.doctrine_group_id,
             df.fit_name,
@@ -10161,13 +10266,16 @@ function db_doctrine_fits_all(): array
             df.unresolved_count,
             df.created_at,
             df.updated_at,
-            GROUP_CONCAT(DISTINCT dfg.doctrine_group_id ORDER BY dfg.doctrine_group_id SEPARATOR ",") AS group_ids_csv,
-            GROUP_CONCAT(DISTINCT dg.group_name ORDER BY dg.group_name SEPARATOR "||") AS group_names_csv
+            MAX(CASE WHEN dfg.membership_role = 'primary' THEN dfg.doctrine_group_id END) AS primary_group_id,
+            GROUP_CONCAT(DISTINCT dfg.doctrine_group_id ORDER BY dfg.doctrine_group_id SEPARATOR ',') AS group_ids_csv,
+            GROUP_CONCAT(DISTINCT dg.group_name ORDER BY dg.group_name SEPARATOR '||') AS group_names_csv,
+            GROUP_CONCAT(DISTINCT CONCAT(dfg.doctrine_group_id, ':', dfg.membership_role) ORDER BY CASE dfg.membership_role WHEN 'primary' THEN 0 WHEN 'support' THEN 1 ELSE 2 END, dfg.doctrine_group_id SEPARATOR ',') AS membership_roles_csv,
+            GROUP_CONCAT(DISTINCT CONCAT(dg.group_name, ':', dfg.membership_role) ORDER BY CASE dfg.membership_role WHEN 'primary' THEN 0 WHEN 'support' THEN 1 ELSE 2 END, dg.group_name SEPARATOR '||') AS membership_names_csv
          FROM doctrine_fits df
          LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
          LEFT JOIN doctrine_groups dg ON dg.id = dfg.doctrine_group_id
          GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.target_fleet_size_override, df.source_type, df.source_format, df.source_reference, df.notes, df.import_body, df.parse_status, df.review_status, df.conflict_state, df.fingerprint_hash, df.warning_count, df.item_count, df.unresolved_count, df.created_at, df.updated_at
-         ORDER BY df.updated_at DESC, df.fit_name ASC'
+         ORDER BY df.updated_at DESC, df.fit_name ASC"
     );
 }
 
@@ -10180,7 +10288,7 @@ function db_doctrine_fits_by_group(int $groupId): array
     }
 
     return db_select(
-        'SELECT
+        "SELECT
             df.id,
             df.doctrine_group_id,
             df.fit_name,
@@ -10201,14 +10309,15 @@ function db_doctrine_fits_by_group(int $groupId): array
             df.unresolved_count,
             df.created_at,
             df.updated_at,
+            dfg.membership_role,
             COALESCE(SUM(dfi.quantity), 0) AS required_quantity,
             COUNT(dfi.id) AS fit_line_count
          FROM doctrine_fit_groups dfg
          INNER JOIN doctrine_fits df ON df.id = dfg.doctrine_fit_id
          LEFT JOIN doctrine_fit_items dfi ON dfi.doctrine_fit_id = df.id
          WHERE dfg.doctrine_group_id = ?
-         GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.target_fleet_size_override, df.source_type, df.source_format, df.source_reference, df.notes, df.import_body, df.parse_status, df.review_status, df.conflict_state, df.fingerprint_hash, df.warning_count, df.item_count, df.unresolved_count, df.created_at, df.updated_at
-         ORDER BY df.updated_at DESC, df.fit_name ASC',
+         GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.target_fleet_size_override, df.source_type, df.source_format, df.source_reference, df.notes, df.import_body, df.parse_status, df.review_status, df.conflict_state, df.fingerprint_hash, df.warning_count, df.item_count, df.unresolved_count, df.created_at, df.updated_at, dfg.membership_role
+         ORDER BY CASE dfg.membership_role WHEN 'primary' THEN 0 WHEN 'support' THEN 1 ELSE 2 END ASC, df.updated_at DESC, df.fit_name ASC",
         [$groupId]
     );
 }
@@ -10218,11 +10327,17 @@ function db_doctrine_ungrouped_fits(): array
     doctrine_db_ensure_schema();
 
     return db_select(
-        'SELECT df.*
+        "SELECT
+            df.*,
+            GROUP_CONCAT(DISTINCT CONCAT(dfg.doctrine_group_id, ':', dfg.membership_role) ORDER BY CASE dfg.membership_role WHEN 'primary' THEN 0 WHEN 'support' THEN 1 ELSE 2 END, dfg.doctrine_group_id SEPARATOR ',') AS membership_roles_csv,
+            GROUP_CONCAT(DISTINCT CONCAT(dg.group_name, ':', dfg.membership_role) ORDER BY CASE dfg.membership_role WHEN 'primary' THEN 0 WHEN 'support' THEN 1 ELSE 2 END, dg.group_name SEPARATOR '||') AS membership_names_csv,
+            GROUP_CONCAT(DISTINCT dg.group_name ORDER BY dg.group_name SEPARATOR '||') AS group_names_csv
          FROM doctrine_fits df
          LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
-         WHERE dfg.doctrine_fit_id IS NULL
-         ORDER BY df.updated_at DESC, df.fit_name ASC'
+         LEFT JOIN doctrine_groups dg ON dg.id = dfg.doctrine_group_id
+         GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.target_fleet_size_override, df.source_type, df.source_format, df.source_reference, df.notes, df.import_body, df.raw_html, df.raw_buyall, df.raw_eft, df.metadata_json, df.parse_warnings_json, df.parse_status, df.review_status, df.conflict_state, df.fingerprint_hash, df.warning_count, df.item_count, df.unresolved_count, df.created_at, df.updated_at
+         HAVING SUM(CASE WHEN dfg.membership_role = 'primary' THEN 1 ELSE 0 END) = 0
+         ORDER BY df.updated_at DESC, df.fit_name ASC"
     );
 }
 
@@ -10235,18 +10350,21 @@ function db_doctrine_fit_by_id(int $fitId): ?array
     }
 
     return db_select_one(
-        'SELECT
+        "SELECT
             df.*,
             pg.group_name AS primary_group_name,
-            GROUP_CONCAT(DISTINCT dfg.doctrine_group_id ORDER BY dfg.doctrine_group_id SEPARATOR ",") AS group_ids_csv,
-            GROUP_CONCAT(DISTINCT dg.group_name ORDER BY dg.group_name SEPARATOR "||") AS group_names_csv
+            MAX(CASE WHEN dfg.membership_role = 'primary' THEN dfg.doctrine_group_id END) AS primary_group_id,
+            GROUP_CONCAT(DISTINCT dfg.doctrine_group_id ORDER BY dfg.doctrine_group_id SEPARATOR ',') AS group_ids_csv,
+            GROUP_CONCAT(DISTINCT dg.group_name ORDER BY dg.group_name SEPARATOR '||') AS group_names_csv,
+            GROUP_CONCAT(DISTINCT CONCAT(dfg.doctrine_group_id, ':', dfg.membership_role) ORDER BY CASE dfg.membership_role WHEN 'primary' THEN 0 WHEN 'support' THEN 1 ELSE 2 END, dfg.doctrine_group_id SEPARATOR ',') AS membership_roles_csv,
+            GROUP_CONCAT(DISTINCT CONCAT(dg.group_name, ':', dfg.membership_role) ORDER BY CASE dfg.membership_role WHEN 'primary' THEN 0 WHEN 'support' THEN 1 ELSE 2 END, dg.group_name SEPARATOR '||') AS membership_names_csv
          FROM doctrine_fits df
          LEFT JOIN doctrine_groups pg ON pg.id = df.doctrine_group_id
          LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
          LEFT JOIN doctrine_groups dg ON dg.id = dfg.doctrine_group_id
          WHERE df.id = ?
          GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.target_fleet_size_override, df.source_type, df.source_format, df.source_reference, df.notes, df.import_body, df.raw_html, df.raw_buyall, df.raw_eft, df.metadata_json, df.parse_warnings_json, df.parse_status, df.review_status, df.conflict_state, df.fingerprint_hash, df.warning_count, df.item_count, df.unresolved_count, df.created_at, df.updated_at, pg.group_name
-         LIMIT 1',
+         LIMIT 1",
         [$fitId]
     );
 }
@@ -10605,31 +10723,50 @@ function db_doctrine_fit_sync_item_totals(int $fitId, int $itemCount, int $unres
     );
 }
 
-function db_doctrine_fit_replace_groups(int $fitId, array $groupIds): void
+function db_doctrine_fit_replace_groups(int $fitId, array $memberships): void
 {
-    $groupIds = array_values(array_unique(array_filter(array_map('intval', $groupIds), static fn (int $id): bool => $id > 0)));
+    $memberships = db_doctrine_fit_memberships_normalize($memberships);
     db_execute('DELETE FROM doctrine_fit_groups WHERE doctrine_fit_id = ?', [$fitId]);
 
-    if ($groupIds !== []) {
+    if ($memberships !== []) {
         $rows = [];
-        foreach ($groupIds as $groupId) {
-            $rows[] = ['doctrine_fit_id' => $fitId, 'doctrine_group_id' => $groupId];
+        foreach ($memberships as $membership) {
+            $rows[] = [
+                'doctrine_fit_id' => $fitId,
+                'doctrine_group_id' => (int) ($membership['doctrine_group_id'] ?? 0),
+                'membership_role' => db_doctrine_membership_role((string) ($membership['membership_role'] ?? 'support')),
+            ];
         }
-        db_bulk_insert_or_upsert('doctrine_fit_groups', ['doctrine_fit_id', 'doctrine_group_id'], $rows);
+        db_bulk_insert_or_upsert('doctrine_fit_groups', ['doctrine_fit_id', 'doctrine_group_id', 'membership_role'], $rows);
+    }
+
+    $primaryGroupId = null;
+    foreach ($memberships as $membership) {
+        if (($membership['membership_role'] ?? 'support') === 'primary') {
+            $primaryGroupId = (int) ($membership['doctrine_group_id'] ?? 0);
+            break;
+        }
     }
 
     db_execute(
         'UPDATE doctrine_fits SET doctrine_group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? LIMIT 1',
-        [$groupIds[0] ?? null, $fitId]
+        [$primaryGroupId > 0 ? $primaryGroupId : null, $fitId]
     );
 }
 
-function db_doctrine_fit_create(array $fit, array $items, array $groupIds = []): int
+function db_doctrine_fit_create(array $fit, array $items, array $memberships = []): int
 {
     doctrine_db_ensure_schema();
 
-    return db_transaction(function () use ($fit, $items, $groupIds): int {
-        $groupIds = array_values(array_unique(array_filter(array_map('intval', $groupIds), static fn (int $id): bool => $id > 0)));
+    return db_transaction(function () use ($fit, $items, $memberships): int {
+        $memberships = db_doctrine_fit_memberships_normalize($memberships);
+        $primaryGroupId = null;
+        foreach ($memberships as $membership) {
+            if (($membership['membership_role'] ?? 'support') === 'primary') {
+                $primaryGroupId = (int) ($membership['doctrine_group_id'] ?? 0);
+                break;
+            }
+        }
         db_execute(
             'INSERT INTO doctrine_fits (
                 doctrine_group_id,
@@ -10656,7 +10793,7 @@ function db_doctrine_fit_create(array $fit, array $items, array $groupIds = []):
                 unresolved_count
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [
-                $groupIds[0] ?? (isset($fit['doctrine_group_id']) ? (int) $fit['doctrine_group_id'] : null),
+                $primaryGroupId > 0 ? $primaryGroupId : (isset($fit['doctrine_group_id']) ? (int) $fit['doctrine_group_id'] : null),
                 (string) ($fit['fit_name'] ?? ''),
                 (string) ($fit['ship_name'] ?? ''),
                 isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null,
@@ -10683,13 +10820,13 @@ function db_doctrine_fit_create(array $fit, array $items, array $groupIds = []):
 
         $fitId = (int) db()->lastInsertId();
         db_doctrine_fit_replace_items($fitId, $items);
-        db_doctrine_fit_replace_groups($fitId, $groupIds);
+        db_doctrine_fit_replace_groups($fitId, $memberships);
 
         return $fitId;
     });
 }
 
-function db_doctrine_fit_update(int $fitId, array $fit, array $items, array $groupIds = []): bool
+function db_doctrine_fit_update(int $fitId, array $fit, array $items, array $memberships = []): bool
 {
     doctrine_db_ensure_schema();
 
@@ -10697,14 +10834,21 @@ function db_doctrine_fit_update(int $fitId, array $fit, array $items, array $gro
         return false;
     }
 
-    return db_transaction(function () use ($fitId, $fit, $items, $groupIds): bool {
-        $groupIds = array_values(array_unique(array_filter(array_map('intval', $groupIds), static fn (int $id): bool => $id > 0)));
+    return db_transaction(function () use ($fitId, $fit, $items, $memberships): bool {
+        $memberships = db_doctrine_fit_memberships_normalize($memberships);
+        $primaryGroupId = null;
+        foreach ($memberships as $membership) {
+            if (($membership['membership_role'] ?? 'support') === 'primary') {
+                $primaryGroupId = (int) ($membership['doctrine_group_id'] ?? 0);
+                break;
+            }
+        }
         db_execute(
             'UPDATE doctrine_fits
              SET doctrine_group_id = ?, fit_name = ?, ship_name = ?, ship_type_id = ?, target_fleet_size_override = ?, source_type = ?, source_format = ?, source_reference = ?, notes = ?, import_body = ?, raw_html = ?, raw_buyall = ?, raw_eft = ?, metadata_json = ?, parse_warnings_json = ?, parse_status = ?, review_status = ?, conflict_state = ?, fingerprint_hash = ?, warning_count = ?, item_count = ?, unresolved_count = ?, updated_at = CURRENT_TIMESTAMP
              WHERE id = ? LIMIT 1',
             [
-                $groupIds[0] ?? null,
+                $primaryGroupId > 0 ? $primaryGroupId : null,
                 (string) ($fit['fit_name'] ?? ''),
                 (string) ($fit['ship_name'] ?? ''),
                 isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null,
@@ -10731,7 +10875,7 @@ function db_doctrine_fit_update(int $fitId, array $fit, array $items, array $gro
         );
 
         db_doctrine_fit_replace_items($fitId, $items);
-        db_doctrine_fit_replace_groups($fitId, $groupIds);
+        db_doctrine_fit_replace_groups($fitId, $memberships);
 
         return true;
     });
@@ -10915,9 +11059,11 @@ function db_doctrine_fit_overview(array $filters = [], string $sort = 'updated_d
             df.unresolved_count,
             df.created_at,
             df.updated_at,
+            MAX(CASE WHEN dfg.membership_role = \'primary\' THEN dfg.doctrine_group_id END) AS primary_group_id,
             COUNT(DISTINCT dfg.doctrine_group_id) AS group_count,
             COUNT(DISTINCT dfi.id) AS normalized_item_rows,
-            GROUP_CONCAT(DISTINCT dg.group_name ORDER BY dg.group_name SEPARATOR "||") AS group_names_csv
+            GROUP_CONCAT(DISTINCT dg.group_name ORDER BY dg.group_name SEPARATOR "||") AS group_names_csv,
+            GROUP_CONCAT(DISTINCT CONCAT(dfg.doctrine_group_id, \':\', dfg.membership_role) ORDER BY CASE dfg.membership_role WHEN \'primary\' THEN 0 WHEN \'support\' THEN 1 ELSE 2 END, dfg.doctrine_group_id SEPARATOR \',\') AS membership_roles_csv
          FROM doctrine_fits df
          ' . implode(' ', $joins) . '
          WHERE ' . implode(' AND ', $where) . '
@@ -10967,25 +11113,41 @@ function db_doctrine_fit_bulk_assign_groups(array $fitIds, array $groupIds, bool
 
         $rows = [];
         foreach ($fitIds as $fitId) {
-            foreach ($groupIds as $groupId) {
-                $rows[] = ['doctrine_fit_id' => $fitId, 'doctrine_group_id' => $groupId];
+            $existingMemberships = $replaceExisting ? [] : db_doctrine_fit_membership_rows($fitId);
+            $hasPrimary = false;
+            foreach ($existingMemberships as $membership) {
+                if (($membership['membership_role'] ?? 'support') === 'primary') {
+                    $hasPrimary = true;
+                    break;
+                }
+            }
+
+            foreach (array_values($groupIds) as $index => $groupId) {
+                $role = ($index === 0 && !$hasPrimary) ? 'primary' : 'support';
+                $rows[] = [
+                    'doctrine_fit_id' => $fitId,
+                    'doctrine_group_id' => $groupId,
+                    'membership_role' => $role,
+                ];
+                if ($role === 'primary') {
+                    $hasPrimary = true;
+                }
             }
         }
 
-        db_bulk_insert_or_upsert('doctrine_fit_groups', ['doctrine_fit_id', 'doctrine_group_id'], $rows);
+        db_bulk_insert_or_upsert('doctrine_fit_groups', ['doctrine_fit_id', 'doctrine_group_id', 'membership_role'], $rows);
 
-        $memberships = db_select(
-            "SELECT doctrine_fit_id, MIN(doctrine_group_id) AS primary_group_id
-             FROM doctrine_fit_groups
-             WHERE doctrine_fit_id IN ({$fitPlaceholders})
-             GROUP BY doctrine_fit_id",
-            $fitIds
-        );
-
-        foreach ($memberships as $row) {
+        foreach ($fitIds as $fitId) {
+            $primary = db_select_one(
+                "SELECT doctrine_group_id
+                 FROM doctrine_fit_groups
+                 WHERE doctrine_fit_id = ? AND membership_role = 'primary'
+                 LIMIT 1",
+                [$fitId]
+            );
             db_execute(
                 'UPDATE doctrine_fits SET doctrine_group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? LIMIT 1',
-                [(int) ($row['primary_group_id'] ?? 0), (int) ($row['doctrine_fit_id'] ?? 0)]
+                [$primary !== null ? (int) ($primary['doctrine_group_id'] ?? 0) : null, $fitId]
             );
         }
 
@@ -11016,22 +11178,17 @@ function db_doctrine_fit_bulk_remove_groups(array $fitIds, array $groupIds): int
             $params
         );
 
-        $memberships = db_select(
-            "SELECT doctrine_fit_id, MIN(doctrine_group_id) AS primary_group_id
-             FROM doctrine_fit_groups
-             WHERE doctrine_fit_id IN ({$fitPlaceholders})
-             GROUP BY doctrine_fit_id",
-            $fitIds
-        );
-        $primaryByFit = [];
-        foreach ($memberships as $row) {
-            $primaryByFit[(int) ($row['doctrine_fit_id'] ?? 0)] = (int) ($row['primary_group_id'] ?? 0);
-        }
-
         foreach ($fitIds as $fitId) {
+            $primary = db_select_one(
+                "SELECT doctrine_group_id
+                 FROM doctrine_fit_groups
+                 WHERE doctrine_fit_id = ? AND membership_role = 'primary'
+                 LIMIT 1",
+                [$fitId]
+            );
             db_execute(
                 'UPDATE doctrine_fits SET doctrine_group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? LIMIT 1',
-                [($primaryByFit[$fitId] ?? 0) > 0 ? $primaryByFit[$fitId] : null, $fitId]
+                [$primary !== null ? (int) ($primary['doctrine_group_id'] ?? 0) : null, $fitId]
             );
         }
 
