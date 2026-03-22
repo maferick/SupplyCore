@@ -499,14 +499,18 @@ function db_killmail_payload_schema_ensure(): void
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (sequence_id),
-        UNIQUE KEY uniq_killmail_event_payloads_killmail (killmail_id, killmail_hash),
+        KEY idx_killmail_event_payloads_killmail (killmail_id, killmail_hash),
         CONSTRAINT fk_killmail_event_payloads_sequence
             FOREIGN KEY (sequence_id) REFERENCES killmail_events (sequence_id)
             ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
-    if (!db_table_has_index('killmail_event_payloads', 'uniq_killmail_event_payloads_killmail')) {
-        db()->exec('ALTER TABLE killmail_event_payloads ADD UNIQUE KEY uniq_killmail_event_payloads_killmail (killmail_id, killmail_hash)');
+    if (db_table_has_index('killmail_event_payloads', 'uniq_killmail_event_payloads_killmail')) {
+        db()->exec('ALTER TABLE killmail_event_payloads DROP INDEX uniq_killmail_event_payloads_killmail');
+    }
+
+    if (!db_table_has_index('killmail_event_payloads', 'idx_killmail_event_payloads_killmail')) {
+        db()->exec('ALTER TABLE killmail_event_payloads ADD KEY idx_killmail_event_payloads_killmail (killmail_id, killmail_hash)');
     }
 
     if (db_table_has_column('killmail_events', 'zkb_json') && db_table_has_column('killmail_events', 'raw_killmail_json')) {
@@ -547,7 +551,7 @@ function db_killmail_overview_schema_ensure(): void
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (sequence_id),
-        UNIQUE KEY uniq_killmail_event_payloads_killmail (killmail_id, killmail_hash),
+        KEY idx_killmail_event_payloads_killmail (killmail_id, killmail_hash),
         CONSTRAINT fk_killmail_event_payloads_sequence
             FOREIGN KEY (sequence_id) REFERENCES killmail_events (sequence_id)
             ON DELETE CASCADE
@@ -9197,9 +9201,8 @@ function db_killmail_event_exists(int $sequenceId, int $killmailId, string $kill
         'SELECT sequence_id
            FROM killmail_events
           WHERE sequence_id = ?
-             OR (killmail_id = ? AND killmail_hash = ?)
           LIMIT 1',
-        [$sequenceId, $killmailId, $killmailHash]
+        [$sequenceId]
     );
 
     return $row !== null;
