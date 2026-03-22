@@ -16,6 +16,7 @@ Restart=always
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=90
+MemoryMax=1G
 StandardOutput=append:/var/www/SupplyCore/storage/logs/cron.log
 StandardError=append:/var/www/SupplyCore/storage/logs/cron.log
 

@@ -5,6 +5,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/bootstrap.php';
 
+scheduler_enforce_php_runtime_limits();
+
 function scheduler_job_runner_output(string $event, array $payload = [], $stream = STDOUT): void
 {
     $line = ['event' => $event, 'ts' => gmdate(DATE_ATOM)] + $payload;
@@ -31,7 +33,7 @@ function scheduler_job_runner_main(): int
     }
 
     $jobKey = trim((string) ($job['job_key'] ?? 'unknown_job'));
-    $jobType = scheduler_job_type($jobKey);
+    $jobType = scheduler_job_runtime_type($job);
     $status = trim((string) ($job['last_status'] ?? ''));
     $lockedUntil = trim((string) ($job['locked_until'] ?? ''));
 

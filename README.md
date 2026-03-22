@@ -239,6 +239,7 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 - Clean recycle exits are now also **self-respawning**. If the daemon exits because of a memory recycle threshold, loop ceiling, runtime ceiling, or an explicit restart request, it immediately spawns a replacement process before relying on cron/systemd. This prevents the “stopped after recycle” gap you were seeing when the external supervisor did not relaunch it quickly enough.
 - `bin/scheduler_health.php` prints the daemon health JSON and exits non-zero when the daemon is degraded or stopped, which makes it suitable for `systemd` health probes or manual checks.
 - The continuous daemon still reuses the existing scheduler intelligence: it claims due jobs from `sync_schedules`, preserves priority/fairness/latest-allowed-start behavior, keeps protected-job and incompatibility rules, uses the same resource-aware concurrency planner, and still dispatches async-capable AI jobs to `bin/scheduler_job_runner.php` background workers so long-polling providers do not block the rest of the queue.
+- Each schedule row now carries an explicit `execution_mode` (`php` or `python`). Lightweight control-plane jobs stay in PHP, while heavy market aggregation, snapshot-generation, history rebuild, and killmail workloads can be routed to the Python `python_worker` runner without changing scheduler cadence or lock semantics.
 - The daemon does not busy-spin. When nothing is due it can now opportunistically claim a single **idle backfill** job (for example dashboard/summary warmers that are explicitly marked backfill-safe) so the app keeps refreshing useful derived data while otherwise idle. If no due or backfill-safe work is runnable, it sleeps until the earliest of the next due timestamp, a short fallback poll interval, or a wake signal recorded by the watchdog/background workers after completions.
 - Scheduler cadence controls in **Settings → Data Sync** are intentionally simplified to one selector:
   - **Low**: conservative cadence, lower concurrency, wider poll intervals, and more headroom for smaller VPS/container deployments.
@@ -258,6 +259,7 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 - The optimizer changes one thing at a time with cooldowns: it first shifts congested offsets, then raises timeouts when repeated timeout pressure is observed, then adjusts intervals while protecting the freshness ceilings for `killmail_r2z2_sync` and `market_hub_current_sync`. Every automatic or admin change is written to `scheduler_tuning_actions`, while lock conflicts, skips, dispatches, and timeout pressure are written to `scheduler_job_events`.
 - Resource-aware concurrency now extends that scheduler baseline instead of replacing it: every completed job records per-run CPU, wall time, queue delay, approximate lock handoff delay, overlap count, and process memory high-water marks in `scheduler_job_resource_metrics`, while planner allow/defer/promote decisions are persisted in `scheduler_planner_decisions`.
 - CPU telemetry is derived from PHP process user+system CPU time (`getrusage()`) divided by wall-clock seconds, so the recorded percentage represents how much of one CPU core the job consumed on average during the run. Memory telemetry uses PHP's process memory usage and peak high-water mark (`memory_get_usage(true)` / `memory_get_peak_usage(true)`), with the stored run cost preferring the peak delta observed while the job was executing.
+- Scheduler-run PHP entrypoints now enforce `memory_limit=512M`, log current and peak memory usage in scheduler events/resource metrics, and abort a job if runtime memory crosses 400 MiB or the resolved timeout is exceeded.
 - The planner learns a rolling light/medium/heavy class for each job from recent CPU, memory, duration, timeout/failure, and lock-wait behavior. Unknown jobs stay in learning mode and are projected conservatively until enough telemetry samples accumulate.
 - Capacity decisions combine current running-job projections, per-job p95 resource costs, fairness/urgency toward `latest_allowed_start_at`, explicit incompatibility rules, reserved headroom for critical jobs, and the pressure states `healthy`, `busy`, `congested`, and `overload_protection`.
 - Lease recovery and stale-state cleanup now happen during daemon startup and watchdog intervention. The daemon clears expired/stale running markers, updates the last recovery event in `scheduler_daemon_state`, and resumes scheduling without waiting for the next cron minute.
@@ -310,6 +312,7 @@ python/
     __main__.py          # python -m orchestrator
     config.py            # loads PHP-exported runtime config JSON
     health.py            # scheduler health probe wrapper
+    job_runner.py        # python_worker skeleton for heavy scheduler jobs
     logging_utils.py     # journald-friendly JSON logs
     main.py              # CLI entrypoint
     php_runner.py        # supervised PHP child process runner
@@ -323,7 +326,7 @@ python/
 - `systemd` runs the Python orchestrator.
 - Python launches `bin/scheduler_daemon.php` as a child process.
 - Python captures stdout/stderr, polls `bin/scheduler_health.php`, enforces graceful stop/kill behavior, writes a heartbeat file, and restarts the PHP daemon after crashes or repeated health failures.
-- PHP background workers remain PHP-owned, preserving scheduler/business logic.
+- PHP remains the default execution engine, but heavy jobs can now be routed to a dedicated Python `python_worker` skeleton through the per-job `execution_mode` flag.
 
 **Phase 2: optional later**
 
@@ -335,6 +338,7 @@ python/
 - `bin/orchestrator_config.php` — export resolved runtime config as JSON.
 - `bin/scheduler_daemon.php` — primary managed PHP child process.
 - `bin/scheduler_health.php` — health/heartbeat probe used by Python.
+- `bin/python_job_runner.py` — bootstrap the Python `python_worker` runner for heavy `execution_mode=python` jobs.
 - `bin/scheduler_watchdog.php` / `bin/cron_tick.php` — still available during transition, but when `scheduler.supervisor_mode=python` they target the Python-managed service instead of spawning a standalone PHP daemon directly.
 
 #### Duplicate-master safety
@@ -373,6 +377,7 @@ Restart=always
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=90
+MemoryMax=1G
 StandardOutput=append:/var/www/SupplyCore/storage/logs/cron.log
 StandardError=append:/var/www/SupplyCore/storage/logs/cron.log
 

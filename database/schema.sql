@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS sync_schedules (
     backfill_priority VARCHAR(20) NOT NULL DEFAULT 'normal',
     min_backfill_gap_seconds INT UNSIGNED NOT NULL DEFAULT 900,
     max_early_start_seconds INT UNSIGNED NOT NULL DEFAULT 0,
+    execution_mode VARCHAR(16) NOT NULL DEFAULT 'php',
     last_execution_mode VARCHAR(32) NOT NULL DEFAULT 'scheduled',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -540,10 +541,30 @@ PREPARE sync_schedules_timeout_count_stmt FROM @sync_schedules_timeout_count_sql
 EXECUTE sync_schedules_timeout_count_stmt;
 DEALLOCATE PREPARE sync_schedules_timeout_count_stmt;
 
+SET @sync_schedules_execution_mode_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'execution_mode'
+);
+SET @sync_schedules_execution_mode_sql := IF(
+    @sync_schedules_execution_mode_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN execution_mode VARCHAR(16) NOT NULL DEFAULT ''php'' AFTER max_early_start_seconds',
+    'SELECT 1'
+);
+PREPARE sync_schedules_execution_mode_stmt FROM @sync_schedules_execution_mode_sql;
+EXECUTE sync_schedules_execution_mode_stmt;
+DEALLOCATE PREPARE sync_schedules_execution_mode_stmt;
+
 UPDATE sync_schedules
 SET interval_minutes = GREATEST(1, CEIL(interval_seconds / 60)),
     offset_minutes = FLOOR(offset_seconds / 60),
     next_due_at = COALESCE(next_due_at, next_run_at),
+    execution_mode = CASE
+        WHEN LOWER(COALESCE(NULLIF(execution_mode, ''), 'php')) = 'python' THEN 'python'
+        ELSE 'php'
+    END,
     current_state = CASE
         WHEN enabled = 0 THEN 'stopped'
         WHEN locked_until IS NOT NULL AND locked_until > UTC_TIMESTAMP() THEN 'running'
@@ -2102,6 +2123,7 @@ INSERT INTO sync_schedules (
     offset_minutes,
     priority,
     concurrency_policy,
+    execution_mode,
     timeout_seconds,
     next_run_at,
     next_due_at,
@@ -2114,23 +2136,23 @@ INSERT INTO sync_schedules (
     last_error,
     locked_until
 ) VALUES
-    ('market_hub_current_sync', 1, 8, 480, 0, 0, 'high', 'single', 240, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('alliance_current_sync', 1, 4, 240, 120, 2, 'medium', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('current_state_refresh_sync', 1, 12, 720, 360, 6, 'medium', 'single', 120, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('market_hub_local_history_sync', 1, 20, 1200, 840, 14, 'normal', 'background', 1800, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('doctrine_intelligence_sync', 1, 15, 900, 480, 8, 'normal', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('market_comparison_summary_sync', 1, 15, 900, 540, 9, 'normal', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('loss_demand_summary_sync', 1, 15, 900, 600, 10, 'normal', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('dashboard_summary_sync', 1, 15, 900, 660, 11, 'normal', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('rebuild_ai_briefings', 1, 20, 1200, 720, 12, 'normal', 'background', 300, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('killmail_r2z2_sync', 1, 3, 180, 180, 3, 'highest', 'single', 90, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('alliance_historical_sync', 1, 360, 21600, 300, 5, 'normal', 'background', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('market_hub_historical_sync', 1, 360, 21600, 0, 0, 'normal', 'background', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('forecasting_ai_sync', 1, 60, 3600, 0, 0, 'normal', 'background', 300, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('deal_alerts_sync', 1, 5, 300, 60, 1, 'high', 'single', 90, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('activity_priority_summary_sync', 1, 15, 900, 780, 13, 'normal', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
-    ('analytics_bucket_1h_sync', 1, 15, 900, 900, 15, 'normal', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
-    ('analytics_bucket_1d_sync', 1, 60, 3600, 960, 16, 'normal', 'single', 240, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL)
+    ('market_hub_current_sync', 1, 8, 480, 0, 0, 'high', 'single', 'php', 240, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('alliance_current_sync', 1, 4, 240, 120, 2, 'medium', 'single', 'php', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('current_state_refresh_sync', 1, 12, 720, 360, 6, 'medium', 'single', 'php', 120, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('market_hub_local_history_sync', 1, 20, 1200, 840, 14, 'normal', 'background', 'php', 1800, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('doctrine_intelligence_sync', 1, 15, 900, 480, 8, 'normal', 'single', 'php', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('market_comparison_summary_sync', 1, 15, 900, 540, 9, 'normal', 'single', 'php', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('loss_demand_summary_sync', 1, 15, 900, 600, 10, 'normal', 'single', 'php', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('dashboard_summary_sync', 1, 15, 900, 660, 11, 'normal', 'single', 'php', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('rebuild_ai_briefings', 1, 20, 1200, 720, 12, 'normal', 'background', 'php', 300, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('killmail_r2z2_sync', 1, 3, 180, 180, 3, 'highest', 'single', 'php', 90, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('alliance_historical_sync', 1, 360, 21600, 300, 5, 'normal', 'background', 'php', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('market_hub_historical_sync', 1, 360, 21600, 0, 0, 'normal', 'background', 'php', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('forecasting_ai_sync', 1, 60, 3600, 0, 0, 'normal', 'background', 'php', 300, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('deal_alerts_sync', 1, 5, 300, 60, 1, 'high', 'single', 'php', 90, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('activity_priority_summary_sync', 1, 15, 900, 780, 13, 'normal', 'single', 'php', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
+    ('analytics_bucket_1h_sync', 1, 15, 900, 900, 15, 'normal', 'single', 'php', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
+    ('analytics_bucket_1d_sync', 1, 60, 3600, 960, 16, 'normal', 'single', 'php', 240, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL)
 ON DUPLICATE KEY UPDATE
     enabled = VALUES(enabled),
     interval_minutes = VALUES(interval_minutes),
@@ -2139,6 +2161,7 @@ ON DUPLICATE KEY UPDATE
     offset_minutes = VALUES(offset_minutes),
     priority = VALUES(priority),
     concurrency_policy = VALUES(concurrency_policy),
+    execution_mode = VALUES(execution_mode),
     timeout_seconds = VALUES(timeout_seconds),
     next_due_at = COALESCE(sync_schedules.next_due_at, VALUES(next_due_at)),
     discovered_from_code = VALUES(discovered_from_code),
