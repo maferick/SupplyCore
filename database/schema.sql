@@ -1191,6 +1191,25 @@ CREATE TABLE IF NOT EXISTS market_order_snapshot_rollup_1d (
     KEY idx_market_order_snapshot_rollup_1d_type_bucket (type_id, bucket_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS market_order_current_projection (
+    source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    observed_at DATETIME NOT NULL,
+    best_sell_price DECIMAL(20, 2) DEFAULT NULL,
+    best_buy_price DECIMAL(20, 2) DEFAULT NULL,
+    total_sell_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    total_buy_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    sell_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+    buy_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+    total_volume BIGINT UNSIGNED DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_type, source_id, type_id),
+    KEY idx_market_order_current_projection_observed (source_type, source_id, observed_at),
+    KEY idx_market_order_current_projection_type (type_id, observed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS market_source_snapshot_state (
     source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
     source_id BIGINT UNSIGNED NOT NULL,

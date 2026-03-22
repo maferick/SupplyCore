@@ -2234,9 +2234,302 @@ function db_market_orders_history_cutover_rollback_to_legacy(bool $resetReadMode
     ];
 }
 
+function db_market_order_current_projection_ensure(): void
+{
+    db_execute(
+        "CREATE TABLE IF NOT EXISTS market_order_current_projection (
+            source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+            source_id BIGINT UNSIGNED NOT NULL,
+            type_id INT UNSIGNED NOT NULL,
+            observed_at DATETIME NOT NULL,
+            best_sell_price DECIMAL(20, 2) DEFAULT NULL,
+            best_buy_price DECIMAL(20, 2) DEFAULT NULL,
+            total_sell_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            total_buy_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            sell_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+            buy_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+            total_volume BIGINT UNSIGNED DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (source_type, source_id, type_id),
+            KEY idx_market_order_current_projection_observed (source_type, source_id, observed_at),
+            KEY idx_market_order_current_projection_type (type_id, observed_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+}
+
+function db_market_order_current_projection_normalize_row(array $row): array
+{
+    return [
+        'source_type' => trim((string) ($row['source_type'] ?? '')),
+        'source_id' => max(0, (int) ($row['source_id'] ?? 0)),
+        'type_id' => max(0, (int) ($row['type_id'] ?? 0)),
+        'observed_at' => trim((string) ($row['observed_at'] ?? '')),
+        'best_sell_price' => isset($row['best_sell_price']) && $row['best_sell_price'] !== null ? (float) $row['best_sell_price'] : null,
+        'best_buy_price' => isset($row['best_buy_price']) && $row['best_buy_price'] !== null ? (float) $row['best_buy_price'] : null,
+        'total_sell_volume' => max(0, (int) ($row['total_sell_volume'] ?? 0)),
+        'total_buy_volume' => max(0, (int) ($row['total_buy_volume'] ?? 0)),
+        'sell_order_count' => max(0, (int) ($row['sell_order_count'] ?? 0)),
+        'buy_order_count' => max(0, (int) ($row['buy_order_count'] ?? 0)),
+        'total_volume' => array_key_exists('total_volume', $row) && $row['total_volume'] !== null
+            ? max(0, (int) $row['total_volume'])
+            : null,
+    ];
+}
+
+function db_market_order_current_projection_rows_from_orders(array $orders): array
+{
+    $projectionRows = [];
+
+    foreach ($orders as $order) {
+        $sourceType = trim((string) ($order['source_type'] ?? ''));
+        $sourceId = max(0, (int) ($order['source_id'] ?? 0));
+        $typeId = max(0, (int) ($order['type_id'] ?? 0));
+        $observedAt = trim((string) ($order['observed_at'] ?? ''));
+        if ($sourceType === '' || $sourceId <= 0 || $typeId <= 0 || $observedAt === '') {
+            continue;
+        }
+
+        $key = implode(':', [$sourceType, $sourceId, $typeId, $observedAt]);
+        if (!isset($projectionRows[$key])) {
+            $projectionRows[$key] = [
+                'source_type' => $sourceType,
+                'source_id' => $sourceId,
+                'type_id' => $typeId,
+                'observed_at' => $observedAt,
+                'best_sell_price' => null,
+                'best_buy_price' => null,
+                'total_sell_volume' => 0,
+                'total_buy_volume' => 0,
+                'sell_order_count' => 0,
+                'buy_order_count' => 0,
+                'total_volume' => 0,
+            ];
+        }
+
+        $volumeRemain = max(0, (int) ($order['volume_remain'] ?? 0));
+        $price = isset($order['price']) ? (float) $order['price'] : null;
+        $isBuyOrder = (int) ($order['is_buy_order'] ?? 0) === 1;
+
+        if ($isBuyOrder) {
+            if ($price !== null) {
+                $projectionRows[$key]['best_buy_price'] = $projectionRows[$key]['best_buy_price'] === null
+                    ? $price
+                    : max((float) $projectionRows[$key]['best_buy_price'], $price);
+            }
+            $projectionRows[$key]['total_buy_volume'] += $volumeRemain;
+            $projectionRows[$key]['buy_order_count']++;
+        } else {
+            if ($price !== null) {
+                $projectionRows[$key]['best_sell_price'] = $projectionRows[$key]['best_sell_price'] === null
+                    ? $price
+                    : min((float) $projectionRows[$key]['best_sell_price'], $price);
+            }
+            $projectionRows[$key]['total_sell_volume'] += $volumeRemain;
+            $projectionRows[$key]['sell_order_count']++;
+        }
+
+        $projectionRows[$key]['total_volume'] += $volumeRemain;
+    }
+
+    return array_values($projectionRows);
+}
+
+function db_market_order_current_projection_anchor(string $sourceType, int $sourceId): string
+{
+    $state = db_market_source_snapshot_state_get($sourceType, $sourceId);
+    $latestCurrentObservedAt = trim((string) ($state['latest_current_observed_at'] ?? ''));
+    $latestSummaryObservedAt = trim((string) ($state['latest_summary_observed_at'] ?? ''));
+
+    if ($latestCurrentObservedAt !== '' && $latestSummaryObservedAt !== '') {
+        return strcmp($latestCurrentObservedAt, $latestSummaryObservedAt) >= 0
+            ? $latestCurrentObservedAt
+            : $latestSummaryObservedAt;
+    }
+
+    return $latestCurrentObservedAt !== '' ? $latestCurrentObservedAt : $latestSummaryObservedAt;
+}
+
+function db_market_order_current_projection_refresh_snapshots(array $projectionRows, ?int $chunkSize = null): int
+{
+    db_market_order_current_projection_ensure();
+
+    if ($projectionRows === []) {
+        return 0;
+    }
+
+    $snapshots = [];
+    foreach ($projectionRows as $row) {
+        $normalized = db_market_order_current_projection_normalize_row($row);
+        if ($normalized['source_type'] === ''
+            || $normalized['source_id'] <= 0
+            || $normalized['type_id'] <= 0
+            || $normalized['observed_at'] === ''
+        ) {
+            continue;
+        }
+
+        $snapshotKey = implode(':', [$normalized['source_type'], $normalized['source_id'], $normalized['observed_at']]);
+        $snapshots[$snapshotKey]['source_type'] = $normalized['source_type'];
+        $snapshots[$snapshotKey]['source_id'] = $normalized['source_id'];
+        $snapshots[$snapshotKey]['observed_at'] = $normalized['observed_at'];
+        $snapshots[$snapshotKey]['rows'][] = $normalized;
+    }
+
+    return db_transaction(function () use ($snapshots, $chunkSize): int {
+        $written = 0;
+
+        foreach ($snapshots as $snapshot) {
+            $sourceType = (string) $snapshot['source_type'];
+            $sourceId = (int) $snapshot['source_id'];
+            $observedAt = (string) $snapshot['observed_at'];
+            $rows = (array) ($snapshot['rows'] ?? []);
+            if ($rows === []) {
+                continue;
+            }
+
+            $anchorObservedAt = db_market_order_current_projection_anchor($sourceType, $sourceId);
+            $existingRow = db_select_one(
+                'SELECT observed_at
+                 FROM market_order_current_projection
+                 WHERE source_type = ?
+                   AND source_id = ?
+                 ORDER BY observed_at DESC, type_id ASC
+                 LIMIT 1',
+                [$sourceType, $sourceId]
+            );
+            $existingObservedAt = trim((string) ($existingRow['observed_at'] ?? ''));
+            $freshnessFloor = $anchorObservedAt;
+            if ($existingObservedAt !== '' && ($freshnessFloor === '' || strcmp($existingObservedAt, $freshnessFloor) > 0)) {
+                $freshnessFloor = $existingObservedAt;
+            }
+
+            if ($freshnessFloor !== '' && strcmp($observedAt, $freshnessFloor) < 0) {
+                continue;
+            }
+
+            db_execute(
+                'DELETE FROM market_order_current_projection
+                 WHERE source_type = ?
+                   AND source_id = ?',
+                [$sourceType, $sourceId]
+            );
+
+            $written += db_bulk_insert_or_upsert(
+                'market_order_current_projection',
+                [
+                    'source_type',
+                    'source_id',
+                    'type_id',
+                    'observed_at',
+                    'best_sell_price',
+                    'best_buy_price',
+                    'total_sell_volume',
+                    'total_buy_volume',
+                    'sell_order_count',
+                    'buy_order_count',
+                    'total_volume',
+                ],
+                $rows,
+                [
+                    'observed_at',
+                    'best_sell_price',
+                    'best_buy_price',
+                    'total_sell_volume',
+                    'total_buy_volume',
+                    'sell_order_count',
+                    'buy_order_count',
+                    'total_volume',
+                ],
+                $chunkSize
+            );
+        }
+
+        return $written;
+    });
+}
+
+function db_market_order_current_projection_latest_rows(string $sourceType, int $sourceId, array $typeIds = []): array
+{
+    db_market_order_current_projection_ensure();
+
+    $safeSourceType = trim($sourceType);
+    $safeSourceId = max(0, $sourceId);
+    if ($safeSourceType === '' || $safeSourceId <= 0) {
+        return [];
+    }
+
+    $anchorObservedAt = db_market_order_current_projection_anchor($safeSourceType, $safeSourceId);
+    $params = [$safeSourceType, $safeSourceId];
+    $observedFilterSql = '';
+    if ($anchorObservedAt !== '') {
+        $observedFilterSql = ' AND observed_at = ?';
+        $params[] = $anchorObservedAt;
+    }
+
+    $typeFilterSql = '';
+    if ($typeIds !== []) {
+        $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+        if ($normalizedTypeIds === []) {
+            return [];
+        }
+
+        $typeFilterSql = ' AND type_id IN (' . implode(', ', array_fill(0, count($normalizedTypeIds), '?')) . ')';
+        $params = array_merge($params, $normalizedTypeIds);
+    }
+
+    $rows = db_select_cached(
+        "SELECT
+            source_type,
+            source_id,
+            type_id,
+            observed_at,
+            best_sell_price,
+            best_buy_price,
+            total_sell_volume,
+            total_buy_volume,
+            sell_order_count,
+            buy_order_count,
+            total_volume
+         FROM market_order_current_projection
+         WHERE source_type = ?
+           AND source_id = ?{$observedFilterSql}{$typeFilterSql}
+         ORDER BY type_id ASC",
+        $params,
+        60,
+        'market.current.projection'
+    );
+
+    if ($rows !== []) {
+        return $rows;
+    }
+
+    return db_select_cached(
+        "SELECT
+            source_type,
+            source_id,
+            type_id,
+            observed_at,
+            best_sell_price,
+            best_buy_price,
+            total_sell_volume,
+            total_buy_volume,
+            sell_order_count,
+            buy_order_count,
+            total_volume
+         FROM market_order_current_projection
+         WHERE source_type = ?
+           AND source_id = ?{$typeFilterSql}
+         ORDER BY observed_at DESC, type_id ASC",
+        array_merge([$safeSourceType, $safeSourceId], $typeIds !== [] ? array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0))) : []),
+        60,
+        'market.current.projection'
+    );
+}
+
 function db_market_orders_current_bulk_upsert(array $orders, ?int $chunkSize = null): int
 {
-    return db_bulk_insert_or_upsert(
+    $written = db_bulk_insert_or_upsert(
         'market_orders_current',
         [
             'source_type',
@@ -2270,6 +2563,13 @@ function db_market_orders_current_bulk_upsert(array $orders, ?int $chunkSize = n
         ],
         $chunkSize
     );
+
+    db_market_order_current_projection_refresh_snapshots(
+        db_market_order_current_projection_rows_from_orders($orders),
+        $chunkSize
+    );
+
+    return $written;
 }
 
 function db_market_orders_history_bulk_insert(array $orders, ?int $chunkSize = null): int
@@ -2645,6 +2945,7 @@ function db_market_snapshot_optimization_ensure(): void
     db_market_orders_history_partitioned_schema_ensure();
     db_ensure_table_index('market_order_snapshots_summary', 'idx_snapshot_summary_observed', 'INDEX idx_snapshot_summary_observed (observed_at)');
     db_market_snapshot_rollups_ensure();
+    db_market_order_current_projection_ensure();
 }
 
 function db_market_source_snapshot_state_ensure(): void
@@ -2890,7 +3191,7 @@ function db_market_order_snapshots_summary_bulk_upsert(array $summaryRows, ?int 
         $normalizedRows[] = $normalized;
     }
 
-    return db_bulk_insert_or_upsert(
+    $written = db_bulk_insert_or_upsert(
         'market_order_snapshots_summary',
         [
             'source_type',
@@ -2917,6 +3218,10 @@ function db_market_order_snapshots_summary_bulk_upsert(array $summaryRows, ?int 
         ],
         $chunkSize
     );
+
+    db_market_order_current_projection_refresh_snapshots($normalizedRows, $chunkSize);
+
+    return $written;
 }
 
 function db_market_orders_snapshot_metrics_window_raw(string $sourceType, int $sourceId, string $startObservedAt): array
@@ -3870,6 +4175,43 @@ function db_market_orders_history_stock_health_series(
 
 function db_market_orders_current_source_aggregates(string $sourceType, int $sourceId, array $typeIds = []): array
 {
+    $projectionRows = db_market_order_current_projection_latest_rows($sourceType, $sourceId, $typeIds);
+    if ($projectionRows !== []) {
+        $typeNameMap = [];
+        $projectionTypeIds = array_values(array_unique(array_filter(array_map(
+            static fn (array $row): int => (int) ($row['type_id'] ?? 0),
+            $projectionRows
+        ))));
+
+        if ($projectionTypeIds !== []) {
+            $typeNameRows = db_select(
+                'SELECT type_id, type_name
+                 FROM ref_item_types
+                 WHERE type_id IN (' . implode(', ', array_fill(0, count($projectionTypeIds), '?')) . ')',
+                $projectionTypeIds
+            );
+            foreach ($typeNameRows as $typeNameRow) {
+                $typeNameMap[(int) ($typeNameRow['type_id'] ?? 0)] = (string) ($typeNameRow['type_name'] ?? '');
+            }
+        }
+
+        return array_map(static function (array $row) use ($typeNameMap): array {
+            $typeId = (int) ($row['type_id'] ?? 0);
+
+            return [
+                'type_id' => $typeId,
+                'type_name' => $typeNameMap[$typeId] ?? null,
+                'best_sell_price' => $row['best_sell_price'] ?? null,
+                'best_buy_price' => $row['best_buy_price'] ?? null,
+                'total_sell_volume' => max(0, (int) ($row['total_sell_volume'] ?? 0)),
+                'total_buy_volume' => max(0, (int) ($row['total_buy_volume'] ?? 0)),
+                'sell_order_count' => max(0, (int) ($row['sell_order_count'] ?? 0)),
+                'buy_order_count' => max(0, (int) ($row['buy_order_count'] ?? 0)),
+                'last_observed_at' => (string) ($row['observed_at'] ?? ''),
+            ];
+        }, $projectionRows);
+    }
+
     $params = [$sourceType, $sourceId];
     $summaryParams = [$sourceType, $sourceId];
     $typeFilterSql = '';
