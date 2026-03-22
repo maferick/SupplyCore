@@ -28,6 +28,10 @@
   };
 
   const diagnostics = {
+    mode: document.querySelector('[data-live-refresh-mode]'),
+    health: document.querySelector('[data-live-refresh-health]'),
+    healthBadge: document.querySelector('[data-live-refresh-health-badge]'),
+    advanced: document.querySelector('[data-live-refresh-advanced]'),
     transport: document.querySelector('[data-live-refresh-transport]'),
     event: document.querySelector('[data-live-refresh-last-event]'),
     refresh: document.querySelector('[data-live-refresh-last-refresh]'),
@@ -80,8 +84,76 @@
   }
 
   function renderDiagnostics() {
+    const refreshTimes = Object.values(state.lastSectionRefreshAt);
+    const latestSectionRefresh = refreshTimes.sort().slice(-1)[0] || null;
+    const lastRefreshTime = latestSectionRefresh || state.lastPublishedEvent?.finished_at || null;
+    const lastRefreshRelative = relativeTime(lastRefreshTime);
+    let healthState = 'degraded';
+
+    if (lastRefreshTime) {
+      const deltaMinutes = Math.max(0, Math.round((Date.now() - new Date(lastRefreshTime).getTime()) / 60000));
+      if (deltaMinutes <= 15) {
+        healthState = 'fresh';
+      } else if (deltaMinutes <= 45) {
+        healthState = 'updating';
+      } else if (deltaMinutes <= 120) {
+        healthState = 'degraded';
+      } else {
+        healthState = 'stale';
+      }
+    }
+
+    const modeLabel = state.transport === 'sse'
+      ? 'On'
+      : state.transport === 'polling'
+        ? 'Polling fallback'
+        : 'Off';
+    const healthLabel = healthState === 'fresh'
+      ? 'Live updates are healthy.'
+      : healthState === 'updating'
+        ? 'A newer refresh is still landing.'
+        : healthState === 'stale'
+          ? 'Refresh health is stale.'
+          : 'Refresh health is degraded.';
+    const healthBadge = healthState === 'fresh'
+      ? 'Fresh'
+      : healthState === 'updating'
+        ? 'Updating'
+        : healthState === 'stale'
+          ? 'Stale'
+          : 'Delayed';
+
+    if (diagnostics.mode) {
+      diagnostics.mode.textContent = modeLabel;
+    }
+
+    if (diagnostics.health) {
+      diagnostics.health.textContent = healthLabel;
+    }
+
+    if (diagnostics.healthBadge) {
+      diagnostics.healthBadge.textContent = healthBadge;
+      diagnostics.healthBadge.className = `badge ${
+        healthState === 'fresh'
+          ? 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100'
+          : healthState === 'updating'
+            ? 'border-sky-400/20 bg-sky-500/10 text-sky-100'
+            : healthState === 'stale'
+              ? 'border-rose-400/20 bg-rose-500/10 text-rose-100'
+              : 'border-amber-400/20 bg-amber-500/10 text-amber-100'
+      }`;
+    }
+
+    if (diagnostics.advanced && (healthState === 'degraded' || healthState === 'stale')) {
+      diagnostics.advanced.open = true;
+    }
+
     if (diagnostics.transport) {
-      diagnostics.transport.textContent = state.transport === 'sse' ? 'Live stream' : 'Polling fallback';
+      diagnostics.transport.textContent = state.transport === 'sse'
+        ? 'Server-sent events'
+        : state.transport === 'polling'
+          ? 'Polling fallback'
+          : 'Off';
     }
 
     if (diagnostics.event) {
@@ -91,9 +163,7 @@
     }
 
     if (diagnostics.refresh) {
-      const refreshTimes = Object.values(state.lastSectionRefreshAt);
-      const latest = refreshTimes.sort().slice(-1)[0] || null;
-      diagnostics.refresh.textContent = latest ? `Last section refresh ${relativeTime(latest)}` : 'No section refreshed yet';
+      diagnostics.refresh.textContent = lastRefreshTime ? `Last updated ${lastRefreshRelative}` : 'Never';
     }
 
     if (diagnostics.versions) {
@@ -227,6 +297,8 @@
       }
       renderDiagnostics();
     } catch (error) {
+      state.transport = 'off';
+      renderDiagnostics();
       console.warn('Live refresh polling failed.', error);
     }
   }

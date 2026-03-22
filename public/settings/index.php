@@ -281,6 +281,8 @@ $profilingPairings = array_values((array) ($syncDashboard['profiling_pairings'] 
 $scheduleSnapshots = array_values((array) ($syncDashboard['schedule_snapshots'] ?? []));
 $runNowJobOptions = [];
 $staticDataState = null;
+$settingsPipelineHealth = array_values((array) ($syncDashboard['pipeline_health'] ?? []));
+$settingsSystemStatus = (array) ($syncDashboard['system_status'] ?? []);
 if ($dbStatus['ok']) {
     $latestEsiToken = db_latest_esi_oauth_token();
     if ($latestEsiToken !== null) {
@@ -332,6 +334,22 @@ foreach ($configuredSyncJobs as $schedule) {
     ];
 }
 
+$settingsLiveRefreshSummary = supplycore_live_refresh_summary(null);
+$pageHeaderBadge = 'Business settings';
+$pageHeaderSummary = 'Keep settings focused on business choices, data freshness, and only show deep runtime detail when you need it.';
+$pageHeaderMeta = [
+    [
+        'label' => 'Settings focus',
+        'value' => (string) ($sections[$section]['title'] ?? 'Settings'),
+        'caption' => (string) ($sections[$section]['description'] ?? ''),
+    ],
+    [
+        'label' => 'Live updates',
+        'value' => $settingsLiveRefreshSummary['mode_label'],
+        'caption' => $settingsLiveRefreshSummary['health_message'],
+    ],
+];
+
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
 <div class="grid gap-6 xl:grid-cols-[260px_1fr]">
@@ -358,45 +376,123 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <?php endif; ?>
 
         <?php if ($section === 'general'): ?>
-            <form class="mt-6 space-y-4" method="post">
-                <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
-                <input type="hidden" name="section" value="general">
-                <label class="block space-y-2">
-                    <span class="text-sm text-muted">Application Name</span>
-                    <input name="app_name" value="<?= htmlspecialchars($settingValues['app_name'] ?? app_name(), ENT_QUOTES) ?>" class="w-full field-input" />
-                </label>
-                <label class="block space-y-2">
-                    <span class="text-sm text-muted">Brand Family</span>
-                    <input name="brand_family_name" value="<?= htmlspecialchars($settingValues['brand_family_name'] ?? brand_family_name(), ENT_QUOTES) ?>" class="w-full field-input" />
-                    <p class="text-xs text-muted">Use this shared family label to support future products like SupplyCore Intelligence, SupplyCore AI, and SupplyCore Logistics.</p>
-                </label>
-                <label class="block space-y-2">
-                    <span class="text-sm text-muted">Console Label</span>
-                    <input name="brand_console_label" value="<?= htmlspecialchars($settingValues['brand_console_label'] ?? brand_console_label(), ENT_QUOTES) ?>" class="w-full field-input" />
-                </label>
-                <label class="block space-y-2">
-                    <span class="text-sm text-muted">Brand Tagline</span>
-                    <input name="brand_tagline" value="<?= htmlspecialchars($settingValues['brand_tagline'] ?? brand_tagline(), ENT_QUOTES) ?>" class="w-full field-input" />
-                </label>
-                <label class="block space-y-2">
-                    <span class="text-sm text-muted">Logo Asset Path</span>
-                    <input name="brand_logo_path" value="<?= htmlspecialchars($settingValues['brand_logo_path'] ?? brand_logo_path(), ENT_QUOTES) ?>" class="w-full field-input" />
-                    <p class="text-xs text-muted">Default placeholder logo is ready at <span class="font-medium text-slate-100">/assets/branding/supplycore-logo.svg</span>.</p>
-                </label>
-                <label class="block space-y-2">
-                    <span class="text-sm text-muted">Favicon Asset Path</span>
-                    <input name="brand_favicon_path" value="<?= htmlspecialchars($settingValues['brand_favicon_path'] ?? brand_favicon_path(), ENT_QUOTES) ?>" class="w-full field-input" />
-                </label>
-                <label class="block space-y-2">
-                    <span class="text-sm text-muted">Timezone</span>
-                    <input name="app_timezone" value="<?= htmlspecialchars($settingValues['app_timezone'] ?? app_timezone(), ENT_QUOTES) ?>" class="w-full field-input" />
-                </label>
-                <label class="block space-y-2">
-                    <span class="text-sm text-muted">Default Currency</span>
-                    <input name="default_currency" value="<?= htmlspecialchars($settingValues['default_currency'] ?? default_currency(), ENT_QUOTES) ?>" class="w-full field-input" />
-                </label>
-                <button class="btn-primary">Save General Settings</button>
-            </form>
+            <?php
+            $businessConfigCards = [
+                ['href' => '/settings?section=trading-stations', 'title' => 'Trading stations', 'copy' => 'Reference hub and alliance destination used by market, doctrine, and buy-all workflows.'],
+                ['href' => '/settings?section=item-scope', 'title' => 'Item scope', 'copy' => 'Control which items matter for trading, doctrine readiness, and restock decisions.'],
+                ['href' => '/settings?section=deal-alerts', 'title' => 'Deal alerts', 'copy' => 'Tune how aggressively SupplyCore flags profitable market anomalies.'],
+                ['href' => '/settings?section=killmail-intelligence', 'title' => 'Doctrine + killmail inputs', 'copy' => 'Tracked alliances, corporations, and demand signals that feed readiness and replenishment views.'],
+                ['href' => '/settings?section=ai-briefings', 'title' => 'AI briefings', 'copy' => 'Choose whether background AI summaries run and which provider they use.'],
+                ['href' => '/settings?section=data-sync', 'title' => 'Sync behavior', 'copy' => 'Control update cadence, freshness expectations, and manual run controls.'],
+            ];
+            ?>
+            <div class="mt-6 space-y-6">
+                <section class="space-y-4">
+                    <div>
+                        <p class="text-sm font-semibold text-slate-100">Business configuration</p>
+                        <p class="mt-1 text-sm text-muted">Open the settings area that matches the business decision you need to make.</p>
+                    </div>
+                    <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                        <?php foreach ($businessConfigCards as $card): ?>
+                            <a href="<?= htmlspecialchars($card['href'], ENT_QUOTES) ?>" class="rounded-2xl border border-border bg-black/20 p-4 transition hover:bg-black/30">
+                                <p class="text-sm font-semibold text-slate-100"><?= htmlspecialchars($card['title'], ENT_QUOTES) ?></p>
+                                <p class="mt-2 text-sm text-muted"><?= htmlspecialchars($card['copy'], ENT_QUOTES) ?></p>
+                            </a>
+                        <?php endforeach; ?>
+                    </div>
+                </section>
+
+                <section class="space-y-4">
+                    <div>
+                        <p class="text-sm font-semibold text-slate-100">Data freshness summary</p>
+                        <p class="mt-1 text-sm text-muted">Check the major pipelines here before drilling into runtime details.</p>
+                    </div>
+                    <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                        <?php foreach ($settingsPipelineHealth as $pipeline): ?>
+                            <?php $pipelineStatus = supplycore_operational_status_view_model((string) ($pipeline['state'] ?? ''), (string) ($pipeline['state'] ?? 'Delayed')); ?>
+                            <article class="rounded-2xl border border-border bg-black/20 p-4">
+                                <div class="flex items-start justify-between gap-3">
+                                    <p class="text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($pipeline['label'] ?? 'Pipeline'), ENT_QUOTES) ?></p>
+                                    <span class="inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] <?= htmlspecialchars($pipelineStatus['tone'], ENT_QUOTES) ?>"><?= htmlspecialchars($pipelineStatus['label'], ENT_QUOTES) ?></span>
+                                </div>
+                                <p class="mt-3 text-sm text-slate-200"><?= htmlspecialchars((string) ($pipeline['summary'] ?? 'Status unavailable.'), ENT_QUOTES) ?></p>
+                                <p class="mt-2 text-xs text-muted">Last successful update <?= htmlspecialchars((string) ($pipeline['last_success_relative'] ?? $pipeline['last_success_at'] ?? 'Unknown'), ENT_QUOTES) ?></p>
+                            </article>
+                        <?php endforeach; ?>
+                        <?php if ($settingsPipelineHealth === []): ?>
+                            <div class="rounded-2xl border border-dashed border-border bg-black/20 p-4 text-sm text-muted md:col-span-2 xl:col-span-4">No pipeline freshness summary is available yet.</div>
+                        <?php endif; ?>
+                    </div>
+                </section>
+
+                <details class="rounded-2xl border border-border bg-black/20 p-4" <?= in_array((string) ($settingsSystemStatus['status'] ?? ''), ['critical', 'degraded'], true) ? 'open' : '' ?>>
+                    <summary class="cursor-pointer list-none">
+                        <div class="flex items-start justify-between gap-3">
+                            <div>
+                                <p class="text-sm font-semibold text-slate-100">Advanced diagnostics</p>
+                                <p class="mt-1 text-sm text-muted">Scheduler internals, transport details, and developer-facing signals stay here by default.</p>
+                            </div>
+                            <?php $systemTone = supplycore_operational_status_view_model((string) ($settingsSystemStatus['status'] ?? 'degraded'), (string) ($settingsSystemStatus['label'] ?? 'Delayed')); ?>
+                            <span class="inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] <?= htmlspecialchars($systemTone['tone'], ENT_QUOTES) ?>"><?= htmlspecialchars($systemTone['label'], ENT_QUOTES) ?></span>
+                        </div>
+                    </summary>
+                    <div class="mt-4 grid gap-4 md:grid-cols-2">
+                        <div class="rounded-xl border border-border bg-black/30 p-4">
+                            <p class="text-sm font-semibold text-slate-100">Live updates</p>
+                            <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars($settingsLiveRefreshSummary['mode_label'], ENT_QUOTES) ?> · <?= htmlspecialchars($settingsLiveRefreshSummary['last_refresh_relative'], ENT_QUOTES) ?></p>
+                            <p class="mt-1 text-xs text-muted"><?= htmlspecialchars($settingsLiveRefreshSummary['health_message'], ENT_QUOTES) ?></p>
+                        </div>
+                        <div class="rounded-xl border border-border bg-black/30 p-4">
+                            <p class="text-sm font-semibold text-slate-100">System status</p>
+                            <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($settingsSystemStatus['reason'] ?? 'Status unavailable.'), ENT_QUOTES) ?></p>
+                            <p class="mt-1 text-xs text-muted">Open <a href="/settings?section=data-sync" class="text-slate-100 underline decoration-dotted underline-offset-4">Data Sync</a> for scheduler state, runtime activity, and recovery controls.</p>
+                        </div>
+                    </div>
+                </details>
+
+                <details class="rounded-2xl border border-border bg-black/20 p-4">
+                    <summary class="cursor-pointer list-none text-sm font-semibold text-slate-100">Workspace labels and branding</summary>
+                    <form class="mt-4 space-y-4" method="post">
+                        <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                        <input type="hidden" name="section" value="general">
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Application name</span>
+                            <input name="app_name" value="<?= htmlspecialchars($settingValues['app_name'] ?? app_name(), ENT_QUOTES) ?>" class="w-full field-input" />
+                        </label>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Brand family</span>
+                            <input name="brand_family_name" value="<?= htmlspecialchars($settingValues['brand_family_name'] ?? brand_family_name(), ENT_QUOTES) ?>" class="w-full field-input" />
+                        </label>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Console label</span>
+                            <input name="brand_console_label" value="<?= htmlspecialchars($settingValues['brand_console_label'] ?? brand_console_label(), ENT_QUOTES) ?>" class="w-full field-input" />
+                        </label>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Brand tagline</span>
+                            <input name="brand_tagline" value="<?= htmlspecialchars($settingValues['brand_tagline'] ?? brand_tagline(), ENT_QUOTES) ?>" class="w-full field-input" />
+                        </label>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Logo path</span>
+                            <input name="brand_logo_path" value="<?= htmlspecialchars($settingValues['brand_logo_path'] ?? brand_logo_path(), ENT_QUOTES) ?>" class="w-full field-input" />
+                        </label>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Favicon path</span>
+                            <input name="brand_favicon_path" value="<?= htmlspecialchars($settingValues['brand_favicon_path'] ?? brand_favicon_path(), ENT_QUOTES) ?>" class="w-full field-input" />
+                        </label>
+                        <div class="grid gap-4 md:grid-cols-2">
+                            <label class="block space-y-2">
+                                <span class="text-sm text-muted">Timezone</span>
+                                <input name="app_timezone" value="<?= htmlspecialchars($settingValues['app_timezone'] ?? app_timezone(), ENT_QUOTES) ?>" class="w-full field-input" />
+                            </label>
+                            <label class="block space-y-2">
+                                <span class="text-sm text-muted">Default currency</span>
+                                <input name="default_currency" value="<?= htmlspecialchars($settingValues['default_currency'] ?? default_currency(), ENT_QUOTES) ?>" class="w-full field-input" />
+                            </label>
+                        </div>
+                        <button class="btn-primary">Save workspace settings</button>
+                    </form>
+                </details>
+            </div>
         <?php elseif ($section === 'trading-stations'): ?>
             <form class="mt-6 space-y-4" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
@@ -1506,20 +1602,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <button class="btn-primary">Save Deal Alert Settings</button>
             </form>
         <?php else: ?>
-            <?php if ($syncStatusCards !== []): ?>
-                <div class="mt-6 grid gap-3 md:grid-cols-3">
-                    <?php foreach ($syncStatusCards as $syncCard): ?>
-                        <?php $status = $syncCard['status']; ?>
-                        <article class="surface-tertiary text-sm">
-                            <p class="text-xs uppercase tracking-[0.16em] text-muted"><?= htmlspecialchars($syncCard['label'], ENT_QUOTES) ?></p>
-                            <p class="mt-2 text-sm text-slate-100">Last success: <?= htmlspecialchars($status['last_success_at'] ?? 'Never', ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-sm text-muted">Rows written (recent runs): <?= (int) ($status['recent_rows_written'] ?? 0) ?></p>
-                            <p class="mt-1 text-xs text-rose-200">Last error: <?= htmlspecialchars($status['last_error_message'] ?? 'None', ENT_QUOTES) ?></p>
-                        </article>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-
             <form class="mt-6 space-y-4" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                 <input type="hidden" name="section" value="data-sync">
@@ -1563,14 +1645,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <?php $profileRuntime = (array) ($syncDashboard['profile_runtime'] ?? []); ?>
                 <div class="space-y-4">
                     <div>
-                        <p class="text-sm text-slate-100">Executive Dashboard</p>
-                        <p class="mt-1 text-xs text-muted">Default view for operators. It surfaces only the current system condition, the most urgent issues, and whether key pipelines are moving.</p>
+                        <p class="text-sm text-slate-100">Data freshness summary</p>
+                        <p class="mt-1 text-xs text-muted">Keep the visible view centered on whether data is fresh, delayed, or needs attention.</p>
                     </div>
                     <div class="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
                         <article class="rounded-xl border border-border bg-black/20 p-4">
                             <div class="flex flex-wrap items-start justify-between gap-3">
                                 <div>
-                                    <p class="text-sm text-slate-100">System status</p>
+                                    <p class="text-sm text-slate-100">Overall refresh health</p>
                                     <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($systemStatus['reason'] ?? 'Status unavailable.'), ENT_QUOTES) ?></p>
                                 </div>
                                 <?php $systemStatusValue = (string) ($systemStatus['status'] ?? 'healthy'); ?>
@@ -1603,35 +1685,31 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     </div>
                                 </div>
                             </div>
-                            <div class="mt-4 space-y-2">
-                                <div class="flex items-center justify-between gap-2">
-                                    <p class="text-sm text-slate-100">Key pipeline health</p>
-                                    <span class="text-xs text-muted">OK / delayed / blocked</span>
-                                </div>
-                                <div class="grid gap-2 sm:grid-cols-2">
-                                    <?php foreach ($pipelineHealth as $pipeline): ?>
-                                        <?php $pipelineState = (string) ($pipeline['state'] ?? 'OK'); ?>
-                                        <?php $pipelineClass = $pipelineState === 'Blocked'
-                                            ? 'border-rose-400/40 bg-rose-500/10 text-rose-100'
-                                            : ($pipelineState === 'Delayed'
-                                                ? 'border-amber-400/40 bg-amber-500/10 text-amber-100'
-                                                : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100'); ?>
-                                        <div class="rounded-lg border border-border bg-black/30 p-3 text-sm">
-                                            <div class="flex items-center justify-between gap-2">
-                                                <span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($pipeline['label'] ?? ''), ENT_QUOTES) ?></span>
-                                                <span class="inline-flex items-center rounded-full border px-2 py-1 text-[11px] uppercase tracking-[0.14em] <?= $pipelineClass ?>"><?= htmlspecialchars($pipelineState, ENT_QUOTES) ?></span>
+                                <div class="mt-4 space-y-2">
+                                    <div class="flex items-center justify-between gap-2">
+                                        <p class="text-sm text-slate-100">Major pipelines</p>
+                                        <span class="text-xs text-muted">Fresh / Updating / Delayed / Stale</span>
+                                    </div>
+                                    <div class="grid gap-2 sm:grid-cols-2">
+                                        <?php foreach ($pipelineHealth as $pipeline): ?>
+                                            <?php $pipelineState = supplycore_operational_status_view_model((string) ($pipeline['state'] ?? ''), (string) ($pipeline['state'] ?? 'Delayed')); ?>
+                                            <div class="rounded-lg border border-border bg-black/30 p-3 text-sm">
+                                                <div class="flex items-center justify-between gap-2">
+                                                    <span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($pipeline['label'] ?? ''), ENT_QUOTES) ?></span>
+                                                    <span class="inline-flex items-center rounded-full border px-2 py-1 text-[11px] uppercase tracking-[0.14em] <?= htmlspecialchars($pipelineState['tone'], ENT_QUOTES) ?>"><?= htmlspecialchars($pipelineState['label'], ENT_QUOTES) ?></span>
+                                                </div>
+                                                <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($pipeline['summary'] ?? ''), ENT_QUOTES) ?></p>
+                                                <p class="mt-2 text-xs text-slate-300">Last successful update <?= htmlspecialchars((string) ($pipeline['last_success_relative'] ?? $pipeline['last_success_at'] ?? 'Unknown'), ENT_QUOTES) ?></p>
                                             </div>
-                                            <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($pipeline['summary'] ?? ''), ENT_QUOTES) ?></p>
-                                        </div>
-                                    <?php endforeach; ?>
-                                </div>
+                                        <?php endforeach; ?>
+                                    </div>
                             </div>
                         </article>
                         <article class="rounded-xl border border-border bg-black/20 p-4">
                             <div class="flex items-start justify-between gap-3">
                                 <div>
-                                    <p class="text-sm text-slate-100">Top active issues</p>
-                                    <p class="mt-1 text-xs text-muted">Only the three most actionable items are shown here.</p>
+                                    <p class="text-sm text-slate-100">Needs attention</p>
+                                    <p class="mt-1 text-xs text-muted">Only the most actionable items stay visible by default.</p>
                                 </div>
                                 <span class="inline-flex items-center rounded-full border border-border px-3 py-1 text-xs uppercase tracking-[0.16em] text-muted"><?= (int) ($syncDashboard['active_issue_count'] ?? count($activeIssues)) ?> total</span>
                             </div>
@@ -1669,15 +1747,15 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </div>
 
                     <div>
-                        <p class="text-sm text-slate-100">Operations View</p>
-                        <p class="mt-1 text-xs text-muted">Secondary view for day-to-day follow-up. Jobs stay compact by default, while deep metrics remain one click away.</p>
+                        <p class="text-sm text-slate-100">Business configuration</p>
+                        <p class="mt-1 text-xs text-muted">Use this area to choose how aggressively SupplyCore refreshes data and recovers from delays.</p>
                     </div>
 
                     <div class="rounded-xl border border-border bg-black/20 p-4">
                         <div class="flex flex-wrap items-start justify-between gap-3">
                             <div>
-                                <p class="text-sm text-slate-100">Scheduler run profile</p>
-                                <p class="mt-1 text-xs text-muted">Operational profiles still control concurrency, polling, and timeouts without exposing the full scheduler control plane up front.</p>
+                                <p class="text-sm text-slate-100">Update profile</p>
+                                <p class="mt-1 text-xs text-muted">Profiles control how quickly updates run without surfacing every runtime knob.</p>
                             </div>
                             <span class="inline-flex items-center rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-cyan-100"><?= htmlspecialchars($selectedProfile, ENT_QUOTES) ?></span>
                         </div>
@@ -1701,6 +1779,31 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <div class="rounded-lg border border-border bg-black/30 p-3"><p class="text-xs uppercase tracking-[0.16em] text-muted">Self-healing</p><p class="mt-2 font-semibold text-white">Auto respawn on recycle</p></div>
                         </div>
                     </div>
+
+                    <?php if ($syncStatusCards !== []): ?>
+                        <details class="rounded-xl border border-border bg-black/20 p-4">
+                            <summary class="cursor-pointer list-none">
+                                <div class="flex items-start justify-between gap-3">
+                                    <div>
+                                        <p class="text-sm text-slate-100">Advanced diagnostics</p>
+                                        <p class="mt-1 text-xs text-muted">Detailed pipeline counters and last error messages stay here unless freshness is degraded.</p>
+                                    </div>
+                                    <span class="inline-flex items-center rounded-full border border-border px-3 py-1 text-xs uppercase tracking-[0.16em] text-muted">expand</span>
+                                </div>
+                            </summary>
+                            <div class="mt-4 grid gap-3 md:grid-cols-3">
+                                <?php foreach ($syncStatusCards as $syncCard): ?>
+                                    <?php $status = $syncCard['status']; ?>
+                                    <article class="surface-tertiary text-sm">
+                                        <p class="text-xs uppercase tracking-[0.16em] text-muted"><?= htmlspecialchars($syncCard['label'], ENT_QUOTES) ?></p>
+                                        <p class="mt-2 text-sm text-slate-100">Last success: <?= htmlspecialchars($status['last_success_at'] ?? 'Never', ENT_QUOTES) ?></p>
+                                        <p class="mt-1 text-sm text-muted">Rows written (recent runs): <?= (int) ($status['recent_rows_written'] ?? 0) ?></p>
+                                        <p class="mt-1 text-xs text-rose-200">Last error: <?= htmlspecialchars($status['last_error_message'] ?? 'None', ENT_QUOTES) ?></p>
+                                    </article>
+                                <?php endforeach; ?>
+                            </div>
+                        </details>
+                    <?php endif; ?>
 
                     <div>
                         <p class="text-sm text-slate-100">Operational jobs</p>
@@ -1762,7 +1865,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <?php endif; ?>
                                 </div>
                                 <details class="mt-3 rounded-lg border border-border bg-black/30 p-3 text-xs text-muted">
-                                    <summary class="cursor-pointer list-none text-slate-100">Show details</summary>
+                                    <summary class="cursor-pointer list-none text-slate-100">Advanced metrics</summary>
                                     <div class="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                                         <div><span class="block text-[11px] uppercase tracking-[0.14em]">CPU</span><span class="mt-1 block text-slate-100">last <?= htmlspecialchars(number_format((float) ($schedule['last_cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>% · p95 <?= htmlspecialchars(number_format((float) ($schedule['p95_cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>%</span></div>
                                         <div><span class="block text-[11px] uppercase tracking-[0.14em]">Memory</span><span class="mt-1 block text-slate-100">last <?= htmlspecialchars(scheduler_format_bytes(isset($schedule['last_memory_peak_bytes']) ? (int) $schedule['last_memory_peak_bytes'] : 0), ENT_QUOTES) ?> · p95 <?= htmlspecialchars(scheduler_format_bytes(isset($schedule['p95_memory_peak_bytes']) ? (int) $schedule['p95_memory_peak_bytes'] : 0), ENT_QUOTES) ?></span></div>

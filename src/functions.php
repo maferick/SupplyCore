@@ -22189,25 +22189,110 @@ function supplycore_relative_datetime(?string $value): string
     return human_duration_ago($seconds) . ' ago';
 }
 
+function supplycore_operational_status_view_model(?string $status, ?string $fallbackLabel = null): array
+{
+    $normalized = strtolower(trim((string) ($status ?? '')));
+    $bucket = match ($normalized) {
+        'fresh', 'healthy', 'ok', 'tracked', 'ready', 'success', 'running' => $normalized === 'running' ? 'updating' : 'fresh',
+        'updating', 'syncing', 'active', 'in_progress' => 'updating',
+        'warning', 'degraded', 'delayed' => 'delayed',
+        'blocked', 'critical', 'stale', 'failed', 'error', 'not synced', 'awaiting sync', 'stopped', 'offline' => 'stale',
+        default => 'delayed',
+    };
+
+    $label = $fallbackLabel !== null && trim($fallbackLabel) !== ''
+        ? trim($fallbackLabel)
+        : match ($bucket) {
+            'fresh' => 'Fresh',
+            'updating' => 'Updating',
+            'stale' => 'Stale',
+            default => 'Delayed',
+        };
+
+    return [
+        'state' => $bucket,
+        'label' => $label,
+        'tone' => match ($bucket) {
+            'fresh' => 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100',
+            'updating' => 'border-sky-400/20 bg-sky-500/10 text-sky-100',
+            'stale' => 'border-rose-400/20 bg-rose-500/10 text-rose-100',
+            default => 'border-amber-400/20 bg-amber-500/10 text-amber-100',
+        },
+    ];
+}
+
+function supplycore_live_refresh_summary(?array $config): array
+{
+    if (!is_array($config) || $config === []) {
+        return [
+            'mode_label' => 'Off',
+            'mode_tone' => 'border-slate-400/15 bg-slate-500/10 text-slate-200',
+            'last_refresh_relative' => 'Never',
+            'last_refresh_at' => 'Unavailable',
+            'health_label' => 'Off',
+            'health_tone' => 'border-slate-400/15 bg-slate-500/10 text-slate-200',
+            'health_message' => 'Live updates are unavailable for this page.',
+            'show_advanced' => false,
+            'latest_event' => null,
+            'current_versions' => [],
+        ];
+    }
+
+    $latestEvent = is_array($config['latest_event'] ?? null) ? $config['latest_event'] : null;
+    $lastRefreshAt = isset($latestEvent['finished_at']) ? (string) $latestEvent['finished_at'] : null;
+    $minutesSinceRefresh = null;
+    if ($lastRefreshAt !== null) {
+        $timestamp = strtotime($lastRefreshAt);
+        if ($timestamp !== false) {
+            $minutesSinceRefresh = max(0, (int) floor((time() - $timestamp) / 60));
+        }
+    }
+
+    $healthState = match (true) {
+        $minutesSinceRefresh === null => 'delayed',
+        $minutesSinceRefresh <= 15 => 'fresh',
+        $minutesSinceRefresh <= 45 => 'updating',
+        $minutesSinceRefresh <= 120 => 'delayed',
+        default => 'stale',
+    };
+    $health = supplycore_operational_status_view_model($healthState);
+
+    return [
+        'mode_label' => 'On',
+        'mode_tone' => 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100',
+        'last_refresh_relative' => supplycore_relative_datetime($lastRefreshAt),
+        'last_refresh_at' => supplycore_format_datetime($lastRefreshAt),
+        'health_label' => $health['label'],
+        'health_tone' => $health['tone'],
+        'health_message' => match ($healthState) {
+            'fresh' => 'Live updates are flowing normally.',
+            'updating' => 'A newer refresh is still landing.',
+            'stale' => 'Live updates look stale. Open advanced diagnostics if this persists.',
+            default => 'Live updates have slowed down. Polling fallback or a manual refresh may be needed.',
+        },
+        'show_advanced' => in_array($healthState, ['delayed', 'stale'], true),
+        'latest_event' => $latestEvent,
+        'current_versions' => is_array($config['current_versions'] ?? null) ? $config['current_versions'] : [],
+    ];
+}
+
 function supplycore_page_freshness_view_model(array $freshness): array
 {
     $computedAt = isset($freshness['computed_at']) ? (string) $freshness['computed_at'] : null;
     $state = (string) ($freshness['freshness_state'] ?? 'stale');
+    $status = supplycore_operational_status_view_model($state, (string) ($freshness['freshness_label'] ?? ucfirst($state)));
 
     return [
-        'state' => $state,
-        'label' => (string) ($freshness['freshness_label'] ?? ucfirst($state)),
+        'state' => $status['state'],
+        'label' => $status['label'],
         'computed_at' => supplycore_format_datetime($computedAt),
         'computed_relative' => supplycore_relative_datetime($computedAt),
         'reason' => (string) ($freshness['reason'] ?? ''),
-        'tone' => match ($state) {
-            'fresh' => 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100',
-            'updating' => 'border-sky-400/20 bg-sky-500/10 text-sky-100',
-            default => 'border-amber-400/20 bg-amber-500/10 text-amber-100',
-        },
-        'message' => match ($state) {
+        'tone' => $status['tone'],
+        'message' => match ($status['state']) {
             'fresh' => 'Background summaries are current.',
             'updating' => 'A background refresh is currently rebuilding this view.',
+            'stale' => 'Displayed results are stale and should be refreshed before acting.',
             default => 'Displayed results are older than the target refresh cadence.',
         },
     ];

@@ -26,6 +26,21 @@ $buildPageUrl = static function (int $pageNumber) use ($baseQuery): string {
     return '/buy-all?' . http_build_query($params);
 };
 $liveRefreshConfig = supplycore_live_refresh_page_config('buy_all');
+$liveRefreshSummary = supplycore_live_refresh_summary($liveRefreshConfig);
+$pageHeaderBadge = 'Buying plan';
+$pageHeaderSummary = 'Keep this page on actionable buys: margin, hauling impact, doctrine urgency, and why each recommendation made the cut.';
+$pageHeaderMeta = [
+    [
+        'label' => 'Plan freshness',
+        'value' => (string) ($freshness['generated_relative'] ?? 'Unknown'),
+        'caption' => (string) ($freshness['generated_at'] ?? 'Unavailable'),
+    ],
+    [
+        'label' => 'Live updates',
+        'value' => $liveRefreshSummary['mode_label'],
+        'caption' => $liveRefreshSummary['health_message'],
+    ],
+];
 
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
@@ -36,7 +51,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <div>
                 <p class="eyebrow">Procurement workflow</p>
                 <h1 class="mt-2 section-title">Buy All Planner</h1>
-                <p class="mt-2 section-copy">Turn SupplyCore doctrine, stock, and pricing intelligence into clipboard-ready procurement pages for Jita buying and alliance-side seeding.</p>
+                <p class="mt-2 section-copy">Turn shortages and price spreads into a buy run you can execute immediately.</p>
             </div>
             <span class="badge border-cyan-400/20 bg-cyan-500/10 text-cyan-100"><?= htmlspecialchars((string) ($summary['mode_label'] ?? 'Blended'), ENT_QUOTES) ?></span>
         </div>
@@ -45,7 +60,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <div class="rounded-[1.2rem] border border-white/8 bg-slate-950/50 px-4 py-4">
                 <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Generated pages</p>
                 <p class="mt-3 text-3xl font-semibold text-white"><?= htmlspecialchars((string) ($summary['page_count'] ?? 0), ENT_QUOTES) ?></p>
-                <p class="mt-1 text-sm text-slate-400">100 item types max · <?= htmlspecialchars(number_format((float) ($hauling['page_volume_limit'] ?? 350000.0), 0), ENT_QUOTES) ?> m³ cap per page.</p>
+                <p class="mt-1 text-sm text-slate-400"><?= htmlspecialchars(number_format((float) ($hauling['page_volume_limit'] ?? 350000.0), 0), ENT_QUOTES) ?> m³ cap per page.</p>
             </div>
             <div class="rounded-[1.2rem] border border-white/8 bg-slate-950/50 px-4 py-4">
                 <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Planned volume</p>
@@ -122,7 +137,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div>
                     <p class="eyebrow">Freshness / trust</p>
                     <h2 class="mt-2 section-title">Planner inputs</h2>
-                    <p class="mt-2 section-copy">Pricing, stock, and doctrine data used to produce the current plan.</p>
+                    <p class="mt-2 section-copy">Pricing, stock, and doctrine inputs behind the current recommendation.</p>
                 </div>
             </div>
             <div class="mt-4 space-y-3">
@@ -149,7 +164,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <div class="section-header border-b border-white/8 pb-4">
                 <div>
                     <p class="eyebrow">Price basis</p>
-                    <h2 class="mt-2 section-title">Economic assumptions</h2>
+                    <h2 class="mt-2 section-title">Profit assumptions</h2>
                 </div>
             </div>
             <div class="mt-4 space-y-3 text-sm text-slate-300">
@@ -169,7 +184,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <div>
                 <p class="eyebrow">Buy-all pages</p>
                 <h2 class="mt-2 section-title">Page <?= htmlspecialchars((string) $activePage, ENT_QUOTES) ?> of <?= htmlspecialchars((string) max(1, count($pages)), ENT_QUOTES) ?></h2>
-                <p class="mt-2 section-copy">Deterministic packing preserves rank order first, then splits on the 100-type and 350,000 m³ limits.</p>
+                <p class="mt-2 section-copy">Buy in this order. The planner keeps the best action list together, then splits by page size and hauling volume.</p>
             </div>
             <div class="flex flex-wrap items-center gap-2">
                 <?php if ($activePage > 1): ?>
@@ -224,19 +239,16 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <tr>
                                 <td class="px-4 py-3 align-top">
                                     <p class="font-semibold text-white"><?= htmlspecialchars((string) ($item['item_name'] ?? ''), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($item['reason_code'] ?? ''), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500">Hull class <?= htmlspecialchars((string) ($item['hull_class_label'] ?? 'Subcap'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($item['valid_doctrine_count'] ?? 0), ENT_QUOTES) ?> doctrines · <?= htmlspecialchars((string) ($item['valid_fits_count'] ?? 0), ENT_QUOTES) ?> fits</p>
+                                    <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($item['hull_class_label'] ?? 'Subcap'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($item['valid_doctrine_count'] ?? 0), ENT_QUOTES) ?> doctrines · <?= htmlspecialchars((string) ($item['valid_fits_count'] ?? 0), ENT_QUOTES) ?> fits</p>
                                 </td>
                                 <td class="px-4 py-3 align-top">
                                     <p class="font-semibold text-white"><?= htmlspecialchars((string) ($item['final_planner_quantity'] ?? $item['quantity'] ?? 0), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500">Exact deficit <?= htmlspecialchars((string) ($item['exact_deficit_quantity'] ?? 0), ENT_QUOTES) ?> · Operational <?= htmlspecialchars((string) ($item['operational_recommended_quantity'] ?? 0), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500">Economic <?= htmlspecialchars((string) ($item['economic_recommended_quantity'] ?? 0), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500">Short by <?= htmlspecialchars((string) ($item['exact_deficit_quantity'] ?? 0), ENT_QUOTES) ?> · target <?= htmlspecialchars((string) ($item['operational_recommended_quantity'] ?? 0), ENT_QUOTES) ?></p>
                                 </td>
                                 <td class="px-4 py-3 align-top">
-                                    <p class="font-semibold text-white">N <?= htmlspecialchars(number_format((float) ($item['necessity_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500">P <?= htmlspecialchars(number_format((float) ($item['profit_score'] ?? 0.0), 1), ENT_QUOTES) ?> · B <?= htmlspecialchars(number_format((float) ($item['blended_score'] ?? 0.0), 1), ENT_QUOTES) ?> · Final <?= htmlspecialchars(number_format((float) ($item['final_priority_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500">Target fits <?= htmlspecialchars((string) ($item['target_ready_fits'] ?? 0), ENT_QUOTES) ?> · Deterministic blocked <?= htmlspecialchars((string) ($item['deterministic_blocked_fits'] ?? $item['blocked_fit_impact'] ?? 0), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500">Activity modifier <?= htmlspecialchars(number_format((float) ($item['activity_pressure_modifier'] ?? 1.0), 2), ENT_QUOTES) ?>x</p>
+                                    <p class="font-semibold text-white"><?= htmlspecialchars(number_format((float) ($item['final_priority_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500"><?= (int) ($item['deterministic_blocked_fits'] ?? $item['blocked_fit_impact'] ?? 0) > 0 ? htmlspecialchars((string) ($item['deterministic_blocked_fits'] ?? $item['blocked_fit_impact'] ?? 0), ENT_QUOTES) . ' fits blocked' : 'Opportunity-led buy' ?></p>
+                                    <p class="mt-1 text-xs text-slate-500">Target-ready fits <?= htmlspecialchars((string) ($item['target_ready_fits'] ?? 0), ENT_QUOTES) ?></p>
                                 </td>
                                 <td class="px-4 py-3 align-top">
                                     <p class="font-semibold text-white"><?= htmlspecialchars(market_format_isk(isset($item['buy_price']) ? (float) $item['buy_price'] : null), ENT_QUOTES) ?></p>
@@ -260,10 +272,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 </td>
                                 <td class="px-4 py-3 align-top">
                                     <p class="text-sm text-slate-200"><?= htmlspecialchars((string) ($item['reason_text'] ?? ''), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500">Pricing <?= htmlspecialchars((string) ($item['pricing_completeness'] ?? 'partial'), ENT_QUOTES) ?> · Doctrine impact <?= htmlspecialchars((string) ($item['doctrine_fit_impact'] ?? 0), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500">Doctrine impact <?= htmlspecialchars((string) ($item['doctrine_fit_impact'] ?? 0), ENT_QUOTES) ?> fits · pricing <?= htmlspecialchars((string) ($item['pricing_completeness'] ?? 'partial'), ENT_QUOTES) ?></p>
                                     <?php $affectedFits = array_values((array) ($item['affected_fits'] ?? [])); ?>
-                                    <?php if ($affectedFits !== []): ?>
+                                    <details class="mt-2 rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2">
+                                        <summary class="cursor-pointer list-none text-xs font-medium text-slate-100">More detail</summary>
                                         <div class="mt-2 space-y-2">
+                                            <p class="text-xs text-slate-500">Reason code <?= htmlspecialchars((string) ($item['reason_code'] ?? ''), ENT_QUOTES) ?> · necessity <?= htmlspecialchars(number_format((float) ($item['necessity_score'] ?? 0.0), 1), ENT_QUOTES) ?> · profit <?= htmlspecialchars(number_format((float) ($item['profit_score'] ?? 0.0), 1), ENT_QUOTES) ?> · blended <?= htmlspecialchars(number_format((float) ($item['blended_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
                                             <?php foreach ($affectedFits as $affectedFit): ?>
                                                 <div class="rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2">
                                                     <p class="text-xs font-semibold text-slate-100"><?= htmlspecialchars((string) ($affectedFit['fit_name'] ?? 'Doctrine fit'), ENT_QUOTES) ?></p>
@@ -272,8 +286,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                                     <p class="mt-1 text-xs text-slate-500">Ready <?= htmlspecialchars((string) ($affectedFit['fit_ready_capacity'] ?? 0), ENT_QUOTES) ?> / Target <?= htmlspecialchars((string) ($affectedFit['target_ready_fits'] ?? 0), ENT_QUOTES) ?> · Blocked <?= htmlspecialchars((string) ($affectedFit['deterministic_blocked_fits'] ?? 0), ENT_QUOTES) ?></p>
                                                 </div>
                                             <?php endforeach; ?>
+                                            <?php if ($affectedFits === []): ?>
+                                                <p class="text-xs text-slate-500">No affected fits were attached to this row.</p>
+                                            <?php endif; ?>
                                         </div>
-                                    <?php endif; ?>
+                                    </details>
                                 </td>
                             </tr>
                         <?php endforeach; ?>
