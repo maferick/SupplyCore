@@ -2501,6 +2501,12 @@ function db_market_orders_history_cutover_rollback_to_legacy(bool $resetReadMode
 
 function db_market_order_current_projection_ensure(): void
 {
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
     db_execute(
         "CREATE TABLE IF NOT EXISTS market_order_current_projection (
             source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
@@ -2521,6 +2527,8 @@ function db_market_order_current_projection_ensure(): void
             KEY idx_market_order_current_projection_type (type_id, observed_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
     );
+
+    $ensured = true;
 }
 
 function db_market_order_current_projection_normalize_row(array $row): array
@@ -2618,6 +2626,7 @@ function db_market_order_current_projection_anchor(string $sourceType, int $sour
 function db_market_order_current_projection_refresh_snapshots(array $projectionRows, ?int $chunkSize = null): int
 {
     db_market_order_current_projection_ensure();
+    db_market_source_snapshot_state_ensure();
 
     if ($projectionRows === []) {
         return 0;
@@ -2937,36 +2946,39 @@ function db_market_orders_history_bulk_insert(array $orders, ?int $chunkSize = n
         'expires',
         'observed_at',
     ];
-    return db_transaction(function () use ($orders, $baseColumns, $chunkSize): int {
-        $written = 0;
 
-        foreach (db_market_orders_history_write_tables() as $table) {
-            if ($table === db_market_orders_history_partitioned_table()) {
-                db_market_orders_history_partitioned_schema_ensure();
+    $writeTables = db_market_orders_history_write_tables();
+    if (in_array(db_market_orders_history_partitioned_table(), $writeTables, true)) {
+        db_market_orders_history_partitioned_schema_ensure();
 
-                $latestObservedDate = '';
-                foreach ($orders as $order) {
-                    $observedAt = trim((string) ($order['observed_at'] ?? ''));
-                    if ($observedAt === '') {
-                        continue;
-                    }
-
-                    $observedDate = db_market_orders_history_normalize_observed_date($observedAt);
-                    if ($observedDate === '') {
-                        continue;
-                    }
-                    if ($observedDate > $latestObservedDate) {
-                        $latestObservedDate = $observedDate;
-                    }
-                }
-
-                if ($latestObservedDate !== '') {
-                    $windowEndMonth = new DateTimeImmutable(substr($latestObservedDate, 0, 7) . '-01');
-                    $monthsAhead = max(0, (((int) $windowEndMonth->format('Y')) * 12 + (int) $windowEndMonth->format('n')) - (((int) gmdate('Y')) * 12 + (int) gmdate('n')));
-                    db_market_orders_history_ensure_future_monthly_partitions($monthsAhead + 1, $table);
-                }
+        $latestObservedDate = '';
+        foreach ($orders as $order) {
+            $observedAt = trim((string) ($order['observed_at'] ?? ''));
+            if ($observedAt === '') {
+                continue;
             }
 
+            $observedDate = db_market_orders_history_normalize_observed_date($observedAt);
+            if ($observedDate === '') {
+                continue;
+            }
+
+            if ($observedDate > $latestObservedDate) {
+                $latestObservedDate = $observedDate;
+            }
+        }
+
+        if ($latestObservedDate !== '') {
+            $windowEndMonth = new DateTimeImmutable(substr($latestObservedDate, 0, 7) . '-01');
+            $monthsAhead = max(0, (((int) $windowEndMonth->format('Y')) * 12 + (int) $windowEndMonth->format('n')) - (((int) gmdate('Y')) * 12 + (int) gmdate('n')));
+            db_market_orders_history_ensure_future_monthly_partitions($monthsAhead + 1, db_market_orders_history_partitioned_table());
+        }
+    }
+
+    return db_transaction(function () use ($orders, $baseColumns, $chunkSize, $writeTables): int {
+        $written = 0;
+
+        foreach ($writeTables as $table) {
             $tableColumns = $baseColumns;
             $tableRows = $orders;
             if ($table === db_market_orders_history_partitioned_table()) {
@@ -3287,6 +3299,12 @@ function db_market_snapshot_rollup_bulk_upsert(string $resolution, array $rows, 
 
 function db_market_snapshot_optimization_ensure(): void
 {
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
     // Keep market_order_snapshots_summary on retention-only behavior for the
     // immediate release. Older windows should move into the additive 1h/1d
     // rollup tables, and only then should we reconsider partitioning if growth
@@ -3297,10 +3315,18 @@ function db_market_snapshot_optimization_ensure(): void
     db_ensure_table_index('market_order_snapshots_summary', 'idx_snapshot_summary_observed', 'INDEX idx_snapshot_summary_observed (observed_at)');
     db_market_snapshot_rollups_ensure();
     db_market_order_current_projection_ensure();
+
+    $ensured = true;
 }
 
 function db_market_source_snapshot_state_ensure(): void
 {
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
     db_market_snapshot_optimization_ensure();
 
     db_execute(
@@ -3320,6 +3346,8 @@ function db_market_source_snapshot_state_ensure(): void
             KEY idx_market_source_snapshot_state_summary (latest_summary_observed_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
     );
+
+    $ensured = true;
 }
 
 function db_market_source_snapshot_state_get(string $sourceType, int $sourceId): ?array
