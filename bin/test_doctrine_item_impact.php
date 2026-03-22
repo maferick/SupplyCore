@@ -17,8 +17,10 @@ $fits = [
         'id' => 101,
         'fit_name' => 'Naglfar Armor',
         'ship_type_id' => 19720,
-        'group_names' => ['Capital Spearhead'],
+        'group_names' => ['Capital Spearhead', 'Armor Support'],
+        'primary_group_name' => 'Capital Spearhead',
         'supply' => [
+            'operationally_owned' => true,
             'recommended_target_fit_count' => 2,
             'complete_fits_available' => 0,
             'bottleneck_type_id' => 9001,
@@ -35,11 +37,13 @@ $fits = [
         'id' => 202,
         'fit_name' => 'Muninn Fleet',
         'ship_type_id' => 12015,
-        'group_names' => ['Muninn Mainline'],
+        'group_names' => ['Muninn Mainline', 'Capital Spearhead'],
+        'primary_group_name' => 'Muninn Mainline',
         'supply' => [
+            'operationally_owned' => true,
             'recommended_target_fit_count' => 17,
             'complete_fits_available' => 15,
-            'bottleneck_type_id' => 9200,
+            'bottleneck_type_id' => 0,
             'bottleneck_is_stock_tracked' => true,
             'recent_hull_losses_24h' => 3,
             'recent_hull_losses_7d' => 8,
@@ -47,6 +51,21 @@ $fits = [
             'recent_item_fit_losses_7d' => 3,
             'resupply_pressure_state' => 'elevated',
             'readiness_trend_direction' => 'flat',
+        ],
+    ],
+    [
+        'id' => 303,
+        'fit_name' => 'Shared Logistics',
+        'ship_type_id' => 37604,
+        'group_names' => ['Capital Spearhead'],
+        'primary_group_name' => '',
+        'supply' => [
+            'operationally_owned' => false,
+            'recommended_target_fit_count' => 8,
+            'complete_fits_available' => 0,
+            'bottleneck_type_id' => 9300,
+            'bottleneck_is_stock_tracked' => true,
+            'blocked_fits' => 8,
         ],
     ],
 ];
@@ -59,12 +78,16 @@ $itemsByFitId = [
     202 => [
         ['doctrine_fit_id' => 202, 'type_id' => 9200, 'item_name' => '720mm Howitzer Artillery II', 'quantity' => 6, 'is_stock_tracked' => true, 'source_role' => 'fit', 'slot_category' => 'High Slots'],
     ],
+    303 => [
+        ['doctrine_fit_id' => 303, 'type_id' => 9300, 'item_name' => 'Large Remote Armor Repairer II', 'quantity' => 2, 'is_stock_tracked' => true, 'source_role' => 'fit', 'slot_category' => 'High Slots'],
+    ],
 ];
 
 $marketByTypeId = [
     9001 => ['alliance_total_sell_volume' => 0],
     9100 => ['alliance_total_sell_volume' => 1],
     9200 => ['alliance_total_sell_volume' => 96],
+    9300 => ['alliance_total_sell_volume' => 0],
 ];
 
 $metadataByType = [
@@ -88,21 +111,10 @@ $subcapGun = $impact[9200] ?? [];
 guardrail_assert((int) ($subcapGun['deterministic_blocked_fits'] ?? -1) === 0, 'Subcap weapon should not be marked blocking when it is above current fit-ready capacity.');
 guardrail_assert((int) ($subcapGun['exact_deficit_quantity'] ?? 0) === 6, 'Exact deficit quantity should still reflect the truthful module deficit for the remaining target.');
 guardrail_assert((int) ($subcapGun['valid_doctrine_count'] ?? 0) === 1, 'Doctrine impact should count only valid doctrine relationships.');
+guardrail_assert(!isset($impact[9300]), 'Support/reference-only or unowned fits must not affect doctrine criticality.');
 
-$capitalProfile = doctrine_recommended_target_fit_count(
-    ['complete_fits_available' => 0],
-    ['direction' => 'down'],
-    ['hull_losses_7d' => 1, 'item_equivalent_fit_losses_7d' => 1, 'hull_losses_24h' => 1, 'item_equivalent_fit_losses_24h' => 0],
-    ['depletion_signal' => ['classification' => 'stable', 'fit_equivalent_7d' => 0.0]],
-    'capital'
-);
-$subcapProfile = doctrine_recommended_target_fit_count(
-    ['complete_fits_available' => 0],
-    ['direction' => 'down'],
-    ['hull_losses_7d' => 1, 'item_equivalent_fit_losses_7d' => 1, 'hull_losses_24h' => 1, 'item_equivalent_fit_losses_24h' => 0],
-    ['depletion_signal' => ['classification' => 'stable', 'fit_equivalent_7d' => 0.0]],
-    'subcap'
-);
+$capitalProfile = doctrine_recommended_target_fit_count(['complete_fits_available' => 0], 'capital');
+$subcapProfile = doctrine_recommended_target_fit_count(['complete_fits_available' => 0], 'subcap');
 guardrail_assert(
     (int) ($capitalProfile['recommended_target_fit_count'] ?? 0) < (int) ($subcapProfile['recommended_target_fit_count'] ?? 0),
     'Capital readiness targets must stay lower than subcap readiness targets under comparable pressure.'

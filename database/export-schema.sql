@@ -1329,9 +1329,13 @@ CREATE TABLE IF NOT EXISTS doctrine_fits (
 CREATE TABLE IF NOT EXISTS doctrine_fit_groups (
     doctrine_fit_id INT UNSIGNED NOT NULL,
     doctrine_group_id INT UNSIGNED NOT NULL,
+    membership_role ENUM('primary', 'support', 'reference') NOT NULL DEFAULT 'support',
+    primary_fit_id INT UNSIGNED GENERATED ALWAYS AS (CASE WHEN membership_role = 'primary' THEN doctrine_fit_id ELSE NULL END) STORED,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (doctrine_fit_id, doctrine_group_id),
+    UNIQUE KEY uniq_doctrine_fit_groups_primary_fit (primary_fit_id),
     KEY idx_doctrine_fit_groups_group (doctrine_group_id),
+    KEY idx_doctrine_fit_groups_role (membership_role),
     CONSTRAINT fk_doctrine_fit_groups_fit FOREIGN KEY (doctrine_fit_id) REFERENCES doctrine_fits(id) ON DELETE CASCADE,
     CONSTRAINT fk_doctrine_fit_groups_group FOREIGN KEY (doctrine_group_id) REFERENCES doctrine_groups(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

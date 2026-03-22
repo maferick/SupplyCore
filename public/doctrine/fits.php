@@ -79,11 +79,12 @@ $summary = (array) ($data['summary'] ?? []);
 
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
-<section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+<section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
     <article class="surface-secondary"><p class="eyebrow">Imported fits</p><p class="mt-3 text-3xl metric-value"><?= (int) ($summary['total'] ?? 0) ?></p><p class="mt-2 text-sm text-slate-400">Searchable doctrine-fit registry.</p></article>
     <article class="surface-secondary"><p class="eyebrow">Needs review</p><p class="mt-3 text-3xl metric-value text-amber-200"><?= (int) ($summary['review'] ?? 0) ?></p><p class="mt-2 text-sm text-slate-400">Rows carrying warnings, mismatches, or explicit review flags.</p></article>
     <article class="surface-secondary"><p class="eyebrow">Unresolved</p><p class="mt-3 text-3xl metric-value text-rose-200"><?= (int) ($summary['unresolved'] ?? 0) ?></p><p class="mt-2 text-sm text-slate-400">Fits with unresolved hull or item names.</p></article>
     <article class="surface-secondary"><p class="eyebrow">Conflicts</p><p class="mt-3 text-3xl metric-value text-fuchsia-200"><?= (int) ($summary['conflicts'] ?? 0) ?></p><p class="mt-2 text-sm text-slate-400">Potential duplicates, version drift, or source mismatches.</p></article>
+    <article class="surface-secondary"><p class="eyebrow">Unowned</p><p class="mt-3 text-3xl metric-value text-amber-200"><?= (int) ($summary['unowned'] ?? 0) ?></p><p class="mt-2 text-sm text-slate-400">Fits without a primary doctrine owner. These are excluded from readiness and buy-all calculations.</p></article>
 </section>
 
 <section class="mt-8 surface-secondary">
@@ -91,7 +92,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <div>
             <p class="eyebrow">Fit management surface</p>
             <h2 class="mt-2 section-title">Doctrine fit overview</h2>
-            <p class="mt-2 text-sm text-slate-400">Filter and operate on large batches of imported doctrine fits without dropping into one-by-one edits.</p>
+            <p class="mt-2 text-sm text-slate-400">Filter and operate on large batches of imported doctrine fits without dropping into one-by-one edits. The first selected doctrine becomes primary unless you adjust roles inside the fit detail page.</p>
         </div>
         <a href="/doctrine/import" class="btn-primary">Open bulk importer</a>
     </div>
@@ -201,7 +202,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <th class="px-3 py-3"><input type="checkbox" onclick="document.querySelectorAll('input[name=&quot;fit_ids[]&quot;]').forEach((el)=>el.checked=this.checked)"></th>
                         <th class="px-3 py-3">Fit</th>
                         <th class="px-3 py-3">Hull</th>
-                        <th class="px-3 py-3">Groups</th>
+                        <th class="px-3 py-3">Ownership</th>
                         <th class="px-3 py-3">Items</th>
                         <th class="px-3 py-3">Source</th>
                         <th class="px-3 py-3">Status</th>
@@ -220,11 +221,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <td class="px-3 py-4"><?= htmlspecialchars((string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?></td>
                             <td class="px-3 py-4">
                                 <div class="flex flex-wrap gap-2">
-                                    <?php foreach ((array) ($fit['group_names'] ?? []) as $groupName): ?>
-                                        <span class="badge border-white/10 bg-white/[0.04] text-slate-200"><?= htmlspecialchars((string) $groupName, ENT_QUOTES) ?></span>
+                                    <?php foreach ((array) ($fit['memberships'] ?? []) as $membership): ?>
+                                        <span class="badge <?= htmlspecialchars(doctrine_membership_role_badge_tone((string) ($membership['membership_role'] ?? 'support')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($membership['group_name'] ?? '') . ' · ' . doctrine_membership_role_label((string) ($membership['membership_role'] ?? 'support')), ENT_QUOTES) ?></span>
                                     <?php endforeach; ?>
-                                    <?php if ((array) ($fit['group_names'] ?? []) === []): ?>
-                                        <span class="text-xs text-slate-500">Ungrouped</span>
+                                    <?php if ((array) ($fit['memberships'] ?? []) === []): ?>
+                                        <span class="text-xs text-slate-500">No primary owner</span>
                                     <?php endif; ?>
                                 </div>
                             </td>

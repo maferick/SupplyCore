@@ -70,6 +70,8 @@ if ($fit !== null && $editDraft === null) {
         ],
         'item_lines_text' => doctrine_render_editable_item_lines((array) $items),
         'group_ids' => (array) ($fit['group_ids'] ?? []),
+        'memberships' => (array) ($fit['memberships'] ?? []),
+        'primary_group_id' => (int) ($fit['primary_group_id'] ?? 0),
         'unresolved' => [],
         'hull_is_stock_tracked' => !is_array($hullItem) || !array_key_exists('is_stock_tracked', $hullItem) || (bool) $hullItem['is_stock_tracked'],
         'hull_tracking_default_reason' => (string) ($fit['supply']['hull_tracking_note'] ?? ''),
@@ -222,8 +224,18 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
                 <div class="mt-4 grid gap-3">
                     <div class="surface-tertiary">
-                        <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Doctrine groups</p>
-                        <p class="mt-2 font-semibold text-slate-100"><?= htmlspecialchars(implode(', ', (array) ($fit['group_names'] ?? [])) ?: 'Ungrouped', ENT_QUOTES) ?></p>
+                        <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Doctrine ownership</p>
+                        <?php $fitMemberships = (array) ($fit['memberships'] ?? []); ?>
+                        <?php if ($fitMemberships === []): ?>
+                            <p class="mt-2 font-semibold text-amber-100">No doctrine memberships</p>
+                        <?php else: ?>
+                            <div class="mt-2 flex flex-wrap gap-2">
+                                <?php foreach ($fitMemberships as $membership): ?>
+                                    <span class="badge <?= htmlspecialchars(doctrine_membership_role_badge_tone((string) ($membership['membership_role'] ?? 'support')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($membership['group_name'] ?? 'Unknown') . ' · ' . doctrine_membership_role_label((string) ($membership['membership_role'] ?? 'support')), ENT_QUOTES) ?></span>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+                        <p class="mt-2 text-xs text-slate-500"><?= htmlspecialchars((string) (($supply['ownership_context'] ?? '')), ENT_QUOTES) ?></p>
                     </div>
                     <div class="surface-tertiary">
                         <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Import status</p>
@@ -334,16 +346,40 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         </label>
                     </div>
                     <div>
-                        <span class="mb-2 block field-label">Doctrine groups</span>
+                        <span class="mb-2 block field-label">Doctrine memberships</span>
                         <div class="space-y-2 rounded-[1.2rem] border border-white/8 bg-slate-950/50 p-4">
                             <?php foreach ($groupOptions as $group): ?>
                                 <?php $groupId = (int) ($group['id'] ?? 0); ?>
-                                <label class="flex items-start gap-3 text-sm text-slate-300">
-                                    <input type="checkbox" name="group_ids[]" value="<?= $groupId ?>" class="mt-1" <?= in_array($groupId, (array) ($editDraft['group_ids'] ?? []), true) ? 'checked' : '' ?>>
-                                    <span><?= htmlspecialchars((string) ($group['group_name'] ?? ''), ENT_QUOTES) ?></span>
-                                </label>
+                                <?php
+                                $selected = in_array($groupId, (array) ($editDraft['group_ids'] ?? []), true);
+                                $role = 'support';
+                                foreach ((array) ($editDraft['memberships'] ?? []) as $membership) {
+                                    if ((int) ($membership['group_id'] ?? 0) === $groupId) {
+                                        $role = doctrine_normalize_membership_role((string) ($membership['membership_role'] ?? 'support'));
+                                        break;
+                                    }
+                                }
+                                ?>
+                                <div class="grid gap-3 rounded-2xl border border-white/6 bg-black/10 p-3 md:grid-cols-[auto_minmax(0,1fr)_170px]">
+                                    <label class="flex items-start gap-3 text-sm text-slate-300">
+                                        <input type="checkbox" name="group_ids[]" value="<?= $groupId ?>" class="mt-1" <?= $selected ? 'checked' : '' ?>>
+                                        <span><?= htmlspecialchars((string) ($group['group_name'] ?? ''), ENT_QUOTES) ?></span>
+                                    </label>
+                                    <div class="text-xs text-slate-500">
+                                        <?= $selected ? 'Included in doctrine membership model.' : 'Unchecked memberships are excluded entirely.' ?>
+                                    </div>
+                                    <label class="block">
+                                        <span class="mb-1 block text-[11px] uppercase tracking-[0.16em] text-slate-500">Role</span>
+                                        <select name="membership_roles[<?= $groupId ?>]" class="field-select">
+                                            <?php foreach (doctrine_membership_role_options() as $value => $label): ?>
+                                                <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= $role === $value ? 'selected' : '' ?>><?= htmlspecialchars($label, ENT_QUOTES) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </label>
+                                </div>
                             <?php endforeach; ?>
                         </div>
+                        <p class="mt-2 text-xs text-slate-500">Exactly one <span class="font-semibold text-slate-300">Primary</span> doctrine should own operational readiness. Support/reference memberships stay visible but do not block readiness.</p>
                     </div>
                     <label class="flex items-start gap-3 rounded-[1.2rem] border border-white/8 bg-slate-950/50 p-4 text-sm text-slate-300">
                         <input type="hidden" name="hull_stock_tracked" value="0">

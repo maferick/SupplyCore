@@ -57,7 +57,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <div>
                 <p class="eyebrow">Doctrine registry</p>
                 <h2 class="mt-2 section-title">Alliance doctrine groups</h2>
-                <p class="mt-2 text-sm text-slate-400">Every card now separates fleet readiness, sustainment, and replenishment pressure before you even open the doctrine.</p>
+                <p class="mt-2 text-sm text-slate-400">Every card now uses strict primary ownership. Support/reference fits stay visible, but only primary fits can block readiness or inflate bottlenecks.</p>
             </div>
             <div class="flex flex-wrap gap-3">
                 <a href="/doctrine/fits" class="btn-secondary">Fit overview</a>
@@ -80,7 +80,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 </div>
                                 <p class="mt-2 max-w-2xl text-sm text-slate-400"><?= htmlspecialchars((string) ($group['description'] ?? 'Doctrine fit collection for SupplyCore workflows.'), ENT_QUOTES) ?></p>
                             </div>
-                            <span class="badge border-cyan-400/18 bg-cyan-500/10 text-cyan-100"><?= doctrine_format_quantity((int) ($group['fit_count'] ?? 0)) ?> fits</span>
+                            <span class="badge border-cyan-400/18 bg-cyan-500/10 text-cyan-100"><?= doctrine_format_quantity((int) ($group['fit_count'] ?? 0)) ?> primary fits</span>
                         </div>
                         <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                             <div class="surface-tertiary">
@@ -103,7 +103,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <div class="surface-tertiary">
                                 <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Resupply pressure</p>
                                 <p class="mt-2 text-sm font-semibold text-sky-100"><?= htmlspecialchars((string) ($group['pressure_label'] ?? 'Stable'), ENT_QUOTES) ?></p>
-                                <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($group['pressure_fit_count'] ?? 0)) ?> fits show elevated-or-worse replenishment pressure</p>
+                                <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($group['pressure_fit_count'] ?? 0)) ?> primary fits show elevated-or-worse replenishment pressure · <?= doctrine_format_quantity((int) ($group['support_fit_count'] ?? 0)) ?> support fits attached</p>
                             </div>
                         </div>
                     </a>
@@ -234,7 +234,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <div>
                 <p class="eyebrow">Enabled-items layer</p>
                 <h2 class="mt-2 section-title">Highest priority restock items</h2>
-                <p class="mt-2 text-sm text-slate-400">Doctrine-linked items are ranked above general enabled items, but every in-scope item remains visible.</p>
+                <p class="mt-2 text-sm text-slate-400">Only primary-owned doctrine items can become critical. Support/reference fits never promote their modules into doctrine-critical demand.</p>
             </div>
             <span class="badge border-sky-400/18 bg-sky-500/10 text-sky-100">Two-layer engine</span>
         </div>
@@ -261,23 +261,23 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <article class="surface-secondary">
         <div class="section-header">
             <div>
-                <p class="eyebrow">Ungrouped cleanup</p>
-                <h2 class="mt-2 section-title">Fits without group membership</h2>
-                <p class="mt-2 text-sm text-slate-400">Deleting a doctrine group removes only the membership links. Any fit left without another group stays intact and appears here until reassigned.</p>
+                <p class="eyebrow">Unowned cleanup</p>
+                <h2 class="mt-2 section-title">Unowned / unmapped fits</h2>
+                <p class="mt-2 text-sm text-slate-400">Fits without a primary doctrine owner are preserved for cleanup here, but they have zero operational impact until a primary owner is assigned.</p>
             </div>
-            <span class="badge border-amber-400/20 bg-amber-500/10 text-amber-100"><?= doctrine_format_quantity(count($ungroupedFits)) ?> ungrouped</span>
+            <span class="badge border-amber-400/20 bg-amber-500/10 text-amber-100"><?= doctrine_format_quantity(count($ungroupedFits)) ?> excluded</span>
         </div>
         <div class="space-y-3">
             <?php if ($ungroupedFits === []): ?>
-                <div class="surface-tertiary text-sm text-slate-400">No orphaned doctrine fits need cleanup.</div>
+                <div class="surface-tertiary text-sm text-slate-400">No excluded fits need ownership cleanup.</div>
             <?php else: ?>
                 <?php foreach ($ungroupedFits as $fit): ?>
                     <a href="/doctrine/fit?fit_id=<?= (int) ($fit['id'] ?? 0) ?>" class="intelligence-row group">
                         <div class="min-w-0 flex-1">
                             <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($fit['fit_name'] ?? ''), ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?></p>
+                            <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?> · <?= htmlspecialchars(implode(', ', array_map(static fn (array $membership): string => (string) ($membership['group_name'] ?? ''), (array) ($fit['memberships'] ?? []))) ?: 'No memberships', ENT_QUOTES) ?></p>
                         </div>
-                        <div class="text-slate-500 transition group-hover:text-slate-200">Reassign ›</div>
+                        <div class="text-slate-500 transition group-hover:text-slate-200">Assign primary ›</div>
                     </a>
                 <?php endforeach; ?>
             <?php endif; ?>

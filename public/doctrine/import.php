@@ -170,7 +170,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <tr class="text-left text-xs uppercase tracking-[0.16em] text-slate-500">
                             <th class="px-3 py-3">Source</th>
                             <th class="px-3 py-3">Fit</th>
-                            <th class="px-3 py-3">Groups</th>
+                                <th class="px-3 py-3">Ownership</th>
                             <th class="px-3 py-3">Items</th>
                             <th class="px-3 py-3">Warnings</th>
                             <th class="px-3 py-3">Action</th>
@@ -226,10 +226,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 </div>
                             </td>
                             <td class="px-3 py-4">
-                                <div class="space-y-2">
-                                    <div class="flex flex-wrap gap-2">
-                                        <?php foreach ((array) ($row['detected_group_labels'] ?? []) as $label): ?>
-                                            <span class="badge border-white/10 bg-white/[0.04] text-slate-200"><?= htmlspecialchars((string) $label, ENT_QUOTES) ?></span>
+                                    <div class="space-y-2">
+                                        <div class="flex flex-wrap gap-2">
+                                            <?php foreach ((array) ($row['detected_group_labels'] ?? []) as $label): ?>
+                                                <span class="badge border-white/10 bg-white/[0.04] text-slate-200"><?= htmlspecialchars((string) $label, ENT_QUOTES) ?></span>
                                         <?php endforeach; ?>
                                         <?php if ((array) ($row['detected_group_labels'] ?? []) === []): ?>
                                             <span class="text-xs text-slate-500">No HTML group labels detected</span>
@@ -241,6 +241,17 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                             <option value="<?= $groupId ?>" <?= in_array($groupId, (array) ($row['group_ids'] ?? []), true) ? 'selected' : '' ?>><?= htmlspecialchars((string) ($group['group_name'] ?? ''), ENT_QUOTES) ?></option>
                                         <?php endforeach; ?>
                                     </select>
+                                    <label class="block">
+                                        <span class="mb-2 block text-[11px] uppercase tracking-[0.16em] text-slate-500">Primary doctrine owner</span>
+                                        <select name="row_primary_group_id[<?= htmlspecialchars($sourceKey, ENT_QUOTES) ?>]" class="field-input">
+                                            <option value="0">No primary owner</option>
+                                            <?php foreach ($groupOptions as $group): ?>
+                                                <?php $groupId = (int) ($group['id'] ?? 0); ?>
+                                                <option value="<?= $groupId ?>" <?= ((int) ($row['primary_group_id'] ?? 0) === $groupId) ? 'selected' : '' ?>><?= htmlspecialchars((string) ($group['group_name'] ?? ''), ENT_QUOTES) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </label>
+                                    <p class="text-xs text-slate-500">Selected groups other than the primary default to <span class="font-semibold text-slate-300">support</span>. Reference roles can be adjusted after import on the fit detail page.</p>
                                 </div>
                             </td>
                             <td class="px-3 py-4">

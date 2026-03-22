@@ -15416,6 +15416,126 @@ function doctrine_parse_group_names_csv(?string $csv): array
     return array_values(array_filter(array_map('trim', explode('||', $csv)), static fn (string $name): bool => $name !== ''));
 }
 
+function doctrine_membership_role_options(): array
+{
+    return [
+        'primary' => 'Primary',
+        'support' => 'Support',
+        'reference' => 'Reference',
+    ];
+}
+
+function doctrine_normalize_membership_role(?string $role, string $default = 'support'): string
+{
+    $normalized = trim((string) $role);
+
+    return array_key_exists($normalized, doctrine_membership_role_options()) ? $normalized : $default;
+}
+
+function doctrine_parse_membership_roles_csv(?string $csv): array
+{
+    if ($csv === null || trim($csv) === '') {
+        return [];
+    }
+
+    $memberships = [];
+    foreach (explode(',', $csv) as $segment) {
+        $parts = explode(':', trim((string) $segment), 2);
+        $groupId = (int) ($parts[0] ?? 0);
+        if ($groupId <= 0) {
+            continue;
+        }
+        $memberships[$groupId] = doctrine_normalize_membership_role($parts[1] ?? 'support');
+    }
+
+    return $memberships;
+}
+
+function doctrine_parse_membership_names_csv(?string $csv): array
+{
+    if ($csv === null || trim($csv) === '') {
+        return [];
+    }
+
+    $memberships = [];
+    foreach (explode('||', $csv) as $segment) {
+        $parts = explode(':', trim((string) $segment), 2);
+        $name = trim((string) ($parts[0] ?? ''));
+        if ($name === '') {
+            continue;
+        }
+        $memberships[] = [
+            'group_name' => $name,
+            'membership_role' => doctrine_normalize_membership_role($parts[1] ?? 'support'),
+        ];
+    }
+
+    return $memberships;
+}
+
+function doctrine_membership_rows(array $fit): array
+{
+    $rows = [];
+    $rolesByGroupId = doctrine_parse_membership_roles_csv($fit['membership_roles_csv'] ?? null);
+    $groupNames = doctrine_parse_group_names_csv($fit['group_names_csv'] ?? null);
+    $groupIds = doctrine_parse_group_csv($fit['group_ids_csv'] ?? null);
+
+    foreach ($groupIds as $index => $groupId) {
+        $rows[] = [
+            'group_id' => $groupId,
+            'group_name' => (string) ($groupNames[$index] ?? ''),
+            'membership_role' => doctrine_normalize_membership_role($rolesByGroupId[$groupId] ?? (($index === 0) ? 'primary' : 'support')),
+        ];
+    }
+
+    if ($rows === [] && is_array($fit['membership_rows'] ?? null)) {
+        foreach ((array) $fit['membership_rows'] as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $groupId = (int) ($row['group_id'] ?? $row['id'] ?? 0);
+            if ($groupId <= 0) {
+                continue;
+            }
+            $rows[] = [
+                'group_id' => $groupId,
+                'group_name' => (string) ($row['group_name'] ?? ''),
+                'membership_role' => doctrine_normalize_membership_role((string) ($row['membership_role'] ?? 'support')),
+            ];
+        }
+    }
+
+    usort($rows, static function (array $a, array $b): int {
+        $weight = ['primary' => 0, 'support' => 1, 'reference' => 2];
+        return (($weight[$a['membership_role'] ?? 'support'] ?? 9) <=> ($weight[$b['membership_role'] ?? 'support'] ?? 9))
+            ?: strcasecmp((string) ($a['group_name'] ?? ''), (string) ($b['group_name'] ?? ''));
+    });
+
+    return $rows;
+}
+
+function doctrine_primary_membership(array $fit): ?array
+{
+    foreach (doctrine_membership_rows($fit) as $membership) {
+        if (($membership['membership_role'] ?? 'support') === 'primary') {
+            return $membership;
+        }
+    }
+
+    return null;
+}
+
+function doctrine_membership_counts(array $fit): array
+{
+    $counts = ['primary' => 0, 'support' => 0, 'reference' => 0];
+    foreach (doctrine_membership_rows($fit) as $membership) {
+        $role = doctrine_normalize_membership_role((string) ($membership['membership_role'] ?? 'support'));
+        $counts[$role]++;
+    }
+
+    return $counts;
+}
+
 function doctrine_group_options(): array
 {
     try {
@@ -16612,6 +16732,75 @@ function doctrine_selected_group_ids(array $post): array
     return array_values(array_unique(array_filter($groupIds, static fn (int $id): bool => $id > 0)));
 }
 
+function doctrine_selected_memberships(array $post): array
+{
+    $groupIds = doctrine_selected_group_ids($post);
+    $primaryGroupId = max(0, (int) ($post['primary_group_id'] ?? 0));
+    $memberships = [];
+
+    foreach ($groupIds as $index => $groupId) {
+        $role = doctrine_normalize_membership_role((string) (($post['membership_roles'][$groupId] ?? null) ?? 'support'));
+        if ($primaryGroupId > 0 && $groupId === $primaryGroupId) {
+            $role = 'primary';
+        } elseif ($primaryGroupId <= 0 && $index === 0 && !array_key_exists('membership_roles', $post)) {
+            $role = 'primary';
+        }
+
+        $memberships[] = [
+            'group_id' => $groupId,
+            'membership_role' => $role,
+        ];
+    }
+
+    $explicitPrimaryCount = 0;
+    foreach ($memberships as $membership) {
+        if (($membership['membership_role'] ?? 'support') === 'primary') {
+            $explicitPrimaryCount++;
+        }
+    }
+
+    if ($explicitPrimaryCount > 1) {
+        $selectedPrimary = false;
+        foreach ($memberships as $index => $membership) {
+            if (($membership['membership_role'] ?? 'support') !== 'primary') {
+                continue;
+            }
+            if (!$selectedPrimary) {
+                $selectedPrimary = true;
+                continue;
+            }
+            $memberships[$index]['membership_role'] = 'support';
+        }
+    }
+
+    return $memberships;
+}
+
+function doctrine_primary_group_id_from_memberships(array $memberships): int
+{
+    foreach ($memberships as $membership) {
+        if (($membership['membership_role'] ?? 'support') === 'primary') {
+            return max(0, (int) ($membership['group_id'] ?? $membership['doctrine_group_id'] ?? 0));
+        }
+    }
+
+    return 0;
+}
+
+function doctrine_membership_role_badge_tone(string $role): string
+{
+    return match ($role) {
+        'primary' => 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100',
+        'support' => 'border-sky-400/20 bg-sky-500/10 text-sky-100',
+        default => 'border-slate-400/20 bg-slate-500/10 text-slate-200',
+    };
+}
+
+function doctrine_membership_role_label(string $role): string
+{
+    return doctrine_membership_role_options()[doctrine_normalize_membership_role($role)] ?? 'Support';
+}
+
 function doctrine_request_hull_stock_tracked(array $post): ?bool
 {
     if (!array_key_exists('hull_stock_tracked', $post)) {
@@ -16704,7 +16893,7 @@ function doctrine_fit_group_suggestions(array $fit, int $excludeFitId = 0): arra
     }
 }
 
-function doctrine_prepare_fit_draft(array $resolved, array $groupIds = [], int $fitId = 0): array
+function doctrine_prepare_fit_draft(array $resolved, array $memberships = [], int $fitId = 0): array
 {
     $fit = (array) ($resolved['fit'] ?? []);
     $items = (array) ($resolved['items'] ?? []);
@@ -16722,14 +16911,44 @@ function doctrine_prepare_fit_draft(array $resolved, array $groupIds = [], int $
         }
     }
     $suggestedGroupIds = array_values(array_map(static fn (array $row): int => (int) ($row['id'] ?? 0), $suggestions));
-    $selectedGroupIds = array_values(array_unique(array_merge($groupIds, $detectedGroupIds, $suggestedGroupIds)));
+    $selectedMemberships = [];
+    foreach ($memberships as $membership) {
+        if (!is_array($membership)) {
+            continue;
+        }
+        $groupId = (int) ($membership['group_id'] ?? $membership['doctrine_group_id'] ?? 0);
+        if ($groupId <= 0) {
+            continue;
+        }
+        $selectedMemberships[$groupId] = [
+            'group_id' => $groupId,
+            'membership_role' => doctrine_normalize_membership_role((string) ($membership['membership_role'] ?? 'support')),
+        ];
+    }
+
+    foreach (array_values(array_unique(array_merge($detectedGroupIds, $suggestedGroupIds))) as $index => $groupId) {
+        if (isset($selectedMemberships[$groupId])) {
+            continue;
+        }
+        $selectedMemberships[$groupId] = [
+            'group_id' => $groupId,
+            'membership_role' => empty($selectedMemberships) && $index === 0 ? 'primary' : 'support',
+        ];
+    }
+
+    $selectedMemberships = array_values($selectedMemberships);
+    if (doctrine_primary_group_id_from_memberships($selectedMemberships) === 0 && count($selectedMemberships) === 1) {
+        $selectedMemberships[0]['membership_role'] = 'primary';
+    }
 
     return [
         'fit_id' => $fitId,
         'fit' => $fit,
         'items' => $items,
         'item_lines_text' => doctrine_render_editable_item_lines($items),
-        'group_ids' => $selectedGroupIds,
+        'group_ids' => array_values(array_map(static fn (array $membership): int => (int) ($membership['group_id'] ?? 0), $selectedMemberships)),
+        'memberships' => $selectedMemberships,
+        'primary_group_id' => doctrine_primary_group_id_from_memberships($selectedMemberships),
         'suggested_groups' => $suggestions,
         'unresolved' => array_values(array_unique((array) ($resolved['unresolved'] ?? []))),
         'warnings' => array_values(array_unique((array) ($resolved['warnings'] ?? []))),
@@ -16753,7 +16972,7 @@ function doctrine_build_draft_from_import_request(array $post): array
     $parsed['hull_is_stock_tracked'] = doctrine_request_hull_stock_tracked($post);
     $resolved = doctrine_resolve_parsed_fit($parsed, $rawText);
 
-    return doctrine_prepare_fit_draft($resolved, doctrine_selected_group_ids($post));
+    return doctrine_prepare_fit_draft($resolved, doctrine_selected_memberships($post));
 }
 
 function doctrine_build_draft_from_editor_request(array $post, int $fitId = 0): array
@@ -16791,7 +17010,7 @@ function doctrine_build_draft_from_editor_request(array $post, int $fitId = 0): 
     $resolvedDoctrineClass = doctrine_fit_hull_class((array) ($resolved['fit'] ?? []), (array) ($resolved['items'] ?? []));
     $resolved['fit']['target_fleet_size_override'] = doctrine_sanitize_target_fleet_size_override($targetFleetSizeOverride, $resolvedDoctrineClass);
 
-    return doctrine_prepare_fit_draft($resolved, doctrine_selected_group_ids($post), $fitId);
+    return doctrine_prepare_fit_draft($resolved, doctrine_selected_memberships($post), $fitId);
 }
 
 function doctrine_attach_conflicts_to_draft(array $draft, int $excludeFitId = 0): array
@@ -17031,17 +17250,38 @@ function doctrine_bulk_import_build_preview(): array
     ];
 }
 
-function doctrine_bulk_import_selected_group_ids(array $row, array $post): array
+function doctrine_bulk_import_selected_memberships(array $row, array $post): array
 {
     $index = (string) ($row['source_filename'] ?? md5((string) (($row['fit']['fit_name'] ?? '') . '|' . ($row['fit']['ship_name'] ?? ''))));
     $posted = (array) ($post['row_group_ids'][$index] ?? []);
     $groupIds = array_values(array_unique(array_filter(array_map('intval', $posted), static fn (int $id): bool => $id > 0)));
+    $primaryGroupId = max(0, (int) ($post['row_primary_group_id'][$index] ?? 0));
 
-    if ($groupIds !== []) {
-        return $groupIds;
+    if ($groupIds === []) {
+        $groupIds = array_values(array_unique(array_filter(array_map('intval', (array) ($row['group_ids'] ?? [])), static fn (int $id): bool => $id > 0)));
+        $primaryGroupId = $primaryGroupId > 0 ? $primaryGroupId : (int) ($row['primary_group_id'] ?? 0);
     }
 
-    return array_values(array_unique(array_filter(array_map('intval', (array) ($row['group_ids'] ?? [])), static fn (int $id): bool => $id > 0)));
+    $memberships = [];
+    $existingMemberships = [];
+    foreach ((array) ($row['memberships'] ?? []) as $membership) {
+        if (!is_array($membership)) {
+            continue;
+        }
+        $existingMemberships[(int) ($membership['group_id'] ?? 0)] = doctrine_normalize_membership_role((string) ($membership['membership_role'] ?? 'support'));
+    }
+
+    foreach ($groupIds as $index => $groupId) {
+        $role = $groupId === $primaryGroupId
+            ? 'primary'
+            : doctrine_normalize_membership_role($existingMemberships[$groupId] ?? ($index === 0 && $primaryGroupId <= 0 ? 'primary' : 'support'));
+        $memberships[] = [
+            'group_id' => $groupId,
+            'membership_role' => $role,
+        ];
+    }
+
+    return $memberships;
 }
 
 function doctrine_ensure_groups_from_labels(array $labels, array $selectedGroupIds = []): array
@@ -17089,10 +17329,32 @@ function doctrine_bulk_import_save_from_request(array $post): array
             continue;
         }
 
+        $memberships = doctrine_bulk_import_selected_memberships($row, $post);
         $groupIds = doctrine_ensure_groups_from_labels(
             (array) ($row['detected_group_labels'] ?? []),
-            doctrine_bulk_import_selected_group_ids($row, $post)
+            array_values(array_map(static fn (array $membership): int => (int) ($membership['group_id'] ?? 0), $memberships))
         );
+        $memberships = array_map(static function (array $membership) use ($groupIds): array {
+            return [
+                'group_id' => (int) ($membership['group_id'] ?? 0),
+                'membership_role' => doctrine_normalize_membership_role((string) ($membership['membership_role'] ?? 'support')),
+            ];
+        }, $memberships);
+        foreach ($groupIds as $groupId) {
+            $found = false;
+            foreach ($memberships as $membership) {
+                if ((int) ($membership['group_id'] ?? 0) === $groupId) {
+                    $found = true;
+                    break;
+                }
+            }
+            if (!$found) {
+                $memberships[] = [
+                    'group_id' => $groupId,
+                    'membership_role' => doctrine_primary_group_id_from_memberships($memberships) === 0 ? 'primary' : 'support',
+                ];
+            }
+        }
 
         $fit = (array) ($row['fit'] ?? []);
         $items = (array) ($row['items'] ?? []);
@@ -17112,12 +17374,12 @@ function doctrine_bulk_import_save_from_request(array $post): array
                 continue;
             }
 
-            db_doctrine_fit_update($targetId, $fit, $items, $groupIds);
+            db_doctrine_fit_update($targetId, $fit, $items, $memberships);
             $results['updated']++;
             continue;
         }
 
-        db_doctrine_fit_create($fit, $items, $groupIds);
+        db_doctrine_fit_create($fit, $items, $memberships);
         if ($action === 'review') {
             $results['review']++;
         } else {
@@ -17139,23 +17401,26 @@ function doctrine_import_fit_from_request(array $post): array
         return ['ok' => false, 'message' => $exception->getMessage()];
     }
 
-    $groupIds = doctrine_selected_group_ids($post);
+    $memberships = doctrine_selected_memberships($post);
     try {
         $newGroupId = doctrine_create_group_if_requested($post);
     } catch (Throwable $exception) {
         return ['ok' => false, 'message' => 'Unable to create doctrine group: ' . $exception->getMessage(), 'draft' => $draft];
     }
     if ($newGroupId > 0) {
-        $groupIds[] = $newGroupId;
+        $memberships[] = [
+            'group_id' => $newGroupId,
+            'membership_role' => doctrine_primary_group_id_from_memberships($memberships) === 0 ? 'primary' : 'support',
+        ];
     }
-    $groupIds = array_values(array_unique(array_filter($groupIds, static fn (int $id): bool => $id > 0)));
+    $memberships = array_values(array_filter($memberships, static fn (array $membership): bool => (int) ($membership['group_id'] ?? 0) > 0));
 
-    if ($groupIds === []) {
+    if ($memberships === []) {
         return ['ok' => false, 'message' => 'Assign the fit to at least one doctrine group before saving.', 'draft' => $draft];
     }
 
     try {
-        $fitId = db_doctrine_fit_create((array) ($draft['fit'] ?? []), (array) ($draft['items'] ?? []), $groupIds);
+        $fitId = db_doctrine_fit_create((array) ($draft['fit'] ?? []), (array) ($draft['items'] ?? []), $memberships);
     } catch (Throwable $exception) {
         return ['ok' => false, 'message' => 'Doctrine fit import failed: ' . $exception->getMessage(), 'draft' => $draft];
     }
@@ -17180,13 +17445,13 @@ function doctrine_update_fit_from_request(int $fitId, array $post): array
         return ['ok' => false, 'message' => $exception->getMessage()];
     }
 
-    $groupIds = doctrine_selected_group_ids($post);
-    if ($groupIds === []) {
+    $memberships = doctrine_selected_memberships($post);
+    if ($memberships === []) {
         return ['ok' => false, 'message' => 'Assign the fit to at least one doctrine group before saving.', 'draft' => $draft];
     }
 
     try {
-        db_doctrine_fit_update($fitId, (array) ($draft['fit'] ?? []), (array) ($draft['items'] ?? []), $groupIds);
+        db_doctrine_fit_update($fitId, (array) ($draft['fit'] ?? []), (array) ($draft['items'] ?? []), $memberships);
     } catch (Throwable $exception) {
         return ['ok' => false, 'message' => 'Doctrine fit update failed: ' . $exception->getMessage(), 'draft' => $draft];
     }
@@ -18364,6 +18629,119 @@ function doctrine_combined_supply_status(array $readiness, array $pressure): arr
     ];
 }
 
+function doctrine_primary_group_context(array $fit): array
+{
+    $memberships = doctrine_membership_rows($fit);
+    $primary = doctrine_primary_membership($fit);
+
+    return [
+        'membership_rows' => $memberships,
+        'primary_membership' => $primary,
+        'primary_group_id' => (int) ($primary['group_id'] ?? 0),
+        'primary_group_name' => (string) ($primary['group_name'] ?? ''),
+        'membership_counts' => doctrine_membership_counts($fit),
+        'has_primary_owner' => $primary !== null,
+    ];
+}
+
+function doctrine_excluded_operational_supply(array $fit, array $ownership, string $reason = 'no_primary'): array
+{
+    $memberships = (array) ($ownership['membership_rows'] ?? []);
+    $primaryGroupName = (string) ($ownership['primary_group_name'] ?? '');
+    $context = match ($reason) {
+        'support_only' => 'This fit is attached only as support/reference and is excluded from readiness, bottleneck, and buy-all calculations.',
+        default => 'This fit has no primary doctrine owner, so it is excluded from readiness, bottleneck, and buy-all calculations.',
+    };
+
+    return [
+        'hull_class' => doctrine_fit_hull_class($fit, []),
+        'hull_class_label' => doctrine_hull_class_label(doctrine_fit_hull_class($fit, [])),
+        'doctrine_class' => doctrine_fit_hull_class($fit, []),
+        'doctrine_class_label' => doctrine_hull_class_label(doctrine_fit_hull_class($fit, [])),
+        'operationally_owned' => false,
+        'ownership_state' => $reason,
+        'ownership_label' => $reason === 'support_only' ? 'Support/reference only' : 'Unmapped',
+        'ownership_context' => $context,
+        'ownership_memberships' => $memberships,
+        'primary_group_id' => (int) ($ownership['primary_group_id'] ?? 0),
+        'primary_group_name' => $primaryGroupName,
+        'status' => 'excluded',
+        'status_label' => 'Excluded',
+        'readiness_state' => 'excluded',
+        'readiness_label' => 'Excluded',
+        'readiness_context' => $context,
+        'readiness_explanation' => 'Operational readiness is disabled until a primary doctrine owner is assigned.',
+        'resupply_pressure_state' => 'excluded',
+        'resupply_pressure_label' => 'Informational only',
+        'resupply_pressure_context' => 'Support/reference and unmapped fits do not generate readiness or resupply pressure.',
+        'resupply_pressure_explanation' => 'Assign a single primary doctrine before this fit can affect shortage scoring.',
+        'combined_status_code' => 'excluded__excluded',
+        'combined_status_label' => 'Excluded from operational scoring',
+        'combined_status_context' => $context,
+        'recommendation_code' => 'assign_primary_owner',
+        'recommendation_text' => 'Assign a primary doctrine owner',
+        'recommendation_explanation' => 'Until a primary owner exists, the fit and its modules are ignored by doctrine criticality and buy-all priority.',
+        'planning_context' => $context,
+        'readiness_trend' => 'Excluded',
+        'readiness_trend_direction' => 'excluded',
+        'readiness_trend_context' => 'Trend tracking is disabled for fits without a primary owner.',
+        'complete_fit_history' => [],
+        'doctrine_target_fleet_size' => 0,
+        'recommended_target_fit_count' => 0,
+        'target_fleet_size_range_label' => 'Excluded',
+        'target_fleet_size_source' => 'excluded',
+        'gap_to_target_fit_count' => 0,
+        'fleet_ready' => 0,
+        'complete_fits_available' => 0,
+        'fleet_gap' => 0,
+        'blocked_fits' => 0,
+        'overcapacity' => 0,
+        'bottleneck_item_name' => null,
+        'bottleneck_type_id' => null,
+        'bottleneck_quantity' => 0,
+        'bottleneck_required_quantity' => 0,
+        'bottleneck_capacity' => 0,
+        'bottleneck_impact' => 0,
+        'bottleneck_is_stock_tracked' => false,
+        'external_bottleneck' => false,
+        'bottleneck_label' => 'No operational owner',
+        'bottleneck_management_label' => 'Excluded',
+        'constraint_label' => 'No primary doctrine owner assigned.',
+        'restock_gap_isk' => 0.0,
+        'coverage_percent' => 0.0,
+        'missing_lines' => 0,
+        'total_missing_qty' => 0,
+        'tracked_restock_lines' => 0,
+        'recent_hull_losses_24h' => 0,
+        'recent_hull_losses_7d' => 0,
+        'recent_item_fit_losses_24h' => 0,
+        'recent_item_fit_losses_7d' => 0,
+        'depletion_24h' => 0,
+        'depletion_7d' => 0,
+        'depletion_fit_equivalent_24h' => 0.0,
+        'depletion_fit_equivalent_7d' => 0.0,
+        'depletion_state' => 'excluded',
+        'depletion_context' => 'Excluded fits do not create depletion-driven urgency.',
+        'restock_trend' => 'Excluded',
+        'restock_trend_direction' => 'excluded',
+        'restock_trend_context' => 'No primary owner means no restock trend contribution.',
+        'sustainment_risk_state' => 'informational',
+        'sustainment_risk_label' => 'Informational only',
+        'sustainment_risk_context' => 'Support/reference dependencies stay visible but do not affect readiness.',
+        'externally_managed' => false,
+        'tracked_item_count' => 0,
+        'hull_tracking_note' => $context,
+        'driver_scores' => [
+            'loss_pressure' => 0.0,
+            'stock_gap' => 0.0,
+            'depletion' => 0.0,
+            'bottleneck' => 0.0,
+            'total' => 0.0,
+        ],
+        'likely_enough_based_on_recent_losses' => false,
+    ];
+}
+
 function doctrine_operational_supply(array $rows, array $items, array $fit, array $historyByTypeId, array $itemLossByType, array $hullLossByType): array
 {
     $hullItem = doctrine_find_hull_item($items);
@@ -18914,13 +19292,25 @@ function doctrine_operational_snapshot_build(bool $persistSnapshots = false, str
         $fitId = (int) ($fit['id'] ?? 0);
         $fitItems = $itemsByFitId[$fitId] ?? [];
         $marketRows = doctrine_fit_item_market_rows($fitItems, $comparisonByTypeId);
-        $summary = doctrine_operational_supply($marketRows, $fitItems, $fit, $localHistoryByTypeId, $itemLossByType, $hullLossByType);
-        $groupIds = doctrine_parse_group_csv($fit['group_ids_csv'] ?? null);
-        $groupNames = doctrine_parse_group_names_csv($fit['group_names_csv'] ?? null);
+        $ownership = doctrine_primary_group_context($fit);
+        $summary = $ownership['has_primary_owner']
+            ? doctrine_operational_supply($marketRows, $fitItems, $fit, $localHistoryByTypeId, $itemLossByType, $hullLossByType)
+            : doctrine_excluded_operational_supply($fit, $ownership, 'no_primary');
+        $membershipRows = (array) ($ownership['membership_rows'] ?? []);
+        $groupIds = array_values(array_map(static fn (array $membership): int => (int) ($membership['group_id'] ?? 0), $membershipRows));
+        $groupNames = array_values(array_map(static fn (array $membership): string => (string) ($membership['group_name'] ?? ''), $membershipRows));
         $fit['group_ids'] = $groupIds;
         $fit['group_names'] = $groupNames;
+        $fit['membership_rows'] = $membershipRows;
+        $fit['membership_counts'] = (array) ($ownership['membership_counts'] ?? []);
+        $fit['primary_group_id'] = (int) ($ownership['primary_group_id'] ?? 0);
+        $fit['primary_group_name'] = (string) ($ownership['primary_group_name'] ?? '');
         $fit['ship_image_url'] = doctrine_ship_image_url(isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null, 64);
-        $fit['supply'] = $summary;
+        $fit['supply'] = $summary + [
+            'ownership_memberships' => $membershipRows,
+            'primary_group_id' => (int) ($ownership['primary_group_id'] ?? 0),
+            'primary_group_name' => (string) ($ownership['primary_group_name'] ?? ''),
+        ];
         $fitsById[$fitId] = $fit;
 
         if ($persistSnapshots && $fitId > 0) {
@@ -18959,6 +19349,10 @@ function doctrine_operational_snapshot_build(bool $persistSnapshots = false, str
             }
         }
 
+        if (!(bool) ($fit['supply']['operationally_owned'] ?? true)) {
+            continue;
+        }
+
         foreach ($marketRows as $row) {
             if (($row['is_stock_tracked'] ?? true) !== true) {
                 continue;
@@ -18987,20 +19381,55 @@ function doctrine_operational_snapshot_build(bool $persistSnapshots = false, str
 
     foreach ($groups as &$group) {
         $groupId = (int) ($group['id'] ?? 0);
-        $groupFits = array_values(array_filter($fitsById, static fn (array $fit): bool => in_array($groupId, (array) ($fit['group_ids'] ?? []), true)));
-        $group['fits'] = $groupFits;
-        $group['ready_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['readiness_state'] ?? 'market_ready') === 'market_ready')));
-        $group['gap_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['readiness_state'] ?? 'market_ready') !== 'market_ready')));
-        $group['missing_lines'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['missing_lines'] ?? 0)), $groupFits));
-        $group['total_missing_qty'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['total_missing_qty'] ?? 0)), $groupFits));
-        $group['restock_gap_isk'] = array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['restock_gap_isk'] ?? 0.0)), $groupFits));
-        $group['coverage_percent'] = count($groupFits) > 0 ? array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['coverage_percent'] ?? 0.0)), $groupFits)) / count($groupFits) : 0.0;
-        $group['complete_fits_available'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['complete_fits_available'] ?? 0)), $groupFits));
-        $group['target_fit_count'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['recommended_target_fit_count'] ?? 0)), $groupFits));
-        $group['fit_gap_count'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['gap_to_target_fit_count'] ?? 0)), $groupFits));
-        $group['loss_pressure_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => !in_array((string) (($fit['supply']['resupply_pressure_state'] ?? 'stable')), ['stable', 'elevated'], true)));
-        $group['pressure_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['resupply_pressure_state'] ?? 'stable') !== 'stable')));
-        $group['trending_down_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['readiness_trend_direction'] ?? 'unknown') === 'down')));
+        $groupMembershipFits = array_values(array_filter($fitsById, static function (array $fit) use ($groupId): bool {
+            foreach ((array) ($fit['membership_rows'] ?? []) as $membership) {
+                if ((int) ($membership['group_id'] ?? 0) === $groupId) {
+                    return true;
+                }
+            }
+
+            return false;
+        }));
+        $primaryFits = array_values(array_filter($groupMembershipFits, static fn (array $fit): bool => (int) ($fit['primary_group_id'] ?? 0) === $groupId));
+        $supportFits = array_values(array_filter($groupMembershipFits, static function (array $fit) use ($groupId): bool {
+            foreach ((array) ($fit['membership_rows'] ?? []) as $membership) {
+                if ((int) ($membership['group_id'] ?? 0) === $groupId && ($membership['membership_role'] ?? 'support') === 'support') {
+                    return true;
+                }
+            }
+
+            return false;
+        }));
+        $referenceFits = array_values(array_filter($groupMembershipFits, static function (array $fit) use ($groupId): bool {
+            foreach ((array) ($fit['membership_rows'] ?? []) as $membership) {
+                if ((int) ($membership['group_id'] ?? 0) === $groupId && ($membership['membership_role'] ?? 'support') === 'reference') {
+                    return true;
+                }
+            }
+
+            return false;
+        }));
+        $group['fits'] = $primaryFits;
+        $group['primary_fits'] = $primaryFits;
+        $group['support_fits'] = $supportFits;
+        $group['reference_fits'] = $referenceFits;
+        $group['fit_count'] = count($primaryFits);
+        $group['total_membership_fit_count'] = count($groupMembershipFits);
+        $group['ready_fit_count'] = count(array_filter($primaryFits, static fn (array $fit): bool => (($fit['supply']['readiness_state'] ?? 'market_ready') === 'market_ready')));
+        $group['gap_fit_count'] = count(array_filter($primaryFits, static fn (array $fit): bool => (($fit['supply']['readiness_state'] ?? 'market_ready') !== 'market_ready')));
+        $group['missing_lines'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['missing_lines'] ?? 0)), $primaryFits));
+        $group['total_missing_qty'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['total_missing_qty'] ?? 0)), $primaryFits));
+        $group['restock_gap_isk'] = array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['restock_gap_isk'] ?? 0.0)), $primaryFits));
+        $group['coverage_percent'] = count($primaryFits) > 0 ? array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['coverage_percent'] ?? 0.0)), $primaryFits)) / count($primaryFits) : 0.0;
+        $group['complete_fits_available'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['complete_fits_available'] ?? 0)), $primaryFits));
+        $group['target_fit_count'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['recommended_target_fit_count'] ?? 0)), $primaryFits));
+        $group['fit_gap_count'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['gap_to_target_fit_count'] ?? 0)), $primaryFits));
+        $group['loss_pressure_fit_count'] = count(array_filter($primaryFits, static fn (array $fit): bool => !in_array((string) (($fit['supply']['resupply_pressure_state'] ?? 'stable')), ['stable', 'elevated'], true)));
+        $group['pressure_fit_count'] = count(array_filter($primaryFits, static fn (array $fit): bool => (($fit['supply']['resupply_pressure_state'] ?? 'stable') !== 'stable')));
+        $group['trending_down_fit_count'] = count(array_filter($primaryFits, static fn (array $fit): bool => (($fit['supply']['readiness_trend_direction'] ?? 'unknown') === 'down')));
+        $group['support_fit_count'] = count($supportFits);
+        $group['reference_fit_count'] = count($referenceFits);
+        $group['support_pressure_count'] = count(array_filter($supportFits, static fn (array $fit): bool => (int) (($fit['supply']['total_missing_qty'] ?? 0)) > 0));
 
         $readinessSeverity = 0;
         $pressureSeverity = 0;
@@ -19009,7 +19438,7 @@ function doctrine_operational_snapshot_build(bool $persistSnapshots = false, str
         $group['pressure_state'] = 'stable';
         $group['pressure_label'] = 'Stable';
 
-        foreach ($groupFits as $fit) {
+        foreach ($primaryFits as $fit) {
             $supply = (array) ($fit['supply'] ?? []);
             $fitReadiness = doctrine_readiness_state(
                 ['complete_fits_available' => (int) ($supply['complete_fits_available'] ?? 0)],
@@ -19041,13 +19470,25 @@ function doctrine_operational_snapshot_build(bool $persistSnapshots = false, str
         $group['combined_status_label'] = (string) ($group['status_label'] ?? 'Market ready') . ' · ' . (string) ($group['pressure_label'] ?? 'Stable');
         $group['readiness_trend'] = $group['trending_down_fit_count'] > 0
             ? 'Trending down'
-            : (count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['readiness_trend_direction'] ?? 'unknown') === 'up'))) > 0 ? 'Trending up' : 'Stable');
+            : (count(array_filter($primaryFits, static fn (array $fit): bool => (($fit['supply']['readiness_trend_direction'] ?? 'unknown') === 'up'))) > 0 ? 'Trending up' : 'Stable');
     }
     unset($group);
 
     usort($groups, static fn (array $a, array $b): int => ((int) ($b['fit_gap_count'] ?? 0) <=> (int) ($a['fit_gap_count'] ?? 0)) ?: strcasecmp((string) ($a['group_name'] ?? ''), (string) ($b['group_name'] ?? '')));
     usort($topMissing, static fn (array $a, array $b): int => ((int) ($b['priority_score'] ?? 0) <=> (int) ($a['priority_score'] ?? 0)) ?: ((int) ($b['missing_qty'] ?? 0) <=> (int) ($a['missing_qty'] ?? 0)));
-    $globalLayer = doctrine_global_item_layer($fitsById, array_merge(...array_values($itemsByFitId ?: [[]])), $depletionByType);
+    foreach ($ungroupedFits as &$ungroupedFit) {
+        $ungroupedFit['group_names'] = doctrine_parse_group_names_csv($ungroupedFit['group_names_csv'] ?? null);
+        $ungroupedFit['memberships'] = doctrine_membership_rows($ungroupedFit);
+    }
+    unset($ungroupedFit);
+    $operationalFitsById = array_filter($fitsById, static fn (array $fit): bool => !empty($fit['supply']['operationally_owned']));
+    $operationalItems = [];
+    foreach ($operationalFitsById as $fitId => $_fit) {
+        foreach ((array) ($itemsByFitId[(int) $fitId] ?? []) as $item) {
+            $operationalItems[] = $item;
+        }
+    }
+    $globalLayer = doctrine_global_item_layer($operationalFitsById, $operationalItems, $depletionByType);
 
     return [
         'groups' => $groups,
@@ -20451,13 +20892,14 @@ function doctrine_groups_overview_data(): array
     }
     unset($fit);
 
-    $notReadyFits = array_values(array_filter($fits, static fn (array $fit): bool => (($fit['supply']['readiness_state'] ?? 'market_ready') !== 'market_ready')));
-    $pressureFits = array_values(array_filter($fits, static fn (array $fit): bool => (($fit['supply']['resupply_pressure_state'] ?? 'stable') !== 'stable')));
+    $operationalFits = array_values(array_filter($fits, static fn (array $fit): bool => !empty($fit['supply']['operationally_owned'])));
+    $notReadyFits = array_values(array_filter($operationalFits, static fn (array $fit): bool => (($fit['supply']['readiness_state'] ?? 'market_ready') !== 'market_ready')));
+    $pressureFits = array_values(array_filter($operationalFits, static fn (array $fit): bool => (($fit['supply']['resupply_pressure_state'] ?? 'stable') !== 'stable')));
     usort($notReadyFits, static fn (array $a, array $b): int => ((float) (($b['supply']['driver_scores']['total'] ?? 0.0)) <=> (float) (($a['supply']['driver_scores']['total'] ?? 0.0))) ?: ((int) (($b['supply']['gap_to_target_fit_count'] ?? 0)) <=> (int) (($a['supply']['gap_to_target_fit_count'] ?? 0))));
     $totalMissingQty = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['total_missing_qty'] ?? 0)), $notReadyFits));
     $restockGap = array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['restock_gap_isk'] ?? 0.0)), $notReadyFits));
-    $completeFitsAvailable = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['complete_fits_available'] ?? 0)), $fits));
-    $targetFitsDesired = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['recommended_target_fit_count'] ?? 0)), $fits));
+    $completeFitsAvailable = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['complete_fits_available'] ?? 0)), $operationalFits));
+    $targetFitsDesired = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['recommended_target_fit_count'] ?? 0)), $operationalFits));
     $fitGap = max(0, $targetFitsDesired - $completeFitsAvailable);
     $watchFits = count($notReadyFits);
     $pressureFitCount = count($pressureFits);
@@ -20562,6 +21004,9 @@ function doctrine_fit_overview_data(array $query = []): array
 
     foreach ($fits as &$fit) {
         $fit['group_names'] = doctrine_parse_group_names_csv($fit['group_names_csv'] ?? null);
+        $fit['memberships'] = doctrine_membership_rows($fit);
+        $fit['primary_group_id'] = (int) (($fit['primary_group_id'] ?? 0) ?: doctrine_primary_group_id_from_memberships((array) ($fit['memberships'] ?? [])));
+        $fit['primary_group_name'] = (string) ((doctrine_primary_membership($fit)['group_name'] ?? ''));
         $fit['readiness_status'] = doctrine_fit_readiness_status($fit);
         $fit['parse_status_label'] = (($fit['parse_status'] ?? 'ready') === 'review') ? 'Review' : 'Ready';
     }
@@ -20577,6 +21022,7 @@ function doctrine_fit_overview_data(array $query = []): array
             'review' => count(array_filter($fits, static fn (array $fit): bool => (($fit['parse_status'] ?? 'ready') === 'review'))),
             'unresolved' => count(array_filter($fits, static fn (array $fit): bool => ((int) ($fit['unresolved_count'] ?? 0) > 0))),
             'conflicts' => count(array_filter($fits, static fn (array $fit): bool => (($fit['conflict_state'] ?? 'none') !== 'none'))),
+            'unowned' => count(array_filter($fits, static fn (array $fit): bool => (int) (($fit['primary_group_id'] ?? 0)) <= 0)),
         ],
     ];
 }
@@ -20612,6 +21058,9 @@ function doctrine_fit_detail_view_model(int $fitId): array
 
         $fit['group_ids'] = doctrine_parse_group_csv($fit['group_ids_csv'] ?? null);
         $fit['group_names'] = doctrine_parse_group_names_csv($fit['group_names_csv'] ?? null);
+        $fit['memberships'] = doctrine_membership_rows($fit);
+        $fit['primary_group_id'] = (int) (($fit['primary_group_id'] ?? 0) ?: doctrine_primary_group_id_from_memberships((array) ($fit['memberships'] ?? [])));
+        $fit['primary_group_name'] = (string) ((doctrine_primary_membership($fit)['group_name'] ?? ''));
         $fit['metadata'] = doctrine_parse_json_array($fit['metadata_json'] ?? null);
         $fit['parse_warnings'] = doctrine_parse_json_array($fit['parse_warnings_json'] ?? null);
         $fit['readiness_status'] = doctrine_fit_readiness_status($fit);
@@ -22511,11 +22960,15 @@ function buy_all_item_impact_map(array $fits, array $itemsByFitId, array $market
         }
 
         $supply = is_array($fit['supply'] ?? null) ? $fit['supply'] : [];
+        if (!($supply['operationally_owned'] ?? true)) {
+            continue;
+        }
         $targetReadyFits = max(0, (int) ($supply['doctrine_target_fleet_size'] ?? $supply['recommended_target_fit_count'] ?? 0));
         $fitReadyCapacity = max(0, (int) ($supply['fleet_ready'] ?? $supply['complete_fits_available'] ?? 0));
         $targetShortfall = max(0, (int) ($supply['blocked_fits'] ?? max(0, $targetReadyFits - $fitReadyCapacity)));
         $fitName = (string) ($fit['fit_name'] ?? ('Fit #' . $fitId));
-        $groupNames = array_values((array) ($fit['group_names'] ?? []));
+        $primaryGroupName = trim((string) ($supply['primary_group_name'] ?? $fit['primary_group_name'] ?? ''));
+        $groupNames = $primaryGroupName !== '' ? [$primaryGroupName] : [];
         $hullClass = doctrine_fit_hull_class($fit, $fitItems, $metadataByType);
         $activityModifier = buy_all_fit_activity_pressure_modifier($fit, $hullClass);
 
