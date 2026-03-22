@@ -378,6 +378,97 @@ function db_ensure_table_index(string $table, string $indexName, string $definit
     db()->exec(sprintf('ALTER TABLE %s ADD %s', db_validate_identifier($table), $definitionSql));
 }
 
+function db_killmail_payload_schema_ensure(): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    db()->exec("CREATE TABLE IF NOT EXISTS killmail_event_payloads (
+        sequence_id BIGINT UNSIGNED NOT NULL,
+        killmail_id BIGINT UNSIGNED NOT NULL,
+        killmail_hash VARCHAR(128) NOT NULL,
+        zkb_json LONGTEXT NOT NULL,
+        raw_killmail_json LONGTEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (sequence_id),
+        UNIQUE KEY uniq_killmail_event_payloads_killmail (killmail_id, killmail_hash),
+        CONSTRAINT fk_killmail_event_payloads_sequence
+            FOREIGN KEY (sequence_id) REFERENCES killmail_events (sequence_id)
+            ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    if (!db_table_has_index('killmail_event_payloads', 'uniq_killmail_event_payloads_killmail')) {
+        db()->exec('ALTER TABLE killmail_event_payloads ADD UNIQUE KEY uniq_killmail_event_payloads_killmail (killmail_id, killmail_hash)');
+    }
+
+    if (db_table_has_column('killmail_events', 'zkb_json') && db_table_has_column('killmail_events', 'raw_killmail_json')) {
+        db_execute(
+            "INSERT INTO killmail_event_payloads (sequence_id, killmail_id, killmail_hash, zkb_json, raw_killmail_json)
+             SELECT
+                e.sequence_id,
+                e.killmail_id,
+                e.killmail_hash,
+                COALESCE(e.zkb_json, '{}'),
+                COALESCE(e.raw_killmail_json, '{}')
+             FROM killmail_events e
+             LEFT JOIN killmail_event_payloads p ON p.sequence_id = e.sequence_id
+             WHERE p.sequence_id IS NULL
+               AND (e.zkb_json IS NOT NULL OR e.raw_killmail_json IS NOT NULL)"
+        );
+    }
+
+    $ensured = true;
+}
+
+function db_killmail_event_payload_upsert(array $event): bool
+{
+    db_killmail_payload_schema_ensure();
+
+    return db_execute(
+        'INSERT INTO killmail_event_payloads (
+            sequence_id,
+            killmail_id,
+            killmail_hash,
+            zkb_json,
+            raw_killmail_json
+        ) VALUES (?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+            killmail_id = VALUES(killmail_id),
+            killmail_hash = VALUES(killmail_hash),
+            zkb_json = VALUES(zkb_json),
+            raw_killmail_json = VALUES(raw_killmail_json),
+            updated_at = CURRENT_TIMESTAMP',
+        [
+            (int) ($event['sequence_id'] ?? 0),
+            (int) ($event['killmail_id'] ?? 0),
+            (string) ($event['killmail_hash'] ?? ''),
+            (string) ($event['zkb_json'] ?? '{}'),
+            (string) ($event['raw_killmail_json'] ?? '{}'),
+        ]
+    );
+}
+
+function db_killmail_event_payload_by_sequence(int $sequenceId): ?array
+{
+    db_killmail_payload_schema_ensure();
+
+    if ($sequenceId <= 0) {
+        return null;
+    }
+
+    return db_select_one(
+        'SELECT sequence_id, killmail_id, killmail_hash, zkb_json, raw_killmail_json, created_at, updated_at
+         FROM killmail_event_payloads
+         WHERE sequence_id = ?
+         LIMIT 1',
+        [$sequenceId]
+    );
+}
+
 function db_setting_int(string $settingKey, int $default, int $min, int $max): int
 {
     $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', [$settingKey]);
@@ -8059,55 +8150,56 @@ function db_entity_metadata_cache_mark_pending(string $entityType, array $entity
 
 function db_killmail_event_upsert(array $event): bool
 {
-    return db_execute(
-        'INSERT INTO killmail_events (
-            sequence_id,
-            killmail_id,
-            killmail_hash,
-            uploaded_at,
-            sequence_updated,
-            killmail_time,
-            solar_system_id,
-            region_id,
-            victim_character_id,
-            victim_corporation_id,
-            victim_alliance_id,
-            victim_ship_type_id,
-            zkb_json,
-            raw_killmail_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE
-            killmail_id = VALUES(killmail_id),
-            killmail_hash = VALUES(killmail_hash),
-            uploaded_at = VALUES(uploaded_at),
-            sequence_updated = VALUES(sequence_updated),
-            killmail_time = VALUES(killmail_time),
-            solar_system_id = VALUES(solar_system_id),
-            region_id = VALUES(region_id),
-            victim_character_id = VALUES(victim_character_id),
-            victim_corporation_id = VALUES(victim_corporation_id),
-            victim_alliance_id = VALUES(victim_alliance_id),
-            victim_ship_type_id = VALUES(victim_ship_type_id),
-            zkb_json = VALUES(zkb_json),
-            raw_killmail_json = VALUES(raw_killmail_json),
-            updated_at = CURRENT_TIMESTAMP',
-        [
-            (int) ($event['sequence_id'] ?? 0),
-            (int) ($event['killmail_id'] ?? 0),
-            (string) ($event['killmail_hash'] ?? ''),
-            $event['uploaded_at'] ?? null,
-            isset($event['sequence_updated']) ? (int) $event['sequence_updated'] : null,
-            $event['killmail_time'] ?? null,
-            isset($event['solar_system_id']) ? (int) $event['solar_system_id'] : null,
-            isset($event['region_id']) ? (int) $event['region_id'] : null,
-            isset($event['victim_character_id']) ? (int) $event['victim_character_id'] : null,
-            isset($event['victim_corporation_id']) ? (int) $event['victim_corporation_id'] : null,
-            isset($event['victim_alliance_id']) ? (int) $event['victim_alliance_id'] : null,
-            isset($event['victim_ship_type_id']) ? (int) $event['victim_ship_type_id'] : null,
-            (string) ($event['zkb_json'] ?? '{}'),
-            (string) ($event['raw_killmail_json'] ?? '{}'),
-        ]
-    );
+    db_killmail_payload_schema_ensure();
+
+    return db_transaction(static function () use ($event): bool {
+        $eventWritten = db_execute(
+            'INSERT INTO killmail_events (
+                sequence_id,
+                killmail_id,
+                killmail_hash,
+                uploaded_at,
+                sequence_updated,
+                killmail_time,
+                solar_system_id,
+                region_id,
+                victim_character_id,
+                victim_corporation_id,
+                victim_alliance_id,
+                victim_ship_type_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+                killmail_id = VALUES(killmail_id),
+                killmail_hash = VALUES(killmail_hash),
+                uploaded_at = VALUES(uploaded_at),
+                sequence_updated = VALUES(sequence_updated),
+                killmail_time = VALUES(killmail_time),
+                solar_system_id = VALUES(solar_system_id),
+                region_id = VALUES(region_id),
+                victim_character_id = VALUES(victim_character_id),
+                victim_corporation_id = VALUES(victim_corporation_id),
+                victim_alliance_id = VALUES(victim_alliance_id),
+                victim_ship_type_id = VALUES(victim_ship_type_id),
+                updated_at = CURRENT_TIMESTAMP',
+            [
+                (int) ($event['sequence_id'] ?? 0),
+                (int) ($event['killmail_id'] ?? 0),
+                (string) ($event['killmail_hash'] ?? ''),
+                $event['uploaded_at'] ?? null,
+                isset($event['sequence_updated']) ? (int) $event['sequence_updated'] : null,
+                $event['killmail_time'] ?? null,
+                isset($event['solar_system_id']) ? (int) $event['solar_system_id'] : null,
+                isset($event['region_id']) ? (int) $event['region_id'] : null,
+                isset($event['victim_character_id']) ? (int) $event['victim_character_id'] : null,
+                isset($event['victim_corporation_id']) ? (int) $event['victim_corporation_id'] : null,
+                isset($event['victim_alliance_id']) ? (int) $event['victim_alliance_id'] : null,
+                isset($event['victim_ship_type_id']) ? (int) $event['victim_ship_type_id'] : null,
+            ]
+        );
+        $payloadWritten = db_killmail_event_payload_upsert($event);
+
+        return $eventWritten && $payloadWritten;
+    });
 }
 
 function db_killmail_event_exists(int $sequenceId, int $killmailId, string $killmailHash): bool
@@ -8416,6 +8508,8 @@ function db_killmail_overview_filter_options(): array
 
 function db_killmail_detail(int $sequenceId): ?array
 {
+    db_killmail_payload_schema_ensure();
+
     if ($sequenceId <= 0) {
         return null;
     }
@@ -8436,8 +8530,8 @@ function db_killmail_detail(int $sequenceId): ?array
             e.victim_corporation_id,
             e.victim_alliance_id,
             e.victim_ship_type_id,
-            e.zkb_json,
-            e.raw_killmail_json,
+            COALESCE(p.zkb_json, '{}') AS zkb_json,
+            COALESCE(p.raw_killmail_json, '{}') AS raw_killmail_json,
             e.created_at,
             e.updated_at,
             COALESCE(NULLIF(victim_tc.label, ''), '') AS victim_corporation_label,
@@ -8449,6 +8543,7 @@ function db_killmail_detail(int $sequenceId): ?array
             CASE WHEN victim_tc.corporation_id IS NULL THEN 0 ELSE 1 END AS matches_victim_corporation,
             CASE WHEN {$matchSql} THEN 1 ELSE 0 END AS matched_tracked
          FROM killmail_events e
+         LEFT JOIN killmail_event_payloads p ON p.sequence_id = e.sequence_id
          LEFT JOIN ref_item_types ship ON ship.type_id = e.victim_ship_type_id
          LEFT JOIN ref_systems system_ref ON system_ref.system_id = e.solar_system_id
          LEFT JOIN ref_regions region_ref ON region_ref.region_id = e.region_id
@@ -8520,6 +8615,8 @@ function db_killmail_items_by_sequence(int $sequenceId): array
 
 function db_killmail_overview_page(array $filters = []): array
 {
+    db_killmail_payload_schema_ensure();
+
     $page = max(1, (int) ($filters['page'] ?? 1));
     $pageSize = max(1, min(100, (int) ($filters['page_size'] ?? 25)));
     $offset = ($page - 1) * $pageSize;
@@ -8533,6 +8630,7 @@ function db_killmail_overview_page(array $filters = []): array
     $fromSql = " FROM killmail_events e
         {$trackedJoinType} {$trackedMatchesSql} tracked
           ON tracked.sequence_id = e.sequence_id
+        LEFT JOIN killmail_event_payloads p ON p.sequence_id = e.sequence_id
         LEFT JOIN ref_item_types ship ON ship.type_id = e.victim_ship_type_id
         LEFT JOIN ref_systems system_ref ON system_ref.system_id = e.solar_system_id
         LEFT JOIN ref_regions region_ref ON region_ref.region_id = e.region_id
@@ -8593,7 +8691,7 @@ function db_killmail_overview_page(array $filters = []): array
             e.killmail_time,
             e.uploaded_at,
             e.created_at,
-            e.zkb_json,
+            COALESCE(p.zkb_json, '{}') AS zkb_json,
             e.victim_corporation_id,
             e.victim_alliance_id,
             e.victim_ship_type_id,
