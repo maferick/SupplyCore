@@ -3450,6 +3450,8 @@ function orchestrator_runtime_config_export(): array
             'lease_ttl_seconds' => scheduler_daemon_lease_ttl_seconds(),
             'watchdog_grace_seconds' => scheduler_daemon_watchdog_grace_seconds(),
             'default_timeout_seconds' => scheduler_global_timeout_default_seconds(),
+            'php_memory_limit' => scheduler_php_memory_limit(),
+            'memory_abort_threshold_bytes' => scheduler_memory_abort_threshold_bytes(),
             'daemon_poll_interval_seconds' => scheduler_daemon_poll_interval_seconds(),
             'daemon_running_poll_interval_seconds' => scheduler_daemon_running_poll_interval_seconds(),
             'daemon_max_runtime_seconds' => scheduler_daemon_max_runtime_seconds(),
@@ -3490,24 +3492,24 @@ function scheduler_tuning_mode_options(): array
 function scheduler_registry_definitions(): array
 {
     return [
-        'market_hub_current_sync' => ['label' => 'Market Hub Current', 'default_interval_minutes' => 8, 'default_offset_minutes' => 0, 'priority' => 'high', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 8],
-        'deal_alerts_sync' => ['label' => 'Deal Alerts', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'latency_sensitive' => true, 'user_facing' => true],
-        'alliance_current_sync' => ['label' => 'Alliance Current', 'default_interval_minutes' => 4, 'default_offset_minutes' => 2, 'priority' => 'medium', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
-        'killmail_r2z2_sync' => ['label' => 'Killmail R2Z2 Stream', 'default_interval_minutes' => 3, 'default_offset_minutes' => 3, 'priority' => 'highest', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 3],
-        'configured_structure_destination_id_for_esi_sync' => ['label' => 'Configured Structure Destination for ESI', 'default_interval_minutes' => 30, 'default_offset_minutes' => 4, 'priority' => 'normal', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
-        'current_state_refresh_sync' => ['label' => 'Current-State Refresh', 'default_interval_minutes' => 12, 'default_offset_minutes' => 6, 'priority' => 'medium', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
-        'doctrine_intelligence_sync' => ['label' => 'Doctrine Intelligence', 'default_interval_minutes' => 15, 'default_offset_minutes' => 8, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900],
-        'market_comparison_summary_sync' => ['label' => 'Market Comparison Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 9, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'high', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900],
-        'loss_demand_summary_sync' => ['label' => 'Loss Demand Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 10, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'high', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900],
-        'dashboard_summary_sync' => ['label' => 'Dashboard Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 11, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'highest', 'min_backfill_gap_seconds' => 240, 'max_early_start_seconds' => 900],
-        'rebuild_ai_briefings' => ['label' => 'Rebuild AI Briefings', 'default_interval_minutes' => 20, 'default_offset_minutes' => 12, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
-        'activity_priority_summary_sync' => ['label' => 'Activity Priority Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 13, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
-        'market_hub_local_history_sync' => ['label' => 'Market Hub Local History', 'default_interval_minutes' => 20, 'default_offset_minutes' => 14, 'priority' => 'normal', 'timeout_seconds' => 1800, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 900, 'max_early_start_seconds' => 900],
-        'analytics_bucket_1h_sync' => ['label' => 'Analytics Buckets (1h)', 'default_interval_minutes' => 15, 'default_offset_minutes' => 15, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 600, 'max_early_start_seconds' => 900],
-        'analytics_bucket_1d_sync' => ['label' => 'Analytics Buckets (1d)', 'default_interval_minutes' => 60, 'default_offset_minutes' => 16, 'priority' => 'normal', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
-        'alliance_historical_sync' => ['label' => 'Alliance Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 5, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
-        'market_hub_historical_sync' => ['label' => 'Market Hub Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
-        'forecasting_ai_sync' => ['label' => 'Forecasting AI', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'market_hub_current_sync' => ['label' => 'Market Hub Current', 'default_interval_minutes' => 8, 'default_offset_minutes' => 0, 'priority' => 'high', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 8, 'workload_class' => 'lightweight'],
+        'deal_alerts_sync' => ['label' => 'Deal Alerts', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'latency_sensitive' => true, 'user_facing' => true, 'workload_class' => 'lightweight'],
+        'alliance_current_sync' => ['label' => 'Alliance Current', 'default_interval_minutes' => 4, 'default_offset_minutes' => 2, 'priority' => 'medium', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
+        'killmail_r2z2_sync' => ['label' => 'Killmail R2Z2 Stream', 'default_interval_minutes' => 3, 'default_offset_minutes' => 3, 'priority' => 'highest', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 3, 'workload_class' => 'heavy'],
+        'configured_structure_destination_id_for_esi_sync' => ['label' => 'Configured Structure Destination for ESI', 'default_interval_minutes' => 30, 'default_offset_minutes' => 4, 'priority' => 'normal', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'lightweight'],
+        'current_state_refresh_sync' => ['label' => 'Current-State Refresh', 'default_interval_minutes' => 12, 'default_offset_minutes' => 6, 'priority' => 'medium', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
+        'doctrine_intelligence_sync' => ['label' => 'Doctrine Intelligence', 'default_interval_minutes' => 15, 'default_offset_minutes' => 8, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
+        'market_comparison_summary_sync' => ['label' => 'Market Comparison Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 9, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'high', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900, 'workload_class' => 'heavy'],
+        'loss_demand_summary_sync' => ['label' => 'Loss Demand Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 10, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'high', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
+        'dashboard_summary_sync' => ['label' => 'Dashboard Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 11, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'highest', 'min_backfill_gap_seconds' => 240, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
+        'rebuild_ai_briefings' => ['label' => 'Rebuild AI Briefings', 'default_interval_minutes' => 20, 'default_offset_minutes' => 12, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
+        'activity_priority_summary_sync' => ['label' => 'Activity Priority Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 13, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'heavy'],
+        'market_hub_local_history_sync' => ['label' => 'Market Hub Local History', 'default_interval_minutes' => 20, 'default_offset_minutes' => 14, 'priority' => 'normal', 'timeout_seconds' => 1800, 'concurrency_policy' => 'background', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 900, 'max_early_start_seconds' => 900, 'workload_class' => 'heavy'],
+        'analytics_bucket_1h_sync' => ['label' => 'Analytics Buckets (1h)', 'default_interval_minutes' => 15, 'default_offset_minutes' => 15, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 600, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
+        'analytics_bucket_1d_sync' => ['label' => 'Analytics Buckets (1d)', 'default_interval_minutes' => 60, 'default_offset_minutes' => 16, 'priority' => 'normal', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'lightweight'],
+        'alliance_historical_sync' => ['label' => 'Alliance Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 5, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
+        'market_hub_historical_sync' => ['label' => 'Market Hub Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
+        'forecasting_ai_sync' => ['label' => 'Forecasting AI', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
     ];
 }
 
@@ -3522,6 +3524,7 @@ function data_sync_schedule_job_definitions(): array
             'offset_minutes_key' => $jobKey . '_offset_minutes',
             'priority_key' => $jobKey . '_priority',
             'timeout_key' => $jobKey . '_timeout_seconds',
+            'execution_mode_key' => $jobKey . '_execution_mode',
             'mode_key' => $jobKey . '_tuning_mode',
         ];
     }
@@ -3885,6 +3888,83 @@ function scheduler_resource_usage_snapshot(): array
         'memory_usage' => function_exists('memory_get_usage') ? memory_get_usage(true) : null,
         'memory_peak_usage' => function_exists('memory_get_peak_usage') ? memory_get_peak_usage(true) : null,
         'wall_time' => microtime(true),
+    ];
+}
+
+function scheduler_php_memory_limit(): string
+{
+    return '512M';
+}
+
+function scheduler_memory_abort_threshold_bytes(): int
+{
+    return 400 * 1024 * 1024;
+}
+
+function scheduler_enforce_php_runtime_limits(): void
+{
+    if (function_exists('ini_set')) {
+        @ini_set('memory_limit', scheduler_php_memory_limit());
+    }
+
+    if (function_exists('gc_enable')) {
+        @gc_enable();
+    }
+}
+
+function scheduler_runtime_guard(float $startedAtUnix, int $timeoutSeconds, string $context = ''): void
+{
+    $safeTimeout = max(1, $timeoutSeconds);
+    $memoryUsage = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+    $memoryPeak = function_exists('memory_get_peak_usage') ? (int) memory_get_peak_usage(true) : $memoryUsage;
+    $threshold = scheduler_memory_abort_threshold_bytes();
+    $elapsed = max(0.0, microtime(true) - $startedAtUnix);
+
+    if ($memoryUsage > $threshold || $memoryPeak > $threshold) {
+        throw new RuntimeException(sprintf(
+            'Job exceeded scheduler memory guard%s (usage=%d bytes, peak=%d bytes, threshold=%d bytes).',
+            $context !== '' ? ' during ' . $context : '',
+            $memoryUsage,
+            $memoryPeak,
+            $threshold
+        ));
+    }
+
+    if ($elapsed > $safeTimeout) {
+        throw new RuntimeException(sprintf(
+            'Job exceeded scheduler timeout guard%s (elapsed=%.2fs, timeout=%ds).',
+            $context !== '' ? ' during ' . $context : '',
+            $elapsed,
+            $safeTimeout
+        ));
+    }
+}
+
+function scheduler_job_execution_mode(array $job, ?array $definition = null): string
+{
+    $resolvedDefinition = is_array($definition) ? $definition : (scheduler_registry_definitions()[(string) ($job['job_key'] ?? '')] ?? []);
+    $configured = strtolower(trim((string) ($job['execution_mode'] ?? $resolvedDefinition['execution_mode'] ?? 'php')));
+
+    return $configured === 'python' ? 'python' : 'php';
+}
+
+function scheduler_job_workload_profile(string $jobKey): array
+{
+    $definition = scheduler_registry_definitions()[$jobKey] ?? [];
+    $class = (string) ($definition['workload_class'] ?? 'lightweight');
+
+    $reason = match ($jobKey) {
+        'market_comparison_summary_sync' => 'heavy market aggregation over large current-order projections; prefer SQL plus Python batch execution',
+        'current_state_refresh_sync' => 'heavy snapshot generation that assembles multiple materialized summary layers',
+        'market_hub_local_history_sync', 'alliance_historical_sync', 'market_hub_historical_sync' => 'heavy snapshot/history rebuild over large market windows; prefer batched execution outside PHP request memory',
+        'killmail_r2z2_sync', 'activity_priority_summary_sync' => 'heavy killmail ingestion and derived activity recomputation with large append-only tables',
+        default => 'lightweight control-plane or summary job that is safe to keep in PHP',
+    };
+
+    return [
+        'workload_class' => $class === 'heavy' ? 'heavy' : 'lightweight',
+        'recommended_execution_mode' => $class === 'heavy' ? 'python' : 'php',
+        'reason' => $reason,
     ];
 }
 
@@ -5753,11 +5833,18 @@ function market_comparison_refresh_summary(string $reason = 'manual'): array
 {
     supplycore_materialized_snapshot_mark_updating(market_comparison_snapshot_key(), $reason);
     $snapshot = market_comparison_outcomes_build();
-
-    return supplycore_materialized_snapshot_store(market_comparison_snapshot_key(), $snapshot, [
+    $rowCount = count((array) ($snapshot['rows'] ?? []));
+    $stored = supplycore_materialized_snapshot_store(market_comparison_snapshot_key(), $snapshot, [
         'reason' => $reason,
-        'row_count' => count((array) ($snapshot['rows'] ?? [])),
+        'row_count' => $rowCount,
     ]);
+
+    unset($snapshot);
+    if (function_exists('gc_collect_cycles')) {
+        gc_collect_cycles();
+    }
+
+    return $stored;
 }
 
 function market_comparison_refresh_summary_job_result(string $reason = 'manual'): array
@@ -10112,6 +10199,23 @@ function scheduler_job_runner_script_path(): string
     return dirname(__DIR__) . '/bin/scheduler_job_runner.php';
 }
 
+function scheduler_python_job_runner_script_path(): string
+{
+    return dirname(__DIR__) . '/bin/python_job_runner.py';
+}
+
+function scheduler_python_binary(): string
+{
+    foreach (['SUPPLYCORE_PYTHON_BINARY', 'ORCHESTRATOR_PYTHON_BINARY', 'PYTHON_BINARY'] as $envKey) {
+        $candidate = trim((string) getenv($envKey));
+        if ($candidate !== '') {
+            return $candidate;
+        }
+    }
+
+    return 'python3';
+}
+
 function scheduler_cron_log_path(): string
 {
     return dirname(__DIR__) . '/storage/logs/cron.log';
@@ -10125,11 +10229,24 @@ function scheduler_job_runs_in_background(string $jobKey): bool
     return ($definition['execution'] ?? 'inline') === 'background';
 }
 
+function scheduler_job_runtime_type(array $job, ?array $definition = null): string
+{
+    $executionMode = scheduler_job_execution_mode($job, $definition);
+    if ($executionMode === 'python') {
+        return 'python_worker';
+    }
+
+    return scheduler_job_type((string) ($job['job_key'] ?? ''));
+}
+
 function scheduler_dispatch_background_job(array $job): array
 {
     $scheduleId = (int) ($job['id'] ?? 0);
     $jobKey = trim((string) ($job['job_key'] ?? ''));
-    $jobType = scheduler_job_type($jobKey);
+    $definitions = scheduler_job_definitions();
+    $definition = $definitions[$jobKey] ?? null;
+    $executionMode = scheduler_job_execution_mode($job, $definition);
+    $jobType = scheduler_job_runtime_type($job, $definition);
     $scheduledFor = (string) ($job['next_due_at'] ?? $job['next_run_at'] ?? '');
     $dispatchStartedAt = microtime(true);
     $startedAt = gmdate(DATE_ATOM);
@@ -10138,19 +10255,23 @@ function scheduler_dispatch_background_job(array $job): array
         throw new RuntimeException('Background scheduler dispatch requires a valid claimed job.');
     }
 
-    $definitions = scheduler_job_definitions();
-    $timeout = scheduler_resolve_job_timeout($jobKey, $job, $definitions[$jobKey] ?? null);
-
-    $phpBinary = PHP_BINARY !== '' ? PHP_BINARY : 'php';
-    $scriptPath = scheduler_job_runner_script_path();
+    $timeout = scheduler_resolve_job_timeout($jobKey, $job, $definition);
     $logPath = scheduler_cron_log_path();
-    $command = sprintf(
-        '%s %s --schedule-id=%d >> %s 2>&1 &',
-        escapeshellarg($phpBinary),
-        escapeshellarg($scriptPath),
-        $scheduleId,
-        escapeshellarg($logPath)
-    );
+    $command = $executionMode === 'python'
+        ? sprintf(
+            '%s %s --schedule-id=%d >> %s 2>&1 &',
+            escapeshellarg(scheduler_python_binary()),
+            escapeshellarg(scheduler_python_job_runner_script_path()),
+            $scheduleId,
+            escapeshellarg($logPath)
+        )
+        : sprintf(
+            '%s %s --schedule-id=%d >> %s 2>&1 &',
+            escapeshellarg(PHP_BINARY !== '' ? PHP_BINARY : 'php'),
+            escapeshellarg(scheduler_job_runner_script_path()),
+            $scheduleId,
+            escapeshellarg($logPath)
+        );
 
     exec($command, $output, $exitCode);
     $dispatchDurationMs = (int) round((microtime(true) - $dispatchStartedAt) * 1000);
@@ -10173,13 +10294,16 @@ function scheduler_dispatch_background_job(array $job): array
         'warnings' => [],
         'meta' => [
             'execution' => 'background',
+            'execution_mode' => $executionMode,
             'dispatch_duration_ms' => $dispatchDurationMs,
             'resolved_timeout_seconds' => (int) ($timeout['resolved_timeout_seconds'] ?? 0),
             'enforced_timeout_seconds' => (int) ($timeout['enforced_timeout_seconds'] ?? 0),
             'timeout_source' => (string) ($timeout['timeout_source'] ?? 'unknown'),
-            'outcome_reason' => 'Job was dispatched to a background PHP worker so other due jobs can continue immediately.',
+            'outcome_reason' => $executionMode === 'python'
+                ? 'Job was dispatched to a background Python worker for controlled heavy-workload execution.'
+                : 'Job was dispatched to a background PHP worker so other due jobs can continue immediately.',
         ],
-        'summary' => 'Dispatched to a background worker.',
+        'summary' => $executionMode === 'python' ? 'Dispatched to a background Python worker.' : 'Dispatched to a background PHP worker.',
     ];
 }
 
@@ -10212,6 +10336,7 @@ function scheduler_background_dispatch_failure_result(array $job, Throwable $exc
         'warnings' => [],
         'meta' => [
             'execution' => 'background',
+            'execution_mode' => scheduler_job_execution_mode($job),
         ],
         'summary' => $message,
     ];
@@ -11329,7 +11454,8 @@ function scheduler_run_job(array $job): array
     $definitions = scheduler_job_definitions();
     $definition = $definitions[$jobKey] ?? null;
     $datasetKey = scheduler_job_dataset_key($jobKey !== '' ? $jobKey : 'unknown');
-    $jobType = scheduler_job_type($jobKey);
+    $executionMode = scheduler_job_execution_mode($job, $definition);
+    $jobType = scheduler_job_runtime_type($job, $definition);
     $scheduledFor = (string) ($job['next_due_at'] ?? $job['next_run_at'] ?? '');
     $startedAtUnix = microtime(true);
     $startedAtIso = gmdate(DATE_ATOM, (int) $startedAtUnix);
@@ -11399,9 +11525,11 @@ function scheduler_run_job(array $job): array
     $startedAt = microtime(true);
 
     try {
+        scheduler_enforce_php_runtime_limits();
         if (function_exists('set_time_limit')) {
             @set_time_limit($timeoutSeconds + 5);
         }
+        scheduler_runtime_guard($startedAtUnix, $timeoutSeconds, 'startup');
 
         if (is_array($changeDecision) && !$changeDecision['run']) {
             $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
@@ -11512,12 +11640,15 @@ function scheduler_run_job(array $job): array
         }
 
         db_scheduler_job_event_insert($jobKey, 'started', [
+            'execution_mode' => $executionMode,
             'queue_wait_seconds' => round($queueWaitSeconds, 2),
             'lock_wait_seconds' => round($lockWaitSeconds, 2),
             'overlap_count' => $overlapCount,
             'projected_cpu_percent' => $projectedCpuPercent,
             'projected_memory_bytes' => $projectedMemoryBytes,
             'pressure_state' => $pressureState,
+            'memory_usage_bytes' => memory_get_usage(true),
+            'memory_peak_bytes' => memory_get_peak_usage(true),
             'resolved_timeout_seconds' => $timeoutResolution['resolved_timeout_seconds'] ?? null,
             'enforced_timeout_seconds' => $timeoutResolution['enforced_timeout_seconds'] ?? null,
             'timeout_source' => $timeoutResolution['timeout_source'] ?? null,
@@ -11529,6 +11660,7 @@ function scheduler_run_job(array $job): array
         $handler = $definition['handler'];
         $syncResult = $handler();
         $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+        scheduler_runtime_guard($startedAtUnix, $timeoutSeconds, 'handler completion');
         if ($durationMs > ($timeoutSeconds * 1000)) {
             throw new RuntimeException('Job exceeded timeout of ' . $timeoutSeconds . ' seconds.');
         }
@@ -11651,6 +11783,7 @@ function scheduler_run_job(array $job): array
                     'cpu_system_seconds' => $resourceMetric['cpu_system_seconds'] ?? null,
                     'memory_peak_bytes' => $resourceMetric['memory_peak_bytes'] ?? null,
                     'memory_peak_delta_bytes' => $resourceMetric['memory_peak_delta_bytes'] ?? null,
+                    'memory_usage_bytes' => memory_get_usage(true),
                     'queue_wait_seconds' => $resourceMetric['queue_wait_seconds'] ?? null,
                     'lock_wait_seconds' => $resourceMetric['lock_wait_seconds'] ?? null,
                     'overlap_count' => $resourceMetric['overlap_count'] ?? null,
@@ -11662,6 +11795,7 @@ function scheduler_run_job(array $job): array
                     'timeout_source' => $timeoutResolution['timeout_source'] ?? null,
                 ],
                 'scheduler_result_status' => $status,
+                'execution_mode' => $executionMode,
                 'change_aware' => !empty($changeDecision['change_aware']),
                 'trigger' => $changeDecision['trigger'] ?? null,
                 'dependencies' => $dependencyMetadata,
@@ -11762,6 +11896,7 @@ function scheduler_run_job(array $job): array
                     'cpu_percent' => $resourceMetric['cpu_percent'] ?? null,
                     'memory_peak_bytes' => $resourceMetric['memory_peak_bytes'] ?? null,
                     'memory_peak_delta_bytes' => $resourceMetric['memory_peak_delta_bytes'] ?? null,
+                    'memory_usage_bytes' => memory_get_usage(true),
                     'queue_wait_seconds' => $resourceMetric['queue_wait_seconds'] ?? null,
                     'lock_wait_seconds' => $resourceMetric['lock_wait_seconds'] ?? null,
                     'overlap_count' => $resourceMetric['overlap_count'] ?? null,
@@ -11772,6 +11907,7 @@ function scheduler_run_job(array $job): array
                     'enforced_timeout_seconds' => $timeoutResolution['enforced_timeout_seconds'] ?? null,
                     'timeout_source' => $timeoutResolution['timeout_source'] ?? null,
                 ],
+                'execution_mode' => $executionMode,
             ],
             'summary' => $message,
         ];
@@ -12074,7 +12210,7 @@ function cron_tick_run(?callable $logger = null): array
         }
 
         try {
-            $result = ($forceBackground || scheduler_job_runs_in_background($jobKey))
+            $result = ($forceBackground || scheduler_job_runs_in_background($jobKey) || scheduler_job_execution_mode($job) === 'python')
                 ? scheduler_dispatch_background_job($job)
                 : scheduler_run_job($job);
             if (($result['status'] ?? '') === 'dispatched') {
@@ -13872,8 +14008,11 @@ function sync_market_history_from_snapshots(
     $safeWindowDays = market_hub_local_history_window_days_normalize($windowDays);
     $windowStartObservedAt = market_hub_local_history_window_start_observed_at($safeWindowDays);
     $runId = db_sync_run_start($datasetKey, $syncMode, sync_watermark($datasetKey));
+    $runtimeStartedAt = microtime(true);
+    $runtimeTimeoutSeconds = max(30, (int) ($context['timeout_seconds'] ?? (scheduler_registry_definitions()['market_hub_local_history_sync']['timeout_seconds'] ?? 1800)));
 
     try {
+        scheduler_runtime_guard($runtimeStartedAt, $runtimeTimeoutSeconds, $syncLabel . ' bootstrap');
         if ($sourceId <= 0) {
             $sourceName = (string) ($context['source_name'] ?? $context['reference_market_hub'] ?? $context['operational_market'] ?? ('Source #' . $sourceId));
             $warning = $syncLabel . ' skipped: could not resolve a valid local source id for ' . $sourceName . '.';
@@ -13908,6 +14047,7 @@ function sync_market_history_from_snapshots(
         $snapshotMetrics = is_array($snapshotMetricResult['rows'] ?? null) ? $snapshotMetricResult['rows'] : [];
         $summaryRowsWritten = max(0, (int) ($snapshotMetricResult['summary_rows_written'] ?? 0));
         $result['rows_seen'] = count($snapshotMetrics);
+        scheduler_runtime_guard($runtimeStartedAt, $runtimeTimeoutSeconds, $syncLabel . ' metrics load');
 
         if ($snapshotMetrics === []) {
             $sourceName = (string) ($context['source_name'] ?? $context['reference_market_hub'] ?? $context['operational_market'] ?? ('Source #' . $sourceId));
@@ -13941,10 +14081,15 @@ function sync_market_history_from_snapshots(
         }
 
         $rebuilt = market_history_daily_rebuild_from_snapshot_metrics($snapshotMetrics, $normalizedSourceType);
+        unset($snapshotMetrics, $snapshotMetricResult);
+        if (function_exists('gc_collect_cycles')) {
+            gc_collect_cycles();
+        }
         $canonicalRows = is_array($rebuilt['rows'] ?? null) ? $rebuilt['rows'] : [];
         $historyRowCount = count($canonicalRows);
         $tradeDates = is_array($rebuilt['trade_dates'] ?? null) ? $rebuilt['trade_dates'] : [];
         $latestObservedAt = $canonicalRows === [] ? '' : (string) ($canonicalRows[array_key_last($canonicalRows)]['observed_at'] ?? '');
+        scheduler_runtime_guard($runtimeStartedAt, $runtimeTimeoutSeconds, $syncLabel . ' daily rebuild');
 
         if ($canonicalRows === []) {
             $sourceName = (string) ($context['source_name'] ?? $context['reference_market_hub'] ?? $context['operational_market'] ?? ('Source #' . $sourceId));
@@ -13978,8 +14123,13 @@ function sync_market_history_from_snapshots(
         }
 
         $result['rows_written'] = db_market_history_daily_bulk_upsert($canonicalRows);
-        $result['cursor'] = 'source_type:' . $normalizedSourceType . ';source_id:' . $sourceId . ';window_days:' . $safeWindowDays . ';observed_at:' . $latestObservedAt;
         $result['checksum'] = sync_checksum($canonicalRows);
+        unset($canonicalRows, $rebuilt);
+        if (function_exists('gc_collect_cycles')) {
+            gc_collect_cycles();
+        }
+        scheduler_runtime_guard($runtimeStartedAt, $runtimeTimeoutSeconds, $syncLabel . ' bulk upsert');
+        $result['cursor'] = 'source_type:' . $normalizedSourceType . ';source_id:' . $sourceId . ';window_days:' . $safeWindowDays . ';observed_at:' . $latestObservedAt;
         $result['meta'] = $context + [
             'source_type' => $normalizedSourceType,
             'source_id' => $sourceId,
@@ -14039,6 +14189,7 @@ function sync_alliance_market_history(int $structureId, string $runMode = 'incre
             'operational_market_id' => $structureId,
             'operational_market' => selected_station_name('alliance_station_id') ?? ('Structure ' . $structureId),
             'source_name' => selected_station_name('alliance_station_id') ?? ('Structure ' . $structureId),
+            'timeout_seconds' => (int) (scheduler_registry_definitions()['alliance_historical_sync']['timeout_seconds'] ?? 3600),
         ],
         'Alliance history sync'
     );
@@ -14075,6 +14226,7 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
             'resolved_region_id' => isset($hubContext['region_id']) && $hubContext['region_id'] !== null ? (int) $hubContext['region_id'] : null,
             'resolved_structure_id' => isset($hubContext['structure_id']) && $hubContext['structure_id'] !== null ? (int) $hubContext['structure_id'] : null,
             'source_name' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+            'timeout_seconds' => (int) (scheduler_registry_definitions()['market_hub_historical_sync']['timeout_seconds'] ?? 3600),
         ],
         'Hub history sync'
     );
@@ -14111,6 +14263,7 @@ function sync_market_hub_local_history(string|int $hubRef, string $runMode = 'in
             'resolved_region_id' => isset($hubContext['region_id']) && $hubContext['region_id'] !== null ? (int) $hubContext['region_id'] : null,
             'resolved_structure_id' => isset($hubContext['structure_id']) && $hubContext['structure_id'] !== null ? (int) $hubContext['structure_id'] : null,
             'source_name' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+            'timeout_seconds' => (int) (scheduler_registry_definitions()['market_hub_local_history_sync']['timeout_seconds'] ?? 1800),
         ],
         'Hub snapshot history sync'
     );
@@ -15951,8 +16104,11 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
     $runMode = sync_mode_normalize($runMode);
     $datasetKey = killmail_sync_dataset_key();
     $runId = db_sync_run_start($datasetKey, $runMode, db_sync_cursor_get($datasetKey));
+    $runtimeStartedAt = microtime(true);
+    $runtimeTimeoutSeconds = max(30, min(3600, killmail_max_sequences_per_run() * 3));
 
     try {
+        scheduler_runtime_guard($runtimeStartedAt, $runtimeTimeoutSeconds, 'killmail stream bootstrap');
         // Ensure any one-time killmail schema migrations run before per-row write transactions begin.
         db_killmail_payload_schema_ensure();
 
@@ -16032,6 +16188,7 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
         $lastSequenceAttempted = null;
 
         for ($step = 0; $step < $maxSteps; $step++) {
+            scheduler_runtime_guard($runtimeStartedAt, $runtimeTimeoutSeconds, 'killmail sequence loop');
             if ($firstSequenceAttempted === null) {
                 $firstSequenceAttempted = $nextSequence;
             }
@@ -16099,6 +16256,10 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
                 db_killmail_items_replace($sequenceId, $transformed['items']);
                 $rowsWritten++;
             });
+            unset($transformed, $event, $response);
+            if (function_exists('gc_collect_cycles')) {
+                gc_collect_cycles();
+            }
 
             $lastProcessed = $sequenceId;
             $nextSequence = $sequenceId + 1;

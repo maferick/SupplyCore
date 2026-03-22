@@ -5,6 +5,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/bootstrap.php';
 
+scheduler_enforce_php_runtime_limits();
+
 try {
     exit(scheduler_daemon_run('scheduler_daemon_output'));
 } catch (Throwable $exception) {
