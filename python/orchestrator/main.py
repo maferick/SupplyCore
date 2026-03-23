@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from .config import load_php_runtime_config
+from .influx_export import main as run_influx_rollup_export
 from .logging_utils import configure_logging
 from .rebuild_data_model import main as run_rebuild_data_model
 from .supervisor import run_supervisor
@@ -40,6 +41,14 @@ def parse_args() -> argparse.Namespace:
     rebuild.add_argument("--full-reset", action="store_true")
     rebuild.add_argument("--enable-partitioned-history", dest="enable_partitioned_history", action="store_true", default=True)
     rebuild.add_argument("--disable-partitioned-history", dest="enable_partitioned_history", action="store_false")
+
+    influx_export = subparsers.add_parser("influx-rollup-export", help="Export selected historical rollups to InfluxDB")
+    influx_export.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    influx_export.add_argument("--dataset", action="append", default=[], help="Limit export to one or more dataset keys.")
+    influx_export.add_argument("--full", action="store_true", help="Ignore checkpoints and export the full selected dataset(s).")
+    influx_export.add_argument("--dry-run", action="store_true", help="Read and encode points without writing to InfluxDB.")
+    influx_export.add_argument("--batch-size", type=int, default=0, help="Override Influx write batch size.")
+    influx_export.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
 
@@ -69,6 +78,15 @@ def main() -> int:
             "--window-days", str(args.window_days),
             *( ["--full-reset"] if args.full_reset else [] ),
             *( ["--enable-partitioned-history"] if args.enable_partitioned_history else ["--disable-partitioned-history"] ),
+        ])
+    if command == "influx-rollup-export":
+        return run_influx_rollup_export([
+            "--app-root", args.app_root,
+            *(sum([["--dataset", dataset] for dataset in args.dataset], [])),
+            *( ["--full"] if args.full else [] ),
+            *( ["--dry-run"] if args.dry_run else [] ),
+            *( ["--batch-size", str(args.batch_size)] if args.batch_size > 0 else [] ),
+            *( ["--verbose"] if args.verbose else [] ),
         ])
 
     app_root = Path(args.app_root).resolve()

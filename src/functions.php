@@ -3419,6 +3419,17 @@ function orchestrator_runtime_config_export(): array
             'password' => (string) config('db.password', ''),
             'charset' => (string) config('db.charset', 'utf8mb4'),
         ],
+        'influxdb' => [
+            'enabled' => (bool) config('influxdb.enabled', false),
+            'url' => rtrim((string) config('influxdb.url', 'http://127.0.0.1:8086'), '/'),
+            'org' => (string) config('influxdb.org', ''),
+            'bucket' => (string) config('influxdb.bucket', 'supplycore_rollups'),
+            'token' => (string) config('influxdb.token', ''),
+            'timeout_seconds' => max(3, (int) config('influxdb.timeout_seconds', 15)),
+            'export_batch_size' => max(100, (int) config('influxdb.export_batch_size', 1000)),
+            'export_overlap_seconds' => max(0, (int) config('influxdb.export_overlap_seconds', 21600)),
+            'export_log_file' => supplycore_worker_log_path('influx-rollup-export.log', (string) config('influxdb.export_log_file', 'storage/logs/influx-rollup-export.log')),
+        ],
         'paths' => [
             'app_root' => $appRoot,
             'bootstrap' => __DIR__ . '/bootstrap.php',

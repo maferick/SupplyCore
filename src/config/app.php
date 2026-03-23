@@ -29,6 +29,17 @@ $config = [
         'read_timeout' => (float) (getenv('REDIS_READ_TIMEOUT') ?: 1.5),
         'lock_enabled' => (getenv('REDIS_LOCK_ENABLED') ?: '1') === '1',
     ],
+    'influxdb' => [
+        'enabled' => (getenv('INFLUXDB_ENABLED') ?: '0') === '1',
+        'url' => rtrim((string) (getenv('INFLUXDB_URL') ?: 'http://127.0.0.1:8086'), '/'),
+        'org' => (string) (getenv('INFLUXDB_ORG') ?: ''),
+        'bucket' => (string) (getenv('INFLUXDB_BUCKET') ?: 'supplycore_rollups'),
+        'token' => (string) (getenv('INFLUXDB_TOKEN') ?: ''),
+        'timeout_seconds' => max(3, (int) (getenv('INFLUXDB_TIMEOUT_SECONDS') ?: 15)),
+        'export_batch_size' => max(100, (int) (getenv('INFLUXDB_EXPORT_BATCH_SIZE') ?: 1000)),
+        'export_overlap_seconds' => max(0, (int) (getenv('INFLUXDB_EXPORT_OVERLAP_SECONDS') ?: 21600)),
+        'export_log_file' => (string) (getenv('INFLUXDB_EXPORT_LOG_FILE') ?: 'storage/logs/influx-rollup-export.log'),
+    ],
     'scheduler' => [
         'default_timeout_seconds' => max(30, (int) (getenv('SCHEDULER_DEFAULT_TIMEOUT_SECONDS') ?: 300)),
         'supervisor_mode' => getenv('SCHEDULER_SUPERVISOR_MODE') ?: 'php',
