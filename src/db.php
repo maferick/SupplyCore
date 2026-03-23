@@ -238,6 +238,18 @@ function db_execute(string $sql, array $params = []): bool
     return $stmt->execute($params);
 }
 
+function db_app_settings_upsert_many(array $settings): bool
+{
+    foreach ($settings as $key => $value) {
+        db_execute(
+            'INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = CURRENT_TIMESTAMP',
+            [(string) $key, (string) $value]
+        );
+    }
+
+    return true;
+}
+
 function db_transaction(callable $callback): mixed
 {
     db_query_cache_clear();
@@ -9310,6 +9322,13 @@ function db_killmail_items_replace(int $sequenceId, array $rows): int
 function db_killmail_tracked_alliances_replace(array $rows): bool
 {
     return db_transaction(static function () use ($rows): bool {
+        db_execute('CREATE TABLE IF NOT EXISTS killmail_tracked_alliances (
+            alliance_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+            label VARCHAR(255) DEFAULT NULL,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
         db_execute('DELETE FROM killmail_tracked_alliances');
 
         foreach ($rows as $row) {
@@ -9327,6 +9346,13 @@ function db_killmail_tracked_alliances_replace(array $rows): bool
 function db_killmail_tracked_corporations_replace(array $rows): bool
 {
     return db_transaction(static function () use ($rows): bool {
+        db_execute('CREATE TABLE IF NOT EXISTS killmail_tracked_corporations (
+            corporation_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+            label VARCHAR(255) DEFAULT NULL,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
         db_execute('DELETE FROM killmail_tracked_corporations');
 
         foreach ($rows as $row) {
@@ -9351,6 +9377,22 @@ function db_killmail_tracked_corporations_active(): array
     return db_select('SELECT corporation_id, label FROM killmail_tracked_corporations WHERE is_active = 1 ORDER BY corporation_id ASC');
 }
 
+function db_sync_schedule_delete_by_job_keys(array $jobKeys): int
+{
+    $safeJobKeys = array_values(array_filter(array_map(static fn (mixed $jobKey): string => trim((string) $jobKey), $jobKeys), static fn (string $jobKey): bool => $jobKey !== ''));
+    if ($safeJobKeys === []) {
+        return 0;
+    }
+
+    db_sync_schedule_registry_columns_ensure();
+    $placeholders = implode(',', array_fill(0, count($safeJobKeys), '?'));
+    $stmt = db()->prepare("DELETE FROM sync_schedules WHERE job_key IN ({$placeholders})");
+    $stmt->execute($safeJobKeys);
+    db_query_cache_clear();
+
+    return (int) $stmt->rowCount();
+}
+
 function db_killmail_tracked_match_sql(string $eventAlias = 'e'): string
 {
     $eventAlias = preg_replace('/[^a-zA-Z0-9_]/', '', $eventAlias) ?: 'e';
@@ -9365,22 +9407,6 @@ function db_killmail_tracked_match_sql(string $eventAlias = 'e'): string
             SELECT tc.corporation_id
             FROM killmail_tracked_corporations tc
             WHERE tc.is_active = 1
-        )
-        OR EXISTS (
-            SELECT 1
-            FROM killmail_attackers attacker
-            INNER JOIN killmail_tracked_alliances ta
-                ON ta.alliance_id = attacker.alliance_id
-               AND ta.is_active = 1
-            WHERE attacker.sequence_id = {$eventAlias}.sequence_id
-        )
-        OR EXISTS (
-            SELECT 1
-            FROM killmail_attackers attacker
-            INNER JOIN killmail_tracked_corporations tc
-                ON tc.corporation_id = attacker.corporation_id
-               AND tc.is_active = 1
-            WHERE attacker.sequence_id = {$eventAlias}.sequence_id
         )
     )";
 }
@@ -9424,36 +9450,6 @@ function db_killmail_tracked_matches_sql(?string $effectiveAfterSql = null, ?str
             FROM killmail_tracked_corporations tc
             INNER JOIN killmail_events e
                 ON e.victim_corporation_id = tc.corporation_id{$effectiveFilterSql}{$sequenceFilterSql}
-            WHERE tc.is_active = 1
-
-            UNION ALL
-
-            SELECT
-                a.sequence_id,
-                0 AS matches_victim_alliance,
-                0 AS matches_victim_corporation,
-                1 AS matches_attacker_alliance,
-                0 AS matches_attacker_corporation
-            FROM killmail_tracked_alliances ta
-            INNER JOIN killmail_attackers a
-                ON a.alliance_id = ta.alliance_id
-            INNER JOIN killmail_events e
-                ON e.sequence_id = a.sequence_id{$effectiveFilterSql}{$sequenceFilterSql}
-            WHERE ta.is_active = 1
-
-            UNION ALL
-
-            SELECT
-                a.sequence_id,
-                0 AS matches_victim_alliance,
-                0 AS matches_victim_corporation,
-                0 AS matches_attacker_alliance,
-                1 AS matches_attacker_corporation
-            FROM killmail_tracked_corporations tc
-            INNER JOIN killmail_attackers a
-                ON a.corporation_id = tc.corporation_id
-            INNER JOIN killmail_events e
-                ON e.sequence_id = a.sequence_id{$effectiveFilterSql}{$sequenceFilterSql}
             WHERE tc.is_active = 1
         ) matched
         GROUP BY matched.sequence_id
