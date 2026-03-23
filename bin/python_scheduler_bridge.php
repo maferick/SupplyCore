@@ -42,6 +42,10 @@ try {
         python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_market_hub_local_history_context()]);
     }
 
+    if ($action === 'market-history-tables-context') {
+        python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_market_history_tables_context()]);
+    }
+
     if ($action === 'rebuild-partitioned-history') {
         $input = python_scheduler_bridge_read_stdin_json();
         $window = is_array($input['window'] ?? null) ? $input['window'] : [];

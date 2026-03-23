@@ -14046,6 +14046,14 @@ function python_bridge_killmail_context(): array
     ];
 }
 
+function python_bridge_market_history_tables_context(): array
+{
+    return [
+        'history_read_table' => db_market_orders_history_read_table(),
+        'summary_read_table' => db_market_order_snapshots_summary_read_table(),
+    ];
+}
+
 function python_bridge_market_hub_local_history_context(): array
 {
     $hubRef = market_hub_setting_reference();

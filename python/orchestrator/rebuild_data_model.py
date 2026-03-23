@@ -140,6 +140,9 @@ class RebuildRunner:
         self.config = load_php_runtime_config(self.app_root)
         self.db = SupplyCoreDb(self.config.raw["db"])
         self.bridge = PhpBridge(self.config.php_binary, self.app_root)
+        table_context = self.bridge.call("market-history-tables-context")["context"]
+        self.history_read_table = str(table_context.get("history_read_table") or "market_orders_history").strip()
+        self.summary_read_table = str(table_context.get("summary_read_table") or "market_order_snapshots_summary").strip()
         self.status = RebuildStatus(
             run_id=str(uuid.uuid4()),
             mode=args.mode,
@@ -243,12 +246,10 @@ class RebuildRunner:
         )
 
     def _history_table_name(self) -> str:
-        row = self.db.fetch_one("SELECT market_orders_history_read_table() AS table_name")
-        return str((row or {}).get("table_name") or "market_orders_history")
+        return self.history_read_table
 
     def _summary_table_name(self) -> str:
-        row = self.db.fetch_one("SELECT market_order_snapshots_summary_read_table() AS table_name")
-        return str((row or {}).get("table_name") or "market_order_snapshots_summary")
+        return self.summary_read_table
 
     def _run_partition_step(self) -> None:
         self.status.current_phase = "partitioned_history"
