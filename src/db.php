@@ -2373,6 +2373,21 @@ function db_market_orders_history_rows_with_observed_date(array $rows): array
     }, $rows));
 }
 
+function db_observed_date_expression(string $table, string $observedAtColumn = 'observed_at'): string
+{
+    $safeTable = trim($table);
+    $safeObservedAtColumn = trim($observedAtColumn);
+    if ($safeTable === '' || $safeObservedAtColumn === '') {
+        throw new InvalidArgumentException('Table and observed-at column are required.');
+    }
+
+    if (db_table_has_column($safeTable, 'observed_date')) {
+        return db_validate_identifier('observed_date');
+    }
+
+    return 'DATE(' . db_validate_identifier($safeObservedAtColumn) . ')';
+}
+
 function db_monthly_partition_names_to_drop(array $boundaries, string $cutoffDate): array
 {
     $cutoffTimestamp = strtotime($cutoffDate);
@@ -2623,6 +2638,7 @@ function db_market_orders_history_backfill_window(
     $offset = 0;
     $written = 0;
     $quotedSource = db_validate_identifier($source);
+    $observedDateExpression = db_observed_date_expression($source);
 
     do {
         $rows = db_select(
@@ -2631,12 +2647,13 @@ function db_market_orders_history_backfill_window(
 '
                 . 'FROM %s
 '
-                . 'WHERE observed_date BETWEEN ? AND ?
+                . 'WHERE %s BETWEEN ? AND ?
 '
                 . 'ORDER BY observed_at ASC, source_type ASC, source_id ASC, order_id ASC
 '
                 . 'LIMIT %d OFFSET %d',
                 $quotedSource,
+                $observedDateExpression,
                 $safeChunkSize,
                 $offset
             ),
@@ -2990,16 +3007,18 @@ function db_market_order_snapshots_summary_backfill_window(
     $offset = 0;
     $written = 0;
     $quotedSource = db_validate_identifier($source);
+    $observedDateExpression = db_observed_date_expression($source);
 
     do {
         $rows = db_select(
             sprintf(
                 'SELECT source_type, source_id, type_id, observed_at, best_sell_price, best_buy_price, total_buy_volume, total_sell_volume, total_volume, buy_order_count, sell_order_count
                  FROM %s
-                 WHERE observed_date BETWEEN ? AND ?
+                 WHERE %s BETWEEN ? AND ?
                  ORDER BY observed_at ASC, source_type ASC, source_id ASC, type_id ASC
                  LIMIT %d OFFSET %d',
                 $quotedSource,
+                $observedDateExpression,
                 $safeChunkSize,
                 $offset
             ),
@@ -3915,7 +3934,7 @@ function db_market_order_snapshots_summary_delete_window(string $sourceType, int
             'DELETE FROM ' . db_validate_identifier($table) . '
              WHERE source_type = ?
                AND source_id = ?
-               AND observed_date BETWEEN ? AND ?',
+               AND ' . db_observed_date_expression($table) . ' BETWEEN ? AND ?',
             [$sourceType, $sourceId, $startDate, $endDate]
         );
         $deleted += (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
