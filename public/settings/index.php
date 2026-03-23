@@ -70,27 +70,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 
         case 'killmail-intelligence':
-            $resolvedEntities = killmail_resolve_tracked_entities(
-                (string) ($_POST['tracked_alliance_names'] ?? ''),
-                (string) ($_POST['tracked_corporation_names'] ?? '')
-            );
-
-            $saved = save_settings([
-                'killmail_ingestion_enabled' => sanitize_enabled_flag($_POST['killmail_ingestion_enabled'] ?? null),
-                'killmail_ingestion_poll_sleep_seconds' => (string) max(6, min(300, (int) ($_POST['killmail_ingestion_poll_sleep_seconds'] ?? 10))),
-                'killmail_ingestion_max_sequences_per_run' => (string) max(1, min(5000, (int) ($_POST['killmail_ingestion_max_sequences_per_run'] ?? 120))),
-                'killmail_demand_prediction_mode' => trim((string) ($_POST['killmail_demand_prediction_mode'] ?? 'baseline')),
-            ]);
-
-            if ($saved) {
-                $saved = db_killmail_tracked_alliances_replace(array_map(static fn (array $row): array => ['alliance_id' => $row['id'], 'label' => $row['label']], (array) ($resolvedEntities['alliances'] ?? [])))
-                    && db_killmail_tracked_corporations_replace(array_map(static fn (array $row): array => ['corporation_id' => $row['id'], 'label' => $row['label']], (array) ($resolvedEntities['corporations'] ?? [])));
-                if ($saved) {
-                    supplycore_cache_bust(['dashboard', 'killmail_overview', 'killmail_detail']);
-                }
-            }
-
-            $unresolved = array_slice((array) ($resolvedEntities['unresolved'] ?? []), 0, 8);
+            $killmailSave = save_killmail_intelligence_settings($_POST);
+            $saved = (bool) ($killmailSave['ok'] ?? false);
+            $unresolved = (array) ($killmailSave['unresolved'] ?? []);
             if ($unresolved !== []) {
                 $saveMessage = 'Some names were not resolved: ' . implode('; ', $unresolved);
             }
@@ -1098,7 +1080,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <article class="rounded-xl border border-border bg-black/20 p-4">
                         <p class="text-xs uppercase tracking-[0.16em] text-muted">Tracked entities</p>
                         <p class="mt-2 text-sm font-semibold text-slate-50"><?= number_format((int) ($killmailStatusSummary['tracked_alliance_count'] ?? 0)) ?> alliances · <?= number_format((int) ($killmailStatusSummary['tracked_corporation_count'] ?? 0)) ?> corporations</p>
-                        <p class="mt-2 text-xs text-muted">These determine which zKill activity is retained for business use.</p>
+                        <p class="mt-2 text-xs text-muted">These determine which victim-side losses are retained for the tracked loss board.</p>
                     </article>
                 </div>
 
@@ -1168,6 +1150,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                 <div class="rounded-lg border border-border bg-black/20 p-3 text-sm text-muted space-y-2">
                     <p>Add alliances and corporations from the lookup, or enter exact numeric IDs when you already know them.</p>
+                    <p>The continuous zKill worker keeps a killmail only when the victim belongs to one of these tracked entities. Attacker-only matches are ignored for the tracked loss board.</p>
                     <p>Each saved entry is stored locally as <span class="text-slate-100">ID + name</span>, and you can remove anything here before saving if an alliance or corporation leaves the group you care about.</p>
                 </div>
 
@@ -1530,7 +1513,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </div>
                 </details>
 
-                <p class="text-sm text-muted">Ingestion consumes R2Z2 as an ordered stream and keeps killmails when a tracked alliance or corporation appears on either side of the fight. That gives you a concise, business-facing feed without losing deeper diagnostics when you need them.</p>
+                <p class="text-sm text-muted">Ingestion consumes R2Z2 as an ordered stream and keeps killmails only when a tracked alliance or corporation appears on the victim side. That keeps the board focused on tracked losses while leaving attacker details available only inside each stored loss.</p>
                 <button class="btn-primary">Save Killmail Intelligence Settings</button>
             </form>
         <?php elseif ($section === 'esi-login'): ?>
@@ -1812,7 +1795,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                     <div>
                         <p class="text-sm text-slate-100">Continuous worker runtime</p>
-                        <p class="mt-1 text-xs text-muted">The Python worker pool owns recurring cadence, retries, and schedule rows now. This page saves sync behavior settings, while the cards below show the currently active runtime profile.</p>
+                        <p class="mt-1 text-xs text-muted">The Python worker pool owns recurring cadence, retries, and schedule rows now. The zKill stream is tracked separately as a dedicated continuous worker, while the cards below show the currently active scheduler runtime profile for normal jobs.</p>
                     </div>
 
                     <div class="rounded-xl border border-border bg-black/20 p-4 space-y-4">

@@ -203,12 +203,7 @@ function save_settings(array $settings): bool
 {
     try {
         db_transaction(function () use ($settings): void {
-            foreach ($settings as $key => $value) {
-                db_execute(
-                    'INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = CURRENT_TIMESTAMP',
-                    [$key, (string) $value]
-                );
-            }
+            db_app_settings_upsert_many($settings);
         });
     } catch (Throwable) {
         return false;
@@ -2117,11 +2112,6 @@ function scheduler_operational_profile_matrix(string $profile): array
             'medium' => ['interval_minutes' => 6, 'timeout_seconds' => 180, 'priority' => 'medium'],
             'high' => ['interval_minutes' => 4, 'timeout_seconds' => 240, 'priority' => 'high'],
         ],
-        'killmail_r2z2_sync' => [
-            'low' => ['interval_minutes' => 5, 'timeout_seconds' => 120, 'priority' => 'high'],
-            'medium' => ['interval_minutes' => 2, 'timeout_seconds' => 120, 'priority' => 'highest'],
-            'high' => ['interval_minutes' => 1, 'timeout_seconds' => 150, 'priority' => 'highest'],
-        ],
         'current_state_refresh_sync' => [
             'low' => ['interval_minutes' => 15, 'timeout_seconds' => 120, 'priority' => 'medium'],
             'medium' => ['interval_minutes' => 8, 'timeout_seconds' => 120, 'priority' => 'medium'],
@@ -3548,13 +3538,24 @@ function worker_job_registry_definitions(): array
     ];
 }
 
+function dedicated_worker_job_keys(): array
+{
+    return [
+        'killmail_r2z2_sync',
+    ];
+}
+
+function scheduler_is_dedicated_worker_job(string $jobKey): bool
+{
+    return in_array(trim($jobKey), dedicated_worker_job_keys(), true);
+}
+
 function scheduler_registry_definitions(): array
 {
     return [
         'market_hub_current_sync' => ['label' => 'Market Hub Current', 'default_interval_minutes' => 8, 'default_offset_minutes' => 0, 'priority' => 'high', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 8, 'workload_class' => 'lightweight'],
         'deal_alerts_sync' => ['label' => 'Deal Alerts', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'latency_sensitive' => true, 'user_facing' => true, 'workload_class' => 'lightweight'],
         'alliance_current_sync' => ['label' => 'Alliance Current', 'default_interval_minutes' => 4, 'default_offset_minutes' => 2, 'priority' => 'medium', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
-        'killmail_r2z2_sync' => ['label' => 'Killmail R2Z2 Stream', 'default_interval_minutes' => 1, 'default_offset_minutes' => 3, 'priority' => 'highest', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 3, 'workload_class' => 'heavy'],
         'configured_structure_destination_id_for_esi_sync' => ['label' => 'Configured Structure Destination for ESI', 'default_interval_minutes' => 30, 'default_offset_minutes' => 4, 'priority' => 'normal', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'lightweight'],
         'current_state_refresh_sync' => ['label' => 'Current-State Refresh', 'default_interval_minutes' => 12, 'default_offset_minutes' => 6, 'priority' => 'medium', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
         'doctrine_intelligence_sync' => ['label' => 'Doctrine Intelligence', 'default_interval_minutes' => 15, 'default_offset_minutes' => 8, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
@@ -3611,7 +3612,6 @@ function scheduler_internal_mechanic_job_keys(): array
 function scheduler_protected_job_keys(): array
 {
     return [
-        'killmail_r2z2_sync',
         'market_hub_current_sync',
         'deal_alerts_sync',
         'alliance_current_sync',
@@ -5598,7 +5598,7 @@ function scheduler_console_pipeline_health(array $jobs, array $pipelineSettings)
             'key' => 'current',
             'label' => 'Current sync',
             'enabled' => ($pipelineSettings['alliance_current_pipeline_enabled'] ?? '1') === '1',
-            'jobs' => ['alliance_current_sync', 'market_hub_current_sync', 'killmail_r2z2_sync'],
+            'jobs' => ['alliance_current_sync', 'market_hub_current_sync'],
         ],
         [
             'key' => 'alliance_history',
@@ -5768,6 +5768,10 @@ function sync_schedule_settings_view_model(): array
     foreach ($rows as $row) {
         $jobKey = trim((string) ($row['job_key'] ?? ''));
         if ($jobKey === '') {
+            continue;
+        }
+
+        if (scheduler_is_dedicated_worker_job($jobKey)) {
             continue;
         }
 
@@ -8214,14 +8218,6 @@ function killmail_match_sources(array $row): array
         $sources[] = 'tracked victim corporation';
     }
 
-    if ((int) ($row['matches_attacker_alliance'] ?? 0) === 1) {
-        $sources[] = 'tracked attacker alliance';
-    }
-
-    if ((int) ($row['matches_attacker_corporation'] ?? 0) === 1) {
-        $sources[] = 'tracked attacker corporation';
-    }
-
     return $sources;
 }
 
@@ -10060,7 +10056,7 @@ function killmail_overview_data(): array
             'summary' => [
                 ['label' => 'Total Ingested', 'value' => number_format($totalCount), 'context' => 'Killmails stored locally'],
                 ['label' => 'Recent Ingestion', 'value' => number_format($recentCount), 'context' => 'Stored in the last ' . $recentHours . ' hours'],
-                ['label' => 'Tracked Entity Killmails', 'value' => number_format($trackedMatchCount), 'context' => 'Stored killmails where a tracked alliance or corporation appears on the victim or attacker side'],
+                ['label' => 'Tracked Entity Killmails', 'value' => number_format($trackedMatchCount), 'context' => 'Stored killmails where a tracked alliance or corporation appears on the victim side'],
                 ['label' => 'Last Processed Sequence', 'value' => $maxSequenceId > 0 ? number_format($maxSequenceId) : '—', 'context' => $cursor !== '' ? ('Cursor ' . $cursor) : 'Cursor not recorded yet'],
                 ['label' => 'Sync Freshness', 'value' => killmail_relative_datetime($lastSuccessAt), 'context' => $lastSuccessAt !== null ? ('Last success ' . killmail_format_datetime($lastSuccessAt)) : 'No successful sync recorded'],
             ],
@@ -11624,6 +11620,9 @@ function scheduler_discover_jobs(): array
     $discovered = [];
     $known = scheduler_registry_definitions();
     foreach ($known as $jobKey => $definition) {
+        if (scheduler_is_dedicated_worker_job($jobKey)) {
+            continue;
+        }
         $discovered[$jobKey] = $definition + [
             'job_key' => $jobKey,
             'discovered_from_code' => true,
@@ -11685,6 +11684,10 @@ function scheduler_discover_jobs(): array
 
             foreach (scheduler_extract_php_function_names($contents) as $candidate) {
                 if (!preg_match('/(?:_sync|_job)$/', $candidate)) {
+                    continue;
+                }
+
+                if (scheduler_is_dedicated_worker_job($candidate)) {
                     continue;
                 }
 
@@ -11798,10 +11801,14 @@ function scheduler_registry_bootstrap(): void
     }
 
     scheduler_reconcile_baseline_rows($definitions, $existingRows);
+    db_sync_schedule_delete_by_job_keys(dedicated_worker_job_keys());
 
     $handlers = scheduler_job_definitions();
 
     foreach ($definitions as $jobKey => $definition) {
+        if (scheduler_is_dedicated_worker_job($jobKey)) {
+            continue;
+        }
         $enabled = array_key_exists($jobKey, $handlers) ? 1 : 0;
         $wasKnown = array_key_exists($jobKey, $existingRows);
         db_sync_schedule_ensure_job(
@@ -13156,12 +13163,46 @@ function http_post_form(string $url, array $headers, array $formData): array
         throw new RuntimeException('HTTP request failed: ' . $error);
     }
 
-    $decoded = json_decode($response, true);
-    if (!is_array($decoded)) {
-        throw new RuntimeException('Invalid JSON response from ' . $url);
+    $decoded = http_json_decode_response_body($url, (int) $status, (string) $response);
+
+    return [
+        'status' => $status,
+        'json' => $decoded['json'],
+        'body' => (string) $response,
+        'payload_classification' => $decoded['classification'],
+        'valid_empty_body' => $decoded['valid_empty_body'],
+    ];
+}
+
+function http_json_decode_response_body(string $url, int $status, string $body): array
+{
+    $trimmed = trim($body);
+    if ($trimmed === '') {
+        return [
+            'json' => [],
+            'classification' => $status >= 400 ? 'empty_error_body' : 'empty_body',
+            'valid_empty_body' => $status < 400,
+        ];
     }
 
-    return ['status' => $status, 'json' => $decoded];
+    $decoded = json_decode($body, true);
+    if (is_array($decoded)) {
+        return [
+            'json' => $decoded,
+            'classification' => 'json_object',
+            'valid_empty_body' => false,
+        ];
+    }
+
+    if ($status >= 400) {
+        return [
+            'json' => [],
+            'classification' => 'non_json_error_body',
+            'valid_empty_body' => false,
+        ];
+    }
+
+    throw new RuntimeException('Invalid JSON response from ' . $url . ' (status=' . $status . ').');
 }
 
 function http_post_json(string $url, array $headers, array $payload, int $timeoutSeconds = 25): array
@@ -13189,12 +13230,15 @@ function http_post_json(string $url, array $headers, array $payload, int $timeou
         throw new RuntimeException('HTTP request failed: ' . $error);
     }
 
-    $decoded = json_decode($response, true);
-    if (!is_array($decoded)) {
-        throw new RuntimeException('Invalid JSON response from ' . $url);
-    }
+    $decoded = http_json_decode_response_body($url, (int) $status, (string) $response);
 
-    return ['status' => $status, 'json' => $decoded];
+    return [
+        'status' => $status,
+        'json' => $decoded['json'],
+        'body' => (string) $response,
+        'payload_classification' => $decoded['classification'],
+        'valid_empty_body' => $decoded['valid_empty_body'],
+    ];
 }
 
 function http_get_json(string $url, array $headers = [], int $timeoutSeconds = 25): array
@@ -13243,12 +13287,16 @@ function http_get_json(string $url, array $headers = [], int $timeoutSeconds = 2
         throw new RuntimeException('HTTP request failed: ' . $error);
     }
 
-    $decoded = json_decode($response, true);
-    if (!is_array($decoded)) {
-        throw new RuntimeException('Invalid JSON response from ' . $url);
-    }
+    $decoded = http_json_decode_response_body($url, (int) $status, (string) $response);
 
-    return ['status' => $status, 'json' => $decoded, 'headers' => $responseHeaders];
+    return [
+        'status' => $status,
+        'json' => $decoded['json'],
+        'headers' => $responseHeaders,
+        'body' => (string) $response,
+        'payload_classification' => $decoded['classification'],
+        'valid_empty_body' => $decoded['valid_empty_body'],
+    ];
 }
 
 function sync_http_retryable_status_codes(): array
@@ -13376,14 +13424,13 @@ function http_get_json_multi(array $requests, int $timeoutSeconds = 25): array
             $error = curl_error($handle);
             $decoded = null;
             $errorMessage = null;
+            $payloadMeta = null;
 
             if ($body === false || $error !== '') {
                 $errorMessage = 'HTTP request failed: ' . ($error !== '' ? $error : ('Unable to fetch ' . $entry['url']));
             } else {
-                $decoded = json_decode($body, true);
-                if (!is_array($decoded)) {
-                    $errorMessage = 'Invalid JSON response from ' . $entry['url'];
-                }
+                $payloadMeta = http_json_decode_response_body($entry['url'], $status, (string) $body);
+                $decoded = $payloadMeta['json'];
             }
 
             $responses[$key] = [
@@ -13391,6 +13438,9 @@ function http_get_json_multi(array $requests, int $timeoutSeconds = 25): array
                 'json' => $decoded,
                 'headers' => $responseHeadersByKey[$key] ?? [],
                 'error' => $errorMessage,
+                'body' => $body === false ? '' : (string) $body,
+                'payload_classification' => $payloadMeta['classification'] ?? ($errorMessage === null ? 'json_object' : 'transport_error'),
+                'valid_empty_body' => (bool) ($payloadMeta['valid_empty_body'] ?? false),
             ];
 
             curl_multi_remove_handle($multiHandle, $handle);
@@ -17119,6 +17169,79 @@ function killmail_resolve_tracked_entities(string $allianceText, string $corpora
     ];
 }
 
+function killmail_settings_from_request(array $request): array
+{
+    $resolvedEntities = killmail_resolve_tracked_entities(
+        (string) ($request['tracked_alliance_names'] ?? ''),
+        (string) ($request['tracked_corporation_names'] ?? '')
+    );
+
+    return [
+        'settings' => [
+            'killmail_ingestion_enabled' => sanitize_enabled_flag($request['killmail_ingestion_enabled'] ?? null),
+            'killmail_ingestion_poll_sleep_seconds' => (string) max(6, min(300, (int) ($request['killmail_ingestion_poll_sleep_seconds'] ?? 10))),
+            'killmail_ingestion_max_sequences_per_run' => (string) max(1, min(5000, (int) ($request['killmail_ingestion_max_sequences_per_run'] ?? 120))),
+            'killmail_demand_prediction_mode' => trim((string) ($request['killmail_demand_prediction_mode'] ?? 'baseline')),
+        ],
+        'alliances' => array_map(
+            static fn (array $row): array => ['alliance_id' => (int) ($row['id'] ?? 0), 'label' => $row['label'] ?? null],
+            (array) ($resolvedEntities['alliances'] ?? [])
+        ),
+        'corporations' => array_map(
+            static fn (array $row): array => ['corporation_id' => (int) ($row['id'] ?? 0), 'label' => $row['label'] ?? null],
+            (array) ($resolvedEntities['corporations'] ?? [])
+        ),
+        'unresolved' => array_values((array) ($resolvedEntities['unresolved'] ?? [])),
+    ];
+}
+
+function save_killmail_intelligence_settings(array $request): array
+{
+    $payload = killmail_settings_from_request($request);
+    $saved = false;
+
+    try {
+        db_transaction(static function () use ($payload): void {
+            db_app_settings_upsert_many((array) ($payload['settings'] ?? []));
+            db_killmail_tracked_alliances_replace((array) ($payload['alliances'] ?? []));
+            db_killmail_tracked_corporations_replace((array) ($payload['corporations'] ?? []));
+        });
+        $reloadedSettings = get_settings(array_keys((array) ($payload['settings'] ?? [])));
+        foreach ((array) ($payload['settings'] ?? []) as $key => $value) {
+            if ((string) ($reloadedSettings[$key] ?? '') !== (string) $value) {
+                throw new RuntimeException('Killmail settings readback mismatch for key ' . $key . '.');
+            }
+        }
+
+        $reloadedAllianceIds = array_values(array_map(static fn (array $row): int => (int) ($row['alliance_id'] ?? 0), db_killmail_tracked_alliances_active()));
+        $reloadedCorporationIds = array_values(array_map(static fn (array $row): int => (int) ($row['corporation_id'] ?? 0), db_killmail_tracked_corporations_active()));
+        $expectedAllianceIds = array_values(array_map(static fn (array $row): int => (int) ($row['alliance_id'] ?? 0), (array) ($payload['alliances'] ?? [])));
+        $expectedCorporationIds = array_values(array_map(static fn (array $row): int => (int) ($row['corporation_id'] ?? 0), (array) ($payload['corporations'] ?? [])));
+        sort($reloadedAllianceIds);
+        sort($reloadedCorporationIds);
+        sort($expectedAllianceIds);
+        sort($expectedCorporationIds);
+        if ($reloadedAllianceIds !== $expectedAllianceIds || $reloadedCorporationIds !== $expectedCorporationIds) {
+            throw new RuntimeException('Killmail tracked entity readback mismatch after save.');
+        }
+        $saved = true;
+    } catch (Throwable) {
+        $saved = false;
+    }
+
+    if ($saved) {
+        supplycore_cache_bust(['dashboard', 'killmail_overview', 'killmail_detail']);
+    }
+
+    return [
+        'ok' => $saved,
+        'settings' => (array) ($payload['settings'] ?? []),
+        'alliances' => (array) ($payload['alliances'] ?? []),
+        'corporations' => (array) ($payload['corporations'] ?? []),
+        'unresolved' => array_slice((array) ($payload['unresolved'] ?? []), 0, 8),
+    ];
+}
+
 function killmail_r2z2_fetch_json(string $url): array
 {
     $userAgent = trim((string) get_setting('app_name', 'SupplyCore'));
@@ -17200,6 +17323,8 @@ function killmail_region_id_from_system(?int $systemId): ?int
 
 function killmail_event_matches_tracked_entities(array $event, array $attackers, array $trackedAllianceIds, array $trackedCorporationIds): bool
 {
+    unset($attackers);
+
     if ($trackedAllianceIds === [] && $trackedCorporationIds === []) {
         return true;
     }
@@ -17213,22 +17338,6 @@ function killmail_event_matches_tracked_entities(array $event, array $attackers,
 
     if ($victimCorporationId > 0 && isset($trackedCorporationIds[$victimCorporationId])) {
         return true;
-    }
-
-    foreach ($attackers as $attacker) {
-        if (!is_array($attacker)) {
-            continue;
-        }
-
-        $attackerAllianceId = (int) ($attacker['alliance_id'] ?? 0);
-        if ($attackerAllianceId > 0 && isset($trackedAllianceIds[$attackerAllianceId])) {
-            return true;
-        }
-
-        $attackerCorporationId = (int) ($attacker['corporation_id'] ?? 0);
-        if ($attackerCorporationId > 0 && isset($trackedCorporationIds[$attackerCorporationId])) {
-            return true;
-        }
     }
 
     return false;

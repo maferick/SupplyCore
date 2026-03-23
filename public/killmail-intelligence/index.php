@@ -157,7 +157,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <p class="mt-2 text-xl font-semibold text-slate-50"><?= number_format((int) ($status['tracked_corporation_count'] ?? 0)) ?></p>
             </div>
             <div class="surface-tertiary text-sm text-slate-400">
-                Losses are retained when a tracked alliance or corporation appears on the victim side or among the attackers. That keeps the board focused on actionable activity without exposing worker plumbing by default.
+                Losses are retained only when a tracked alliance or corporation appears on the victim side. That keeps the board focused on tracked losses without exposing worker plumbing by default.
             </div>
         </div>
     </article>
