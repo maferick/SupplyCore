@@ -26,6 +26,7 @@ This repository establishes a clean architecture that can scale from an initial 
 - Materialized intelligence storage (`intelligence_snapshots`) for doctrine fit/group summaries, market comparison summaries, loss-demand summaries, and dashboard payloads
 - Dedicated mispriced-listing detection with a separate `/deal-alerts` page, background anomaly scan job, dismissible critical popups, and a persisted current-state deal alert table
 - MariaDB-native analytics bucket layer (`*_1h`, `*_1d`) for killmail, market, and doctrine trend windows without introducing a separate time-series database
+- Optional InfluxDB historical rollup export path that offloads long-range trend analytics while keeping MariaDB authoritative
 - Redis delivery cache for the latest precomputed intelligence payloads with MySQL materialized-summary fallback
 - Secure CSRF-protected settings forms
 - Session-based flash messaging
@@ -156,6 +157,18 @@ README.md
   - With no entity arguments, the command previews the top currently ranked doctrine candidate.
   - `--entity-type` + `--entity-id` targets a specific fit or doctrine group from the current snapshot.
   - `--store` writes the generated result back into `doctrine_ai_briefings`, which is useful when validating fallback behavior outside the scheduler.
+
+## InfluxDB Historical Rollup Offload
+
+- SupplyCore keeps **MariaDB as the source of truth** for current state, raw history, settings, control-plane state, and authoritative replay.
+- InfluxDB is optional and intended only for **historical rollup export** from selected MariaDB rollup tables such as `market_item_price_*`, `market_item_stock_*`, killmail aggregate buckets, and doctrine activity buckets.
+- The exporter is implemented as `python bin/python_orchestrator.py influx-rollup-export` and records checkpoints in MariaDB `sync_state` / `sync_runs`, so it stays operationally aligned with the rest of the platform.
+- Added systemd units:
+  - `ops/systemd/supplycore-influx-rollup-export.service`
+  - `ops/systemd/supplycore-influx-rollup-export.timer`
+  - `ops/systemd/supplycore-influx-rollup-export.env.example`
+- Configure connectivity in `src/config/local.php` under the new `influxdb` section. Keep it disabled until the InfluxDB service, bucket, token, and backfill plan are ready.
+- Detailed rollout guidance, schema mapping, read-path rules, retention, and rollback notes live in `docs/INFLUXDB_ROLLUP_OFFLOAD.md`.
 
 ## Configuration Strategy
 

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run SupplyCore InfluxDB historical rollup export every 15 minutes
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=15m
+AccuracySec=1m
+Unit=supplycore-influx-rollup-export.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
