@@ -10557,6 +10557,17 @@ function human_duration_ago(int $seconds): string
     return (int) floor($seconds / 86400) . 'd';
 }
 
+function human_duration_seconds(float $seconds): string
+{
+    $seconds = max(0.0, $seconds);
+
+    if ($seconds < 60.0) {
+        return (string) max(0, (int) floor($seconds)) . 's';
+    }
+
+    return human_duration_ago((int) floor($seconds));
+}
+
 function reference_hub_comparison_data(): array
 {
     return supplycore_cache_aside('market_compare', ['reference-comparison'], supplycore_cache_ttl('market_summary'), static function (): array {
