@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
+import csv
+import io
 import json
 from typing import Any
 import urllib.error
@@ -104,6 +106,10 @@ class InfluxWriteError(RuntimeError):
     pass
 
 
+class InfluxQueryError(RuntimeError):
+    pass
+
+
 class InfluxWriter:
     def __init__(self, config: InfluxConfig):
         self._config = config
@@ -134,3 +140,116 @@ class InfluxWriter:
             raise InfluxWriteError(f"InfluxDB write failed with HTTP {error.code}: {details}") from error
         except urllib.error.URLError as error:
             raise InfluxWriteError(f"InfluxDB write failed: {error.reason}") from error
+
+
+def _parse_csv_value(raw: str, datatype: str) -> Any:
+    value = raw.strip()
+    if value == "":
+        return None
+
+    normalized = datatype.strip()
+    if normalized.startswith("dateTime:"):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+    if normalized in {"long", "unsignedLong"}:
+        try:
+            return int(value)
+        except ValueError:
+            return value
+    if normalized in {"double", "decimal"}:
+        try:
+            return float(value)
+        except ValueError:
+            return value
+    if normalized == "boolean":
+        return value.lower() == "true"
+    return value
+
+
+def parse_flux_csv(payload: str) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    annotations: dict[str, list[str]] = {}
+    header: list[str] | None = None
+
+    for row in csv.reader(io.StringIO(payload)):
+        if row == []:
+            header = None
+            annotations = {}
+            continue
+
+        first = row[0] if row else ""
+        if first.startswith("#"):
+            annotations[first] = row
+            continue
+
+        if header is None:
+            header = row
+            continue
+
+        datatypes = annotations.get("#datatype", [])
+        defaults = annotations.get("#default", [])
+        record: dict[str, Any] = {}
+        for index, column in enumerate(header):
+            if column == "":
+                continue
+            raw_value = row[index] if index < len(row) else ""
+            if raw_value == "" and index < len(defaults):
+                raw_value = defaults[index]
+            datatype = datatypes[index] if index < len(datatypes) else "string"
+            record[column] = _parse_csv_value(raw_value, datatype)
+        records.append(record)
+
+    return records
+
+
+class InfluxClient:
+    def __init__(self, config: InfluxConfig):
+        self._config = config
+
+    @property
+    def query_endpoint(self) -> str:
+        return f"{self._config.url}/api/v2/query?org={urllib.parse.quote(self._config.org)}"
+
+    @property
+    def health_endpoint(self) -> str:
+        return f"{self._config.url}/health"
+
+    def health(self) -> dict[str, Any]:
+        request = urllib.request.Request(
+            self.health_endpoint,
+            method="GET",
+            headers={"Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            details = error.read().decode("utf-8", errors="replace").strip()
+            raise InfluxQueryError(f"InfluxDB health check failed with HTTP {error.code}: {details}") from error
+        except urllib.error.URLError as error:
+            raise InfluxQueryError(f"InfluxDB health check failed: {error.reason}") from error
+
+    def query_flux(self, flux: str) -> list[dict[str, Any]]:
+        payload = json.dumps({"query": flux, "type": "flux"}).encode("utf-8")
+        request = urllib.request.Request(
+            self.query_endpoint,
+            data=payload,
+            method="POST",
+            headers={
+                "Authorization": f"Token {self._config.token}",
+                "Content-Type": "application/json; charset=utf-8",
+                "Accept": "application/csv",
+            },
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as response:
+                body = response.read().decode("utf-8")
+                return parse_flux_csv(body)
+        except urllib.error.HTTPError as error:
+            details = error.read().decode("utf-8", errors="replace").strip()
+            raise InfluxQueryError(f"InfluxDB query failed with HTTP {error.code}: {details}") from error
+        except urllib.error.URLError as error:
+            raise InfluxQueryError(f"InfluxDB query failed: {error.reason}") from error
