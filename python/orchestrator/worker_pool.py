@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 from .bridge import PhpBridge
 from .config import load_php_runtime_config
-from .jobs import run_killmail_r2z2_stream, run_market_comparison_summary
+from .jobs import run_killmail_r2z2_stream, run_market_comparison_summary, run_market_hub_local_history
 from .logging_utils import LoggerAdapter, configure_logging
 from .worker_runtime import resident_memory_bytes, utc_now_iso
 
@@ -48,12 +48,14 @@ class WorkerPoolContext:
 PROCESSORS: dict[str, Callable[[WorkerPoolContext], dict[str, Any]]] = {
     "killmail_r2z2_sync": run_killmail_r2z2_stream,
     "market_comparison_summary_sync": run_market_comparison_summary,
+    "market_hub_local_history_sync": run_market_hub_local_history,
 }
 
 PYTHON_PRIMARY_JOB_KEYS = {
     "market_hub_current_sync",
     "dashboard_summary_sync",
     "market_comparison_summary_sync",
+    "market_hub_local_history_sync",
     "killmail_r2z2_sync",
 }
 
