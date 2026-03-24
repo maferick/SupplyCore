@@ -5,6 +5,8 @@ from pathlib import Path
 
 from .config import load_php_runtime_config
 from .influx_export import main as run_influx_rollup_export
+from .influx_inspect import inspect_main as run_influx_rollup_inspect
+from .influx_inspect import sample_main as run_influx_rollup_sample
 from .logging_utils import configure_logging
 from .rebuild_data_model import main as run_rebuild_data_model
 from .supervisor import run_supervisor
@@ -49,6 +51,18 @@ def parse_args() -> argparse.Namespace:
     influx_export.add_argument("--dry-run", action="store_true", help="Read and encode points without writing to InfluxDB.")
     influx_export.add_argument("--batch-size", type=int, default=0, help="Override Influx write batch size.")
     influx_export.add_argument("--verbose", action="store_true")
+
+    influx_inspect = subparsers.add_parser("influx-rollup-inspect", help="Inspect measurement coverage in the InfluxDB rollup bucket")
+    influx_inspect.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    influx_inspect.add_argument("--dataset", action="append", default=[], help="Limit inspection to one or more dataset keys or measurement names.")
+    influx_inspect.add_argument("--verbose", action="store_true")
+
+    influx_sample = subparsers.add_parser("influx-rollup-sample", help="Fetch latest sample points from the InfluxDB rollup bucket")
+    influx_sample.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    influx_sample.add_argument("--dataset", action="append", default=[], help="Limit sample output to one or more dataset keys or measurement names.")
+    influx_sample.add_argument("--limit", type=int, default=5, help="Number of latest points to return per measurement.")
+    influx_sample.add_argument("--group-by", action="append", default=[], help="Optional tag keys to group summary output by.")
+    influx_sample.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
 
@@ -86,6 +100,20 @@ def main() -> int:
             *( ["--full"] if args.full else [] ),
             *( ["--dry-run"] if args.dry_run else [] ),
             *( ["--batch-size", str(args.batch_size)] if args.batch_size > 0 else [] ),
+            *( ["--verbose"] if args.verbose else [] ),
+        ])
+    if command == "influx-rollup-inspect":
+        return run_influx_rollup_inspect([
+            "--app-root", args.app_root,
+            *(sum([["--dataset", dataset] for dataset in args.dataset], [])),
+            *( ["--verbose"] if args.verbose else [] ),
+        ])
+    if command == "influx-rollup-sample":
+        return run_influx_rollup_sample([
+            "--app-root", args.app_root,
+            *(sum([["--dataset", dataset] for dataset in args.dataset], [])),
+            "--limit", str(args.limit),
+            *(sum([["--group-by", group] for group in args.group_by], [])),
             *( ["--verbose"] if args.verbose else [] ),
         ])
 

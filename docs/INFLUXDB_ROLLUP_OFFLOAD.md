@@ -254,8 +254,23 @@ systemctl status supplycore-influx-rollup-export.timer
 systemctl list-timers supplycore-influx-rollup-export.timer
 python bin/python_orchestrator.py influx-rollup-export --dry-run --verbose
 python bin/python_orchestrator.py influx-rollup-export --dataset market_item_price_1d --verbose
+python bin/python_orchestrator.py influx-rollup-inspect --verbose
+python bin/python_orchestrator.py influx-rollup-inspect --dataset market_item_price_1d --verbose
+python bin/python_orchestrator.py influx-rollup-sample --dataset market_item_price_1d --limit 5
+python bin/python_orchestrator.py influx-rollup-sample --dataset market_item_price_1d --limit 5 --group-by window --group-by source_type
 mysql -e "SELECT dataset_key, status, last_success_at, last_cursor, last_row_count FROM sync_state WHERE dataset_key LIKE 'influx.rollup_export.%' ORDER BY dataset_key;" supplycore
 mysql -e "SELECT dataset_key, run_status, started_at, finished_at, source_rows, written_rows FROM sync_runs WHERE dataset_key LIKE 'influx.rollup_export.%' ORDER BY id DESC LIMIT 20;" supplycore
+
+The inspection command reports:
+
+- Influx health and bucket name
+- measurement names detected in the bucket
+- logical point count per measurement
+- oldest/newest timestamps per measurement
+- sample tags and fields from the latest point
+- a simple diagnosis for common Data Explorer misses such as wrong time range or not explicitly selecting the measurement
+
+The sample command returns the latest N pivoted points for a measurement and can optionally emit grouped point counts by one or more tag keys.
 ```
 
 ## 8. Phased rollout plan
