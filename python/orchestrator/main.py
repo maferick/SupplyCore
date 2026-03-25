@@ -31,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     worker_pool.add_argument("--worker-id", default="")
     worker_pool.add_argument("--queues", default="sync,compute")
     worker_pool.add_argument("--workload-classes", default="sync,compute")
+    worker_pool.add_argument("--execution-modes", default="python,php")
     worker_pool.add_argument("--once", action="store_true")
     worker_pool.add_argument("--verbose", action="store_true")
 
@@ -89,6 +90,7 @@ def main() -> int:
             "--worker-id", args.worker_id,
             "--queues", args.queues,
             "--workload-classes", args.workload_classes,
+            "--execution-modes", args.execution_modes,
             *( ["--once"] if args.once else [] ),
             *( ["--verbose"] if args.verbose else [] ),
         ])
