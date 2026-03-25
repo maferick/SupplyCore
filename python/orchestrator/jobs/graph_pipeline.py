@@ -904,6 +904,21 @@ def _ensure_doctrine_dependency_depth_schema(db: SupplyCoreDb) -> None:
         )
 
 
+def _table_has_column(db: SupplyCoreDb, table_name: str, column_name: str) -> bool:
+    row = db.fetch_one(
+        """
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s
+          AND COLUMN_NAME = %s
+        LIMIT 1
+        """,
+        (table_name, column_name),
+    )
+    return row is not None
+
+
 def run_compute_graph_topology_metrics(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None) -> dict[str, Any]:
     started = time.perf_counter()
     job_name = "compute_graph_topology_metrics"
@@ -1104,6 +1119,7 @@ def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | Non
         OPTIONAL MATCH (f)-[:CONTAINS]->(i:Item)
         WITH d, count(DISTINCT f) AS fit_count, count(i) AS item_count, count(DISTINCT i) AS unique_item_count
         RETURN toInteger(d.doctrine_id) AS doctrine_id,
+               toString(COALESCE(d.name, '')) AS doctrine_name,
                toInteger(fit_count) AS fit_count,
                toInteger(item_count) AS item_count,
                toInteger(unique_item_count) AS unique_item_count,
@@ -1113,6 +1129,7 @@ def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | Non
     )
 
     _ensure_doctrine_dependency_depth_schema(db)
+    doctrine_dependency_has_name = _table_has_column(db, "doctrine_dependency_depth", "doctrine_name")
 
     _upsert_table(
         db,
@@ -1122,17 +1139,44 @@ def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | Non
         [(int(r["type_id"]), int(r["doctrine_count"]), int(r["fit_count"]), float(r["dependency_score"]), computed_at) for r in item_rows if int(r.get("type_id") or 0) > 0],
     )
 
-    _upsert_table(
-        db,
-        "doctrine_dependency_depth",
-        "doctrine_id, fit_count, item_count, unique_item_count, dependency_depth_score, computed_at",
-        "%s, %s, %s, %s, %s, %s",
-        [
-            (int(r["doctrine_id"]), int(r["fit_count"]), int(r["item_count"]), int(r["unique_item_count"]), float(r["dependency_depth_score"]), computed_at)
-            for r in doctrine_rows
-            if int(r.get("doctrine_id") or 0) > 0
-        ],
-    )
+    doctrine_dependency_rows = [r for r in doctrine_rows if int(r.get("doctrine_id") or 0) > 0]
+    if doctrine_dependency_has_name:
+        _upsert_table(
+            db,
+            "doctrine_dependency_depth",
+            "doctrine_id, doctrine_name, fit_count, item_count, unique_item_count, dependency_depth_score, computed_at",
+            "%s, %s, %s, %s, %s, %s, %s",
+            [
+                (
+                    int(r["doctrine_id"]),
+                    str(r.get("doctrine_name") or f"Doctrine #{int(r['doctrine_id'])}"),
+                    int(r["fit_count"]),
+                    int(r["item_count"]),
+                    int(r["unique_item_count"]),
+                    float(r["dependency_depth_score"]),
+                    computed_at,
+                )
+                for r in doctrine_dependency_rows
+            ],
+        )
+    else:
+        _upsert_table(
+            db,
+            "doctrine_dependency_depth",
+            "doctrine_id, fit_count, item_count, unique_item_count, dependency_depth_score, computed_at",
+            "%s, %s, %s, %s, %s, %s",
+            [
+                (
+                    int(r["doctrine_id"]),
+                    int(r["fit_count"]),
+                    int(r["item_count"]),
+                    int(r["unique_item_count"]),
+                    float(r["dependency_depth_score"]),
+                    computed_at,
+                )
+                for r in doctrine_dependency_rows
+            ],
+        )
 
     sync_state = _sync_state_get(db, SYNC_DATASET_GRAPH_INSIGHTS_FIT_OVERLAP) or {}
     cursor_fit_id, cursor_other_fit_id = _parse_pair_cursor(sync_state.get("last_cursor"))
