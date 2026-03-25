@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+import pymysql
+
 from .config import load_php_runtime_config
 from .db import SupplyCoreDb
 from .jobs import (
@@ -177,7 +179,6 @@ def main(argv: list[str] | None = None) -> int:
     retry_backoff = max(5, int(worker_settings.get("retry_backoff_seconds", 30)))
 
     while True:
-        seed_result = db.queue_due_recurring_jobs(WORKER_JOB_DEFINITIONS)
         memory_usage = resident_memory_bytes()
         if memory_usage >= abort_threshold:
             logger.warning("memory abort threshold reached", payload={"event": "worker_pool.memory_abort", "worker_id": worker_id, "memory_usage_bytes": memory_usage})
@@ -185,8 +186,38 @@ def main(argv: list[str] | None = None) -> int:
         if memory_usage >= pause_threshold and idle_sleep > 0:
             time.sleep(min(30, idle_sleep))
 
-        job = db.claim_next_worker_job(worker_id, queues=queue_names, workload_classes=workload_classes, execution_modes=execution_modes, lease_seconds=lease_seconds)
-        diagnostics = db.worker_claim_diagnostics(queues=queue_names, workload_classes=workload_classes)
+        try:
+            seed_result = db.queue_due_recurring_jobs(WORKER_JOB_DEFINITIONS)
+            job = db.claim_next_worker_job(worker_id, queues=queue_names, workload_classes=workload_classes, execution_modes=execution_modes, lease_seconds=lease_seconds)
+            diagnostics = db.worker_claim_diagnostics(queues=queue_names, workload_classes=workload_classes)
+        except pymysql.MySQLError as error:
+            logger.warning(
+                "database unavailable while polling worker queue",
+                payload={
+                    "event": "worker_pool.db_unavailable",
+                    "worker_id": worker_id,
+                    "error": str(error),
+                    "retry_in_seconds": retry_backoff,
+                },
+            )
+            _write_state_file(
+                state_file,
+                {
+                    "ts": utc_now_iso(),
+                    "worker_id": worker_id,
+                    "queues": queue_names,
+                    "workload_classes": workload_classes,
+                    "execution_modes": execution_modes,
+                    "seed_result": None,
+                    "job": None,
+                    "memory_usage_bytes": memory_usage,
+                    "last_error": str(error),
+                },
+            )
+            if args.once:
+                return 1
+            time.sleep(retry_backoff)
+            continue
 
         _write_state_file(state_file, {"ts": utc_now_iso(), "worker_id": worker_id, "queues": queue_names, "workload_classes": workload_classes, "execution_modes": execution_modes, "seed_result": seed_result, "job": job, "memory_usage_bytes": memory_usage})
 
