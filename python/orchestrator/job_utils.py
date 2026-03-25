@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import socket
 import time
 import uuid
@@ -9,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .db import SupplyCoreDb
+from .json_utils import json_dumps_safe, make_json_safe
 
 
 @dataclass(slots=True)
@@ -69,7 +69,7 @@ def start_job_run(db: SupplyCoreDb, job_name: str) -> JobRun:
         VALUES (%s, %s, 'running', UTC_TIMESTAMP(), %s)
         ON DUPLICATE KEY UPDATE started_at = UTC_TIMESTAMP(), status = 'running', error_text = NULL
         """,
-        (job_name, run_id, json.dumps({"job_name": job_name}, separators=(",", ":"))),
+        (job_name, run_id, json_dumps_safe({"job_name": job_name})),
     )
     return JobRun(job_name=job_name, run_id=run_id, started_at=time.time())
 
@@ -93,7 +93,8 @@ def finish_job_run(
         "errors": error_text or "",
         **(meta or {}),
     }
-    print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+    safe_payload = make_json_safe(payload)
+    print(json_dumps_safe(safe_payload))
 
     db.execute(
         """
@@ -115,7 +116,7 @@ def finish_job_run(
             max(0, int(rows_processed)),
             max(0, int(rows_written)),
             (error_text or "")[:500] if error_text else None,
-            json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
+            json_dumps_safe(safe_payload),
             job.run_id,
         ),
     )

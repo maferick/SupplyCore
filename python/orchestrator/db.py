@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Generator, Iterable, Sequence
 from contextlib import contextmanager
 from typing import Any
 
 import pymysql
 import pymysql.cursors
+
+from .json_utils import json_dumps_safe
 
 
 class SupplyCoreDb:
@@ -97,4 +98,4 @@ class SupplyCoreDb:
 
 
 def json_dumps(value: Any) -> str:
-    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    return json_dumps_safe(value)

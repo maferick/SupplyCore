@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from .json_utils import make_json_safe
+
 
 class PhpBridge:
     def __init__(self, php_binary: str, app_root: Path):
@@ -17,7 +19,7 @@ class PhpBridge:
         completed = subprocess.run(
             command,
             cwd=str(self.app_root),
-            input=(json.dumps(payload) if payload is not None else None),
+            input=(json.dumps(make_json_safe(payload)) if payload is not None else None),
             capture_output=True,
             text=True,
             check=False,

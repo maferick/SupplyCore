@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .json_utils import json_dumps_safe, make_json_safe
+
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
@@ -18,10 +20,10 @@ class JsonFormatter(logging.Formatter):
         }
         extra = getattr(record, "payload", None)
         if isinstance(extra, dict):
-            payload.update(extra)
+            payload.update(make_json_safe(extra))
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
-        return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        return json_dumps_safe(payload)
 
 
 class LoggerAdapter(logging.LoggerAdapter):

@@ -13539,7 +13539,7 @@ function db_worker_job_release_expired_claims(): int
     return (int) $stmt->rowCount();
 }
 
-function db_worker_job_claim_next(string $workerId, array $queues = [], array $workloadClasses = [], ?int $leaseSeconds = null): ?array
+function db_worker_job_claim_next(string $workerId, array $queues = [], array $workloadClasses = [], ?array $executionModes = null, ?int $leaseSeconds = null): ?array
 {
     db_worker_jobs_ensure_schema();
     db_worker_job_release_expired_claims();
@@ -13563,6 +13563,18 @@ function db_worker_job_claim_next(string $workerId, array $queues = [], array $w
     if ($classValues !== []) {
         $conditions[] = 'workload_class IN (' . implode(',', array_fill(0, count($classValues), '?')) . ')';
         array_push($params, ...$classValues);
+    }
+
+    $modeValues = array_values(array_filter(array_map(
+        static function ($value): string {
+            $mode = strtolower(trim((string) $value));
+            return $mode === 'php' ? 'php' : ($mode === 'python' ? 'python' : '');
+        },
+        $executionModes ?? []
+    ), static fn (string $value): bool => $value !== ''));
+    if ($modeValues !== []) {
+        $conditions[] = 'execution_mode IN (' . implode(',', array_fill(0, count($modeValues), '?')) . ')';
+        array_push($params, ...$modeValues);
     }
 
     $sql = "SELECT id

@@ -14,12 +14,15 @@ from .bridge import PhpBridge
 from .config import load_php_runtime_config
 from .db import SupplyCoreDb
 from .jobs import (
+    run_compute_buy_all,
     run_compute_graph_insights,
     run_compute_graph_sync,
+    run_compute_signals,
     run_killmail_r2z2_stream,
     run_market_comparison_summary,
     run_market_hub_local_history,
 )
+from .json_utils import make_json_safe
 from .logging_utils import LoggerAdapter, configure_logging
 from .worker_runtime import resident_memory_bytes, utc_now_iso
 
@@ -36,6 +39,7 @@ class WorkerPoolContext:
     timeout_seconds: int
     memory_abort_threshold_bytes: int
     db: SupplyCoreDb
+    allowed_execution_modes: list[str]
 
     @property
     def schedule_id(self) -> int:
@@ -65,6 +69,14 @@ PROCESSORS: dict[str, Callable[[WorkerPoolContext], dict[str, Any]]] = {
         run_compute_graph_insights(context.db, dict(context.raw_config.get("neo4j") or {})),
         "compute_graph_insights",
     ),
+    "compute_buy_all": lambda context: _compute_result_shape(
+        run_compute_buy_all(context.db),
+        "compute_buy_all",
+    ),
+    "compute_signals": lambda context: _compute_result_shape(
+        run_compute_signals(context.db, dict(context.raw_config.get("influx") or {})),
+        "compute_signals",
+    ),
 }
 
 PYTHON_PRIMARY_JOB_KEYS = {
@@ -75,6 +87,8 @@ PYTHON_PRIMARY_JOB_KEYS = {
     "killmail_r2z2_sync",
     "compute_graph_sync",
     "compute_graph_insights",
+    "compute_buy_all",
+    "compute_signals",
 }
 
 
@@ -90,6 +104,22 @@ def _graph_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
         "rows_written": rows_written,
         "warnings": list(result.get("warnings") or []),
         "meta": dict(result.get("meta") or {}),
+    }
+
+
+def _compute_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
+    rows_processed = max(0, int(result.get("rows_processed") or 0))
+    rows_written = max(0, int(result.get("rows_written") or 0))
+    return {
+        "status": "success",
+        "summary": f"{job_key} completed successfully.",
+        "rows_processed": rows_processed,
+        "rows_written": rows_written,
+        "meta": {
+            "job_name": job_key,
+            "computed_at": str(result.get("computed_at") or ""),
+            "result": dict(result),
+        },
     }
 
 
@@ -124,6 +154,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--worker-id", default="")
     parser.add_argument("--queues", default="sync,compute")
     parser.add_argument("--workload-classes", default="sync,compute")
+    parser.add_argument("--execution-modes", default="python,php")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
@@ -159,6 +190,8 @@ def _bridge_php_job(context: WorkerPoolContext) -> dict[str, Any]:
     if context.job_key in PYTHON_PRIMARY_JOB_KEYS:
         meta.setdefault("outcome_reason", "Python worker pool owned dispatch, retry, locking, and memory controls for this heavy job.")
     result["meta"] = meta
+    result["execution_language"] = "php"
+    result["subprocess_invoked"] = True
     return result
 
 
@@ -171,17 +204,23 @@ def _process_job(context: WorkerPoolContext) -> dict[str, Any]:
             "job_id": context.schedule_id,
             "job_key": context.job_key,
             "worker_id": context.worker_id,
+            "execution_mode": str(context.job.get("execution_mode") or "php"),
+            "allowed_execution_modes": context.allowed_execution_modes,
             "memory_usage_bytes": resident_memory_bytes(),
         },
     )
     if processor is None:
+        if "php" not in context.allowed_execution_modes:
+            raise RuntimeError(f"Job {context.job_key} requires PHP execution but this worker accepts only {context.allowed_execution_modes}.")
         result = _bridge_php_job(context)
     else:
         result = processor(context)
+        result.setdefault("execution_language", "python")
+        result.setdefault("subprocess_invoked", False)
     result.setdefault("duration_ms", int((time.monotonic() - started) * 1000))
     result.setdefault("started_at", utc_now_iso())
     result.setdefault("finished_at", utc_now_iso())
-    return result
+    return make_json_safe(result)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -190,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     worker_settings, definitions, php_binary, raw_config = _runtime_settings(app_root)
     queue_names = _parse_csv(args.queues)
     workload_classes = _parse_csv(args.workload_classes)
+    execution_modes = _parse_csv(args.execution_modes)
     log_file = Path(
         worker_settings.get(
             "compute_log_file" if "compute" in workload_classes and "sync" not in workload_classes else "worker_log_file",
@@ -216,6 +256,7 @@ def main(argv: list[str] | None = None) -> int:
             "worker_id": worker_id,
             "queues": queue_names,
             "workload_classes": workload_classes,
+            "execution_modes": execution_modes,
             "lease_seconds": lease_seconds,
         },
     )
@@ -242,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
                 "worker_id": worker_id,
                 "queues": queue_names,
                 "workload_classes": workload_classes,
+                "execution_modes": execution_modes,
                 "lease_seconds": lease_seconds,
             },
         )
@@ -253,6 +295,7 @@ def main(argv: list[str] | None = None) -> int:
                 "worker_id": worker_id,
                 "queues": queue_names,
                 "workload_classes": workload_classes,
+                "execution_modes": execution_modes,
                 "seed_result": seed_result.get("result"),
                 "job": job,
                 "memory_usage_bytes": memory_usage,
@@ -283,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=timeout_seconds,
             memory_abort_threshold_bytes=min(abort_threshold, memory_limit_mb * 1024 * 1024),
             db=db,
+            allowed_execution_modes=execution_modes,
         )
 
         stop_event = threading.Event()
@@ -302,6 +346,8 @@ def main(argv: list[str] | None = None) -> int:
                     "job_id": int(job.get("id") or 0),
                     "job_key": context.job_key,
                     "status": result.get("status", "success"),
+                    "execution_language": result.get("execution_language", "python"),
+                    "subprocess_invoked": bool(result.get("subprocess_invoked", False)),
                     "duration_ms": result.get("duration_ms", 0),
                 },
             )

@@ -132,6 +132,7 @@ try {
             $workerId,
             (array) ($input['queues'] ?? []),
             (array) ($input['workload_classes'] ?? []),
+            (array) ($input['execution_modes'] ?? []),
             isset($input['lease_seconds']) ? (int) $input['lease_seconds'] : null
         );
 
