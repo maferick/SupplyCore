@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ..db import SupplyCoreDb
-from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
-from ..neo4j import Neo4jClient, Neo4jConfig
+if __package__ in (None, ""):
+    sys.path.append(str(Path(__file__).resolve().parents[2]))
+    from orchestrator.db import SupplyCoreDb
+    from orchestrator.job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+    from orchestrator.neo4j import Neo4jClient, Neo4jConfig
+else:
+    from ..db import SupplyCoreDb
+    from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+    from ..neo4j import Neo4jClient, Neo4jConfig
 
 WINDOW_SECONDS = 15 * 60
 MIN_ELIGIBLE_PARTICIPANTS = 100
