@@ -12040,6 +12040,14 @@ function scheduler_job_definitions(): array
                 throw new RuntimeException('compute_graph_sync must run in the Python scheduler runtime.');
             },
         ],
+        'compute_graph_sync_doctrine_dependency' => [
+            'timeout_seconds' => 420,
+            'lock_ttl_seconds' => 480,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_graph_sync_doctrine_dependency must run in the Python scheduler runtime.');
+            },
+        ],
         'compute_graph_insights' => [
             'timeout_seconds' => 300,
             'lock_ttl_seconds' => 360,
@@ -12133,6 +12141,7 @@ function scheduler_job_type(string $jobKey): string
         'forecasting_ai_sync' => 'sync.forecasting',
         'killmail_r2z2_sync' => 'sync.killmail',
         'compute_graph_sync' => 'compute.graph_sync',
+        'compute_graph_sync_doctrine_dependency' => 'compute.graph_sync_doctrine_dependency',
         'compute_graph_insights' => 'compute.graph_insights',
         'compute_buy_all' => 'compute.buy_all',
         'compute_signals' => 'compute.signals',
