@@ -37,6 +37,19 @@ Preserve a modular, production-oriented PHP architecture for EveMarket. Favor ma
    - Do not reintroduce dedicated `supplycore-php-compute-worker*` units.
    - Keep compute workers Python-only and route non-native/fallback jobs to sync workers.
 
+8. **Python recurring job runtime parity (anti-regression).**
+   - Python jobs must be implemented as Python-native processors (no PHP bridge or PHP subprocess fallback for compute jobs).
+   - If `execution_mode='python'`, runtime execution must stay in Python with `execution_language='python'` and `subprocess_invoked=false`.
+   - Do not add compute jobs to `PHP_BRIDGED_JOB_KEYS` or any equivalent bridge allowlist.
+   - Every Python recurring job must run through all intended launcher paths with one logic path:
+     - worker pool (`python/orchestrator/worker_pool.py`)
+     - scheduler-dispatched Python runtime (`python/orchestrator/job_runner.py`)
+     - manual Python CLI (`python -m orchestrator ...`)
+   - Do not add scheduler-runtime-only guards unless absolutely required. If unavoidable, document the reason and provide a Python-native context adapter for non-scheduler launchers.
+   - Normalize runtime dependencies (config, DB access, logger/log sinks, timestamps/metadata) through reusable Python context helpers instead of launcher-specific assumptions.
+   - New or changed Python jobs are not complete until parity is validated across worker, scheduler-dispatched, and manual CLI execution paths.
+   - Never “fix” Python job execution failures by routing the job through PHP when the target architecture is Python-only.
+
 ## Preferred Workflow for Changes
 
 1. Update schema (`database/schema.sql`) if persistence needs change.

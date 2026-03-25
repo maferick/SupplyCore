@@ -11,6 +11,7 @@ from typing import Any, Callable
 from .bridge import PhpBridge
 from .config import load_php_runtime_config
 from .db import SupplyCoreDb
+from .job_context import battle_runtime, influx_runtime, neo4j_runtime
 from .jobs import (
     run_compute_battle_actor_features,
     run_compute_battle_anomalies,
@@ -76,74 +77,25 @@ PROCESSORS: dict[str, Callable[[PythonWorkerContext], dict[str, Any]]] = {
     "killmail_r2z2_sync": run_killmail_r2z2_stream,
     "market_comparison_summary_sync": run_market_comparison_summary,
     "market_hub_local_history_sync": run_market_hub_local_history,
-    "compute_graph_sync": lambda context: _graph_result_shape(
-        run_compute_graph_sync(context.db, dict(context.raw_config.get("neo4j") or {})),
-        "compute_graph_sync",
-    ),
-    "compute_graph_sync_doctrine_dependency": lambda context: _graph_result_shape(
-        run_compute_graph_sync_doctrine_dependency(context.db, dict(context.raw_config.get("neo4j") or {})),
-        "compute_graph_sync_doctrine_dependency",
-    ),
-    "compute_graph_sync_battle_intelligence": lambda context: _graph_result_shape(
-        run_compute_graph_sync_battle_intelligence(context.db, dict(context.raw_config.get("neo4j") or {})),
-        "compute_graph_sync_battle_intelligence",
-    ),
-    "compute_graph_derived_relationships": lambda context: _graph_result_shape(
-        run_compute_graph_derived_relationships(context.db, dict(context.raw_config.get("neo4j") or {})),
-        "compute_graph_derived_relationships",
-    ),
-    "compute_graph_insights": lambda context: _graph_result_shape(
-        run_compute_graph_insights(context.db, dict(context.raw_config.get("neo4j") or {})),
-        "compute_graph_insights",
-    ),
-    "compute_graph_prune": lambda context: _graph_result_shape(
-        run_compute_graph_prune(context.db, dict(context.raw_config.get("neo4j") or {})),
-        "compute_graph_prune",
-    ),
-    "compute_graph_topology_metrics": lambda context: _graph_result_shape(
-        run_compute_graph_topology_metrics(context.db, dict(context.raw_config.get("neo4j") or {})),
-        "compute_graph_topology_metrics",
-    ),
-    "compute_behavioral_baselines": lambda context: _compute_result_shape(
-        run_compute_behavioral_baselines(context.db, dict(context.raw_config.get("battle_intelligence") or {})),
-        "compute_behavioral_baselines",
-    ),
-    "compute_suspicion_scores_v2": lambda context: _compute_result_shape(
-        run_compute_suspicion_scores_v2(context.db, dict(context.raw_config.get("battle_intelligence") or {})),
-        "compute_suspicion_scores_v2",
-    ),
+    "compute_graph_sync": lambda context: _graph_result_shape(run_compute_graph_sync(context.db, neo4j_runtime(context.raw_config)), "compute_graph_sync"),
+    "compute_graph_sync_doctrine_dependency": lambda context: _graph_result_shape(run_compute_graph_sync_doctrine_dependency(context.db, neo4j_runtime(context.raw_config)), "compute_graph_sync_doctrine_dependency"),
+    "compute_graph_sync_battle_intelligence": lambda context: _graph_result_shape(run_compute_graph_sync_battle_intelligence(context.db, neo4j_runtime(context.raw_config)), "compute_graph_sync_battle_intelligence"),
+    "compute_graph_derived_relationships": lambda context: _graph_result_shape(run_compute_graph_derived_relationships(context.db, neo4j_runtime(context.raw_config)), "compute_graph_derived_relationships"),
+    "compute_graph_insights": lambda context: _graph_result_shape(run_compute_graph_insights(context.db, neo4j_runtime(context.raw_config)), "compute_graph_insights"),
+    "compute_graph_prune": lambda context: _graph_result_shape(run_compute_graph_prune(context.db, neo4j_runtime(context.raw_config)), "compute_graph_prune"),
+    "compute_graph_topology_metrics": lambda context: _graph_result_shape(run_compute_graph_topology_metrics(context.db, neo4j_runtime(context.raw_config)), "compute_graph_topology_metrics"),
+    "compute_behavioral_baselines": lambda context: _compute_result_shape(run_compute_behavioral_baselines(context.db, battle_runtime(context.raw_config)), "compute_behavioral_baselines"),
+    "compute_suspicion_scores_v2": lambda context: _compute_result_shape(run_compute_suspicion_scores_v2(context.db, battle_runtime(context.raw_config)), "compute_suspicion_scores_v2"),
     "compute_buy_all": lambda context: _compute_result_shape(
         run_compute_buy_all(context.db),
         "compute_buy_all",
     ),
-    "compute_signals": lambda context: _compute_result_shape(
-        run_compute_signals(context.db, dict(context.raw_config.get("influx") or {})),
-        "compute_signals",
-    ),
-    "compute_battle_rollups": lambda context: _compute_result_shape(
-        run_compute_battle_rollups(context.db, dict(context.raw_config.get("battle_intelligence") or {})),
-        "compute_battle_rollups",
-    ),
-    "compute_battle_target_metrics": lambda context: _compute_result_shape(
-        run_compute_battle_target_metrics(context.db, dict(context.raw_config.get("battle_intelligence") or {})),
-        "compute_battle_target_metrics",
-    ),
-    "compute_battle_anomalies": lambda context: _compute_result_shape(
-        run_compute_battle_anomalies(context.db, dict(context.raw_config.get("battle_intelligence") or {})),
-        "compute_battle_anomalies",
-    ),
-    "compute_battle_actor_features": lambda context: _compute_result_shape(
-        run_compute_battle_actor_features(
-            context.db,
-            dict(context.raw_config.get("neo4j") or {}),
-            dict(context.raw_config.get("battle_intelligence") or {}),
-        ),
-        "compute_battle_actor_features",
-    ),
-    "compute_suspicion_scores": lambda context: _compute_result_shape(
-        run_compute_suspicion_scores(context.db, dict(context.raw_config.get("battle_intelligence") or {})),
-        "compute_suspicion_scores",
-    ),
+    "compute_signals": lambda context: _compute_result_shape(run_compute_signals(context.db, influx_runtime(context.raw_config)), "compute_signals"),
+    "compute_battle_rollups": lambda context: _compute_result_shape(run_compute_battle_rollups(context.db, battle_runtime(context.raw_config)), "compute_battle_rollups"),
+    "compute_battle_target_metrics": lambda context: _compute_result_shape(run_compute_battle_target_metrics(context.db, battle_runtime(context.raw_config)), "compute_battle_target_metrics"),
+    "compute_battle_anomalies": lambda context: _compute_result_shape(run_compute_battle_anomalies(context.db, battle_runtime(context.raw_config)), "compute_battle_anomalies"),
+    "compute_battle_actor_features": lambda context: _compute_result_shape(run_compute_battle_actor_features(context.db, neo4j_runtime(context.raw_config), battle_runtime(context.raw_config)), "compute_battle_actor_features"),
+    "compute_suspicion_scores": lambda context: _compute_result_shape(run_compute_suspicion_scores(context.db, battle_runtime(context.raw_config)), "compute_suspicion_scores"),
 }
 
 # Jobs that intentionally execute via the PHP bridge while still running under the
@@ -167,6 +119,10 @@ PHP_BRIDGED_JOB_KEYS: set[str] = {
     "forecasting_ai_sync",
     "killmail_r2z2_sync",
 }
+
+INVALID_BRIDGED_JOB_KEYS = sorted(job_key for job_key in PHP_BRIDGED_JOB_KEYS if job_key.startswith("compute_"))
+if INVALID_BRIDGED_JOB_KEYS:
+    raise RuntimeError(f"Compute jobs must be Python-native and cannot use PHP bridge fallback: {', '.join(INVALID_BRIDGED_JOB_KEYS)}")
 
 
 def _graph_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
@@ -280,6 +236,8 @@ def process_job(context: PythonWorkerContext) -> dict[str, Any]:
     )
 
     if processor is None:
+        if context.job_key.startswith("compute_"):
+            raise RuntimeError(f"No Python processor is registered for compute job {context.job_key}. Compute jobs cannot use PHP fallback.")
         if context.job_key in PHP_BRIDGED_JOB_KEYS:
             result = _run_php_fallback(context, bridge)
         elif not bool(context.scheduler_config.get("python_php_fallback_enabled", True)):

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import load_php_runtime_config
+from .job_context import battle_runtime, influx_runtime, neo4j_runtime
 from .influx_export import main as run_influx_rollup_export
 from .influx_inspect import inspect_main as run_influx_rollup_inspect
 from .influx_inspect import sample_main as run_influx_rollup_sample
@@ -200,7 +201,7 @@ def main() -> int:
         config = load_php_runtime_config(app_root)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
-        result = run_compute_signals(db, config.raw.get("influx", {}))
+        result = run_compute_signals(db, influx_runtime(config.raw))
         print(result)
         return 0
     if command == "compute-graph-sync":
@@ -208,7 +209,7 @@ def main() -> int:
         config = load_php_runtime_config(app_root)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
-        result = run_compute_graph_sync(db, config.raw.get("neo4j", {}))
+        result = run_compute_graph_sync(db, neo4j_runtime(config.raw))
         print(result)
         return 0
     if command == "compute-graph-insights":
@@ -216,7 +217,7 @@ def main() -> int:
         config = load_php_runtime_config(app_root)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
-        result = run_compute_graph_insights(db, config.raw.get("neo4j", {}))
+        result = run_compute_graph_insights(db, neo4j_runtime(config.raw))
         print(result)
         return 0
     if command == "compute-graph-sync-doctrine-dependency":
@@ -224,7 +225,7 @@ def main() -> int:
         config = load_php_runtime_config(app_root)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
-        result = run_compute_graph_sync_doctrine_dependency(db, config.raw.get("neo4j", {}))
+        result = run_compute_graph_sync_doctrine_dependency(db, neo4j_runtime(config.raw))
         print(result)
         return 0
     if command == "compute-graph-sync-battle-intelligence":
@@ -232,7 +233,7 @@ def main() -> int:
         config = load_php_runtime_config(app_root)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
-        result = run_compute_graph_sync_battle_intelligence(db, config.raw.get("neo4j", {}))
+        result = run_compute_graph_sync_battle_intelligence(db, neo4j_runtime(config.raw))
         print(result)
         return 0
     if command == "compute-graph-derived-relationships":
@@ -240,7 +241,7 @@ def main() -> int:
         config = load_php_runtime_config(app_root)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
-        result = run_compute_graph_derived_relationships(db, config.raw.get("neo4j", {}))
+        result = run_compute_graph_derived_relationships(db, neo4j_runtime(config.raw))
         print(result)
         return 0
     if command == "compute-graph-prune":
@@ -248,7 +249,7 @@ def main() -> int:
         config = load_php_runtime_config(app_root)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
-        result = run_compute_graph_prune(db, config.raw.get("neo4j", {}))
+        result = run_compute_graph_prune(db, neo4j_runtime(config.raw))
         print(result)
         return 0
     if command == "compute-graph-topology-metrics":
@@ -256,7 +257,7 @@ def main() -> int:
         config = load_php_runtime_config(app_root)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
-        result = run_compute_graph_topology_metrics(db, config.raw.get("neo4j", {}))
+        result = run_compute_graph_topology_metrics(db, neo4j_runtime(config.raw))
         print(result)
         return 0
     if command == "compute-behavioral-baselines":
@@ -264,7 +265,7 @@ def main() -> int:
         config = load_php_runtime_config(app_root)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
-        result = run_compute_behavioral_baselines(db, config.raw.get("battle_intelligence", {}))
+        result = run_compute_behavioral_baselines(db, battle_runtime(config.raw))
         print(result)
         return 0
     if command == "compute-suspicion-scores-v2":
@@ -272,7 +273,7 @@ def main() -> int:
         config = load_php_runtime_config(app_root)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
-        result = run_compute_suspicion_scores_v2(db, config.raw.get("battle_intelligence", {}))
+        result = run_compute_suspicion_scores_v2(db, battle_runtime(config.raw))
         print(result)
         return 0
     if command in {
@@ -287,24 +288,24 @@ def main() -> int:
         from .db import SupplyCoreDb
 
         db = SupplyCoreDb(config.raw.get("db", {}))
-        battle_runtime = dict(config.raw.get("battle_intelligence") or {})
+        battle_job_runtime = battle_runtime(config.raw)
         started_at = time.monotonic()
         try:
             if command == "compute-battle-rollups":
-                result = run_compute_battle_rollups(db, battle_runtime, dry_run=bool(args.dry_run))
+                result = run_compute_battle_rollups(db, battle_job_runtime, dry_run=bool(args.dry_run))
             elif command == "compute-battle-target-metrics":
-                result = run_compute_battle_target_metrics(db, battle_runtime, dry_run=bool(args.dry_run))
+                result = run_compute_battle_target_metrics(db, battle_job_runtime, dry_run=bool(args.dry_run))
             elif command == "compute-battle-anomalies":
-                result = run_compute_battle_anomalies(db, battle_runtime, dry_run=bool(args.dry_run))
+                result = run_compute_battle_anomalies(db, battle_job_runtime, dry_run=bool(args.dry_run))
             elif command == "compute-battle-actor-features":
                 result = run_compute_battle_actor_features(
                     db,
-                    dict(config.raw.get("neo4j", {})),
-                    battle_runtime,
+                    neo4j_runtime(config.raw),
+                    battle_job_runtime,
                     dry_run=bool(args.dry_run),
                 )
             else:
-                result = run_compute_suspicion_scores(db, battle_runtime, dry_run=bool(args.dry_run))
+                result = run_compute_suspicion_scores(db, battle_job_runtime, dry_run=bool(args.dry_run))
             _print_cli_result(command, started_at, result)
             return 0 if str(result.get("status") or "success") != "failed" else 1
         except Exception as exc:
