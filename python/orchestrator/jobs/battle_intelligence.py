@@ -815,6 +815,11 @@ def run_compute_battle_actor_features(
 
 
 def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | None = None, *, dry_run: bool = False) -> dict[str, Any]:
+    # `runtime` is intentionally optional so this processor can run identically from:
+    # - worker pool context
+    # - scheduler-dispatched Python runtime
+    # - manual Python CLI invocation
+    # Missing runtime values only disable optional file logging via `_battle_log`.
     lock_key = "compute_suspicion_scores"
     owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
     if owner is None:
