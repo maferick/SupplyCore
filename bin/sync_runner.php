@@ -244,8 +244,12 @@ function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode
 
     if ($jobKey === 'market-hub-local-history') {
         $hubRef = market_hub_setting_reference();
+        if ($hubRef === '' && $sourceId > 0) {
+            $hubRef = (string) $sourceId;
+        }
+
         if ($hubRef === '') {
-            throw new RuntimeException('Hub snapshot history sync skipped: configure a reference market hub in Trading Stations settings.');
+            throw new RuntimeException('Hub snapshot history sync skipped: configure a reference market hub in Trading Stations settings or pass --source-id=<station-id>.');
         }
 
         $datasetKey = sync_dataset_key_market_hub_local_history_daily($hubRef);
