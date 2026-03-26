@@ -388,10 +388,12 @@ def run_compute_counterintel_pipeline(
         processed_battles = 0
         batch_count = 0
         last_battle_id = cursor
+        assignment_mismatch_count = 0
+        assignment_mismatch_samples: list[dict[str, Any]] = []
         while batch_count < max_batches:
             battles = db.fetch_all(
                 """
-                SELECT br.battle_id, br.started_at, br.participant_count
+                SELECT br.battle_id, br.system_id, br.started_at, br.ended_at, br.participant_count
                 FROM battle_rollups br
                 WHERE br.eligible_for_suspicion = 1
                   AND br.participant_count >= 100
@@ -677,11 +679,80 @@ def run_compute_counterintel_pipeline(
                             """,
                             (row["character_id"], row["evidence_key"], row["evidence_value"], row["evidence_text"], row["evidence_payload_json"], computed_at),
                         )
+                    if battles:
+                        for battle in battles:
+                            battle_id = str(battle.get("battle_id") or "")
+                            system_id = int(battle.get("system_id") or 0)
+                            started_at = battle.get("started_at")
+                            ended_at = battle.get("ended_at")
+                            if not battle_id or system_id <= 0 or started_at is None or ended_at is None:
+                                continue
+                            cursor_db.execute(
+                                """
+                                UPDATE killmail_events
+                                SET battle_id = %s
+                                WHERE battle_id IS NULL
+                                  AND solar_system_id = %s
+                                  AND effective_killmail_at BETWEEN %s AND %s
+                                """,
+                                (battle_id, system_id, started_at, ended_at),
+                            )
+
                     if battle_ids:
                         cursor_db.execute(
-                            "UPDATE killmail_events SET battle_id = %s WHERE battle_id IS NULL AND solar_system_id = (SELECT system_id FROM battle_rollups WHERE battle_id = %s LIMIT 1) AND effective_killmail_at BETWEEN (SELECT started_at FROM battle_rollups WHERE battle_id = %s LIMIT 1) AND (SELECT ended_at FROM battle_rollups WHERE battle_id = %s LIMIT 1)",
-                            (battle_ids[0], battle_ids[0], battle_ids[0], battle_ids[0]),
+                            f"""
+                            SELECT
+                                ke.killmail_id,
+                                ke.battle_id,
+                                ke.solar_system_id,
+                                ke.effective_killmail_at,
+                                br.system_id AS expected_system_id,
+                                br.started_at,
+                                br.ended_at
+                            FROM killmail_events ke
+                            INNER JOIN battle_rollups br ON br.battle_id = ke.battle_id
+                            WHERE ke.battle_id IN ({placeholders})
+                              AND (
+                                    ke.solar_system_id <> br.system_id
+                                    OR ke.effective_killmail_at < br.started_at
+                                    OR ke.effective_killmail_at > br.ended_at
+                                  )
+                            ORDER BY ke.battle_id ASC, ke.killmail_id ASC
+                            LIMIT 25
+                            """,
+                            tuple(battle_ids),
                         )
+                        mismatch_rows = [dict(row) for row in cursor_db.fetchall()]
+                        cursor_db.execute(
+                            f"""
+                            SELECT COUNT(*) AS mismatch_count
+                            FROM killmail_events ke
+                            INNER JOIN battle_rollups br ON br.battle_id = ke.battle_id
+                            WHERE ke.battle_id IN ({placeholders})
+                              AND (
+                                    ke.solar_system_id <> br.system_id
+                                    OR ke.effective_killmail_at < br.started_at
+                                    OR ke.effective_killmail_at > br.ended_at
+                                  )
+                            """,
+                            tuple(battle_ids),
+                        )
+                        mismatch_count_row = dict(cursor_db.fetchone() or {"mismatch_count": 0})
+                        assignment_mismatch_count += int(mismatch_count_row.get("mismatch_count") or 0)
+                        for row in mismatch_rows:
+                            if len(assignment_mismatch_samples) >= 25:
+                                break
+                            assignment_mismatch_samples.append(
+                                {
+                                    "killmail_id": int(row.get("killmail_id") or 0),
+                                    "battle_id": str(row.get("battle_id") or ""),
+                                    "solar_system_id": int(row.get("solar_system_id") or 0),
+                                    "effective_killmail_at": str(row.get("effective_killmail_at") or ""),
+                                    "expected_system_id": int(row.get("expected_system_id") or 0),
+                                    "started_at": str(row.get("started_at") or ""),
+                                    "ended_at": str(row.get("ended_at") or ""),
+                                }
+                            )
 
             if neo4j and overperformance_rows:
                 neo4j.query(
@@ -729,6 +800,10 @@ def run_compute_counterintel_pipeline(
             "cursor": last_battle_id,
             "duration_ms": duration_ms,
             "dry_run": dry_run,
+            "battle_assignment_validation": {
+                "mismatch_count": assignment_mismatch_count,
+                "sample_rows": assignment_mismatch_samples,
+            },
             "summary": f"processed {processed_battles} eligible 100+ participant battles across {batch_count} batches",
         }
         finish_job_run(db, job, status="success", rows_processed=rows_processed, rows_written=rows_written, meta=result)
