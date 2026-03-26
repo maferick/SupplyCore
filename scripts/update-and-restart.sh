@@ -96,26 +96,34 @@ parse_args() {
 }
 
 discover_services() {
-  # Auto-discover all active/enabled supplycore-* services and timers.
-  # This catches both plain units (supplycore-sync-worker.service) and
-  # templated instances (supplycore-sync-worker@1.service).
+  # Auto-discover supplycore-* services and timers that are actually loaded
+  # and not in a "not-found" state.  Filters out template definitions
+  # (e.g. supplycore-sync-worker@.service) — only concrete instances are
+  # restarted.  Uses list-unit-files for installed units and list-units for
+  # running instances to catch both enabled and active-but-not-enabled units.
   local -a discovered=()
-  local unit
+  local unit load_state
 
-  while IFS= read -r unit; do
-    [[ -n "${unit}" ]] && discovered+=("${unit}")
-  done < <(systemctl list-units --type=service --all --no-legend --plain 2>/dev/null \
-    | awk '{print $1}' \
-    | grep -E '^supplycore-' \
-    | grep -v '@\.service$' \
+  # Running / loaded service instances (catches templated instances like @1)
+  while IFS= read -r unit load_state; do
+    [[ -z "${unit}" ]] && continue
+    # Skip template definitions and not-found/masked units
+    [[ "${unit}" == *'@.service' ]] && continue
+    [[ "${load_state}" == "not-found" ]] && continue
+    [[ "${load_state}" == "masked" ]] && continue
+    discovered+=("${unit}")
+  done < <(systemctl list-units --type=service --no-legend --plain 2>/dev/null \
+    | awk '/^supplycore-/ {print $1, $2}' \
     || true)
 
-  # Also discover active timers
-  while IFS= read -r unit; do
-    [[ -n "${unit}" ]] && discovered+=("${unit}")
-  done < <(systemctl list-units --type=timer --all --no-legend --plain 2>/dev/null \
-    | awk '{print $1}' \
-    | grep -E '^supplycore-' \
+  # Active timers
+  while IFS= read -r unit load_state; do
+    [[ -z "${unit}" ]] && continue
+    [[ "${load_state}" == "not-found" ]] && continue
+    [[ "${load_state}" == "masked" ]] && continue
+    discovered+=("${unit}")
+  done < <(systemctl list-units --type=timer --no-legend --plain 2>/dev/null \
+    | awk '/^supplycore-/ {print $1, $2}' \
     || true)
 
   printf '%s\n' "${discovered[@]}"
@@ -206,7 +214,7 @@ fi
 
 for svc in "${RESTART_SERVICES[@]}"; do
   log "Restarting ${svc}"
-  run_cmd systemctl restart "${svc}"
+  run_cmd systemctl restart "${svc}" || log "WARNING: failed to restart ${svc} (may not be installed)"
 done
 
 log "Post-restart status checks"
