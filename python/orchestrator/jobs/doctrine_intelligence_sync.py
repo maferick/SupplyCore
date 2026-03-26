@@ -16,15 +16,15 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
                 f.id AS fit_id,
                 f.doctrine_group_id,
                 i.type_id,
-                i.required_quantity,
+                i.quantity AS required_units,
                 COALESCE(SUM(s.local_stock_units), 0) AS local_stock_units,
-                FLOOR(COALESCE(SUM(s.local_stock_units), 0) / NULLIF(i.required_quantity, 0)) AS complete_fits_supported,
-                GREATEST(0, i.required_quantity - COALESCE(SUM(s.local_stock_units), 0)) AS fit_gap
+                FLOOR(COALESCE(SUM(s.local_stock_units), 0) / NULLIF(i.quantity, 0)) AS complete_fits_supported,
+                GREATEST(0, i.quantity - COALESCE(SUM(s.local_stock_units), 0)) AS fit_gap
             FROM doctrine_fits f
             INNER JOIN doctrine_fit_items i ON i.doctrine_fit_id = f.id
             LEFT JOIN market_item_stock_1d s ON s.type_id = i.type_id AND s.bucket_start = CURDATE()
             WHERE f.parse_status = 'ready'
-            GROUP BY f.id, f.doctrine_group_id, i.type_id, i.required_quantity
+            GROUP BY f.id, f.doctrine_group_id, i.type_id, i.quantity
             ON DUPLICATE KEY UPDATE
                 local_stock_units = VALUES(local_stock_units), complete_fits_supported = VALUES(complete_fits_supported), fit_gap = VALUES(fit_gap)"""
     )
