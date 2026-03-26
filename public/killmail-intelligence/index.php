@@ -234,8 +234,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </tr>
             <?php else: ?>
                 <?php foreach ($rows as $index => $row): ?>
-                    <?php $hasPod = isset($row['pod_kill']); ?>
-                    <tr class="<?= $hasPod ? '' : 'border-b border-border/60' ?> text-slate-200 transition hover:bg-accent/10 <?= $index % 2 === 1 ? 'bg-white/[0.01]' : '' ?>">
+                    <?php $hasPod = isset($row['pod_kill']); $pod = $hasPod ? $row['pod_kill'] : null; ?>
+                    <tr class="border-b border-border/60 text-slate-200 transition hover:bg-accent/10 <?= $index % 2 === 1 ? 'bg-white/[0.01]' : '' ?>">
                         <td class="px-3 py-3 align-top">
                             <div class="flex items-start gap-3">
                                 <?php if ((string) ($row['victim_portrait_url'] ?? '') !== ''): ?>
@@ -259,6 +259,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($row['final_blow_alliance'] ?? '—'), ENT_QUOTES) ?></p>
                                 </div>
                             </div>
+                            <?php if ($hasPod): ?>
+                                <div class="mt-2 border-t border-dashed border-border/30 pt-1.5 text-xs text-slate-400">
+                                    ↳ Pod: <?= htmlspecialchars((string) ($pod['final_blow_character'] ?? '—'), ENT_QUOTES) ?>
+                                </div>
+                            <?php endif; ?>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <div class="flex items-start gap-3">
@@ -274,6 +279,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <?php endif; ?>
                                 </div>
                             </div>
+                            <?php if ($hasPod): ?>
+                                <div class="mt-2 border-t border-dashed border-border/30 pt-1.5 text-xs text-slate-400">
+                                    ↳ <?= htmlspecialchars((string) ($pod['ship_type'] ?? 'Capsule'), ENT_QUOTES) ?>
+                                </div>
+                            <?php endif; ?>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['killmail_flags_display'] ?? 'No special flags'), ENT_QUOTES) ?></p>
@@ -297,30 +307,19 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <?php endif; ?>
                             <p class="mt-2 text-xs text-muted"><?= htmlspecialchars((string) ($row['created_at_display'] ?? '—'), ENT_QUOTES) ?></p>
                             <p class="mt-1 text-xs text-muted">Uploaded <?= htmlspecialchars((string) ($row['uploaded_at_display'] ?? '—'), ENT_QUOTES) ?></p>
+                            <?php if ($hasPod): ?>
+                                <div class="mt-2 border-t border-dashed border-border/30 pt-1.5 text-xs text-muted">
+                                    Pod: <?= htmlspecialchars((string) ($pod['estimated_value_display'] ?? '—'), ENT_QUOTES) ?>
+                                </div>
+                            <?php endif; ?>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <a href="<?= htmlspecialchars((string) ($row['inspect_url'] ?? '#'), ENT_QUOTES) ?>" class="inline-flex items-center btn-primary px-3 py-2">Inspect loss</a>
+                            <?php if ($hasPod): ?>
+                                <a href="<?= htmlspecialchars((string) ($pod['inspect_url'] ?? '#'), ENT_QUOTES) ?>" class="mt-1 inline-flex items-center text-xs text-sky-400 hover:underline">Inspect pod</a>
+                            <?php endif; ?>
                         </td>
                     </tr>
-                    <?php if (isset($row['pod_kill'])): $pod = $row['pod_kill']; ?>
-                    <tr class="border-b border-border/60 text-slate-400 text-xs <?= $index % 2 === 1 ? 'bg-white/[0.01]' : '' ?>">
-                        <td class="pl-10 pr-3 py-1.5 align-top border-t border-dashed border-border/30">
-                            <span class="text-muted">↳ Pod kill</span>
-                        </td>
-                        <td class="px-3 py-1.5 align-top border-t border-dashed border-border/30 text-slate-400">
-                            <?= htmlspecialchars((string) ($pod['final_blow_character'] ?? '—'), ENT_QUOTES) ?>
-                        </td>
-                        <td class="px-3 py-1.5 align-top border-t border-dashed border-border/30">
-                            <span class="text-slate-400"><?= htmlspecialchars((string) ($pod['ship_type'] ?? 'Capsule'), ENT_QUOTES) ?></span>
-                        </td>
-                        <td class="px-3 py-1.5 align-top border-t border-dashed border-border/30" colspan="2">
-                            <span class="text-muted"><?= htmlspecialchars((string) ($pod['estimated_value_display'] ?? '—'), ENT_QUOTES) ?></span>
-                        </td>
-                        <td class="px-3 py-1.5 align-top border-t border-dashed border-border/30">
-                            <a href="<?= htmlspecialchars((string) ($pod['inspect_url'] ?? '#'), ENT_QUOTES) ?>" class="text-xs text-sky-400 hover:underline">Inspect</a>
-                        </td>
-                    </tr>
-                    <?php endif; ?>
                 <?php endforeach; ?>
             <?php endif; ?>
             </tbody>
