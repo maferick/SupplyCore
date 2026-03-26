@@ -606,6 +606,7 @@ class SupplyCoreDb:
                 FROM esi_cache_entries
                 WHERE namespace_key = 'cache.esi.oauth.token'
                   AND cache_key = 'latest'
+                  AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
                 ORDER BY updated_at DESC, id DESC
                 LIMIT 1"""
         ) or {}
@@ -613,14 +614,7 @@ class SupplyCoreDb:
         if cached_token != "":
             return cached_token
 
-        latest = self.fetch_one(
-            """SELECT access_token
-                FROM esi_oauth_tokens
-                ORDER BY updated_at DESC, id DESC
-                LIMIT 1"""
-        ) or {}
-        latest_token = str(latest.get("access_token") or "").strip()
-        return latest_token or None
+        return None
 
     def replace_market_orders_for_source(
         self,

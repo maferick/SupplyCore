@@ -30,7 +30,7 @@ class EsiMarketAdapter:
         return self._request_json(url)
 
     def fetch_structure_orders(self, *, structure_id: int, access_token: str, page: int = 1) -> EsiOrdersResponse:
-        query = urlencode({"page": page})
+        query = urlencode({"datasource": "tranquility", "page": page})
         url = f"{ESI_BASE}/latest/markets/structures/{structure_id}/?{query}"
         return self._request_json(url, token=access_token)
 
@@ -43,7 +43,11 @@ class EsiMarketAdapter:
             "User-Agent": "SupplyCore-Orchestrator/1.0",
         }
         if token:
-            headers["Authorization"] = f"Bearer {token}"
+            sanitized_token = token.strip()
+            if sanitized_token.lower().startswith("bearer "):
+                sanitized_token = sanitized_token[7:].strip()
+            if sanitized_token:
+                headers["Authorization"] = f"Bearer {sanitized_token}"
         request = Request(url, headers=headers, method="GET")
         try:
             with urlopen(request, timeout=self._timeout_seconds) as response:
