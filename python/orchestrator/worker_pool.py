@@ -329,6 +329,9 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(min(30, idle_sleep))
 
         try:
+            reaped = db.reap_stale_running_jobs()
+            if reaped > 0:
+                logger.info("reaped stale running jobs", payload={"event": "worker_pool.reaped_stale", "worker_id": worker_id, "reaped": reaped})
             seed_result = db.queue_due_recurring_jobs(WORKER_JOB_DEFINITIONS)
             job = db.claim_next_worker_job(worker_id, queues=queue_names, workload_classes=workload_classes, execution_modes=execution_modes, lease_seconds=lease_seconds)
             diagnostics = db.worker_claim_diagnostics(queues=queue_names, workload_classes=workload_classes)

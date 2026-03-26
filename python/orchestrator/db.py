@@ -93,6 +93,22 @@ class SupplyCoreDb:
         finally:
             connection.close()
 
+    def reap_stale_running_jobs(self) -> int:
+        """Mark stuck running jobs as dead when their lock has expired."""
+        return self.execute(
+            """UPDATE worker_jobs
+               SET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'failed' END,
+                   last_error = 'Reaped: lock expired while still running (worker likely crashed)',
+                   last_finished_at = UTC_TIMESTAMP(),
+                   locked_at = NULL,
+                   lock_expires_at = NULL,
+                   locked_by = NULL,
+                   heartbeat_at = NULL
+               WHERE status = 'running'
+                 AND lock_expires_at IS NOT NULL
+                 AND lock_expires_at < UTC_TIMESTAMP()"""
+        )
+
     def queue_due_recurring_jobs(self, definitions: dict[str, dict[str, Any]], *, only_job_keys: list[str] | None = None) -> dict[str, int]:
         scoped = definitions
         if only_job_keys:
