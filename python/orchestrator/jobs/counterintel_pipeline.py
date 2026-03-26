@@ -506,32 +506,52 @@ def run_compute_counterintel_pipeline(
             control_membership_rows: list[tuple[str, str, int]] = []
             anomalous_battle_denominator = len(anomalous_battles)
             control_battle_denominator = len(control_battles)
+            battle_started_by_id = {str(row.get("battle_id") or ""): row.get("started_at") for row in battles}
             for character_id, presences in by_character.items():
                 anomaly_hits = 0
                 control_hits = 0
                 sustain_lifts: list[float] = []
+                anomalous_battle_ids: set[str] = set()
+                control_battle_ids: set[str] = set()
+                repeatability_windows_7d: set[str] = set()
+                repeatability_windows_30d: set[str] = set()
                 for row in presences:
-                    key = f"{row.get('battle_id')}|{row.get('side_key')}"
+                    battle_id = str(row.get("battle_id") or "")
+                    side_key = str(row.get("side_key") or "unknown")
+                    key = f"{battle_id}|{side_key}"
                     if key in anomalous_battles:
                         anomaly_hits += 1
+                        anomalous_battle_ids.add(battle_id)
                     if key in control_battles:
                         control_hits += 1
-                        control_membership_rows.append((str(row.get("battle_id") or ""), str(row.get("side_key") or "unknown"), character_id))
+                        control_battle_ids.add(battle_id)
+                        control_membership_rows.append((battle_id, side_key, character_id))
+                    started_at = battle_started_by_id.get(battle_id)
+                    started_dt = _parse_iso_datetime(started_at) if isinstance(started_at, str) else started_at
+                    if isinstance(started_dt, datetime):
+                        repeatability_windows_7d.add(started_dt.strftime("%Y-W%U"))
+                        repeatability_windows_30d.add(started_dt.strftime("%Y-%m"))
                     for over in overperformance_rows:
-                        if over["battle_id"] == str(row.get("battle_id")) and over["side_key"] != str(row.get("side_key")):
+                        if over["battle_id"] == battle_id and over["side_key"] != side_key:
                             sustain_lifts.append(float(over["sustain_lift_score"]))
                 anomalous_rate = _safe_div(float(anomaly_hits), float(max(1, anomalous_battle_denominator)), 0.0)
                 control_rate = _safe_div(float(control_hits), float(max(1, control_battle_denominator)), 0.0)
                 presence_delta = anomalous_rate - control_rate
                 presence_lift = _safe_div(anomalous_rate, control_rate, 0.0) if control_rate > 0 else (1.0 if anomalous_rate > 0 else 0.0)
                 enemy_sustain_lift = _safe_div(sum(sustain_lifts), float(max(1, len(sustain_lifts))), 0.0)
+                enemy_sustain_min = min(sustain_lifts) if sustain_lifts else 0.0
+                enemy_sustain_max = max(sustain_lifts) if sustain_lifts else 0.0
                 bridge = _safe_div(sum(float(r.get("bridge_score") or 0.0) for r in presences), float(max(1, len(presences))), 0.0)
+                cluster_proximity = min(1.0, _safe_div(bridge, 5.0, 0.0))
                 org = org_by_character.get(character_id, {})
                 corp_hops = int(org.get("corp_hops_180d") or 0)
                 short_hops = int(org.get("short_tenure_hops_180d") or 0)
                 corp_hop_frequency = _safe_div(float(corp_hops), 180.0, 0.0)
                 short_ratio = _safe_div(float(short_hops), float(max(1, corp_hops)), 0.0)
                 repeatability = min(1.0, _safe_div(float(anomaly_hits), 3.0, 0.0))
+                repeatability_distinct_battles = len(anomalous_battle_ids)
+                repeatability_weeks = len(repeatability_windows_7d)
+                repeatability_months = len(repeatability_windows_30d)
                 feature_rows.append(
                     {
                         "character_id": character_id,
@@ -551,25 +571,60 @@ def run_compute_counterintel_pipeline(
                     }
                 )
                 review_score = max(0.0, min(1.0, 0.24 * anomalous_rate + 0.1 * max(0.0, presence_delta) + 0.26 * min(1.0, enemy_sustain_lift / 1.5) + 0.2 * min(1.0, bridge / 5.0) + 0.1 * min(1.0, corp_hop_frequency * 10) + 0.1 * repeatability))
-                cohort_payload = json_dumps_safe(
+                numerator_denominator_payload = json_dumps_safe(
                     {
-                        "anomalous_battle_presence_count": anomaly_hits,
-                        "control_battle_presence_count": control_hits,
-                        "anomalous_battle_denominator": anomalous_battle_denominator,
-                        "control_battle_denominator": control_battle_denominator,
-                        "presence_delta": presence_delta,
-                        "presence_lift": presence_lift,
+                        "anomalous": {"numerator": anomaly_hits, "denominator": anomalous_battle_denominator, "rate": anomalous_rate},
+                        "control": {"numerator": control_hits, "denominator": control_battle_denominator, "rate": control_rate},
+                        "delta": presence_delta,
+                        "lift": presence_lift,
                     }
                 )
-                evidence_rows.extend(
-                    [
-                        {"character_id": character_id, "evidence_key": "anomalous_battle_presence_count", "evidence_value": float(anomaly_hits), "evidence_text": f"present in {anomaly_hits}/{anomalous_battle_denominator} anomalous large battle-sides", "evidence_payload_json": cohort_payload},
-                        {"character_id": character_id, "evidence_key": "anomalous_presence_rate", "evidence_value": anomalous_rate, "evidence_text": f"anomalous presence rate {anomalous_rate:.3f} ({anomaly_hits}/{anomalous_battle_denominator}) vs control {control_rate:.3f} ({control_hits}/{control_battle_denominator})", "evidence_payload_json": cohort_payload},
-                        {"character_id": character_id, "evidence_key": "presence_rate_delta", "evidence_value": presence_delta, "evidence_text": f"presence delta {presence_delta:.3f}, lift {presence_lift:.3f}", "evidence_payload_json": cohort_payload},
-                        {"character_id": character_id, "evidence_key": "enemy_sustain_lift", "evidence_value": enemy_sustain_lift, "evidence_text": f"enemy sustain lift {enemy_sustain_lift:.3f} when present", "evidence_payload_json": None},
-                    ]
+                survival_lift_payload = json_dumps_safe(
+                    {
+                        "enemy_same_hull_survival_lift": enemy_sustain_lift,
+                        "sample_count": len(sustain_lifts),
+                        "min_lift": enemy_sustain_min,
+                        "max_lift": enemy_sustain_max,
+                    }
                 )
-                score_rows.append({"character_id": character_id, "review_priority_score": review_score, "confidence_score": min(1.0, _safe_div(float(anomaly_hits + control_hits), 8.0, 0.0)), "evidence_count": 4})
+                graph_payload = json_dumps_safe(
+                    {
+                        "co_presence_anomalous_density": anomalous_rate,
+                        "graph_bridge_score": bridge,
+                        "cluster_proximity_score": cluster_proximity,
+                    }
+                )
+                org_history_payload = json_dumps_safe(
+                    {
+                        "window_days": 180,
+                        "corp_hops": corp_hops,
+                        "short_tenure_hops": short_hops,
+                        "corp_hop_frequency_per_day": corp_hop_frequency,
+                        "short_tenure_ratio": short_ratio,
+                        "high_movement_indicator": corp_hops >= 3,
+                    }
+                )
+                repeatability_payload = json_dumps_safe(
+                    {
+                        "anomalous_battle_count": repeatability_distinct_battles,
+                        "control_battle_count": len(control_battle_ids),
+                        "distinct_week_windows_7d": repeatability_weeks,
+                        "distinct_month_windows_30d": repeatability_months,
+                        "repeatability_score": repeatability,
+                    }
+                )
+                character_evidence_rows = [
+                    {"character_id": character_id, "evidence_key": "anomalous_battle_presence_count", "evidence_value": float(anomaly_hits), "evidence_text": f"present in {anomaly_hits}/{anomalous_battle_denominator} anomalous large battle-sides", "evidence_payload_json": numerator_denominator_payload},
+                    {"character_id": character_id, "evidence_key": "anomalous_presence_rate", "evidence_value": anomalous_rate, "evidence_text": f"anomalous presence rate {anomalous_rate:.3f} ({anomaly_hits}/{anomalous_battle_denominator}) vs control {control_rate:.3f} ({control_hits}/{control_battle_denominator})", "evidence_payload_json": numerator_denominator_payload},
+                    {"character_id": character_id, "evidence_key": "presence_rate_delta", "evidence_value": presence_delta, "evidence_text": f"presence delta {presence_delta:.3f}, lift {presence_lift:.3f}", "evidence_payload_json": numerator_denominator_payload},
+                    {"character_id": character_id, "evidence_key": "enemy_sustain_lift", "evidence_value": enemy_sustain_lift, "evidence_text": f"enemy sustain lift {enemy_sustain_lift:.3f} when present", "evidence_payload_json": survival_lift_payload},
+                    {"character_id": character_id, "evidence_key": "enemy_same_hull_survival_lift_detail", "evidence_value": enemy_sustain_lift, "evidence_text": f"same-hull enemy survival lift {enemy_sustain_lift:.3f} across {len(sustain_lifts)} samples (min {enemy_sustain_min:.3f}, max {enemy_sustain_max:.3f})", "evidence_payload_json": survival_lift_payload},
+                    {"character_id": character_id, "evidence_key": "graph_copresence_cluster_proximity", "evidence_value": cluster_proximity, "evidence_text": f"graph bridge {bridge:.3f}, anomalous co-presence density {anomalous_rate:.3f}, cluster proximity {cluster_proximity:.3f}", "evidence_payload_json": graph_payload},
+                    {"character_id": character_id, "evidence_key": "org_history_movement_180d", "evidence_value": corp_hop_frequency, "evidence_text": f"org movement over 180d: {corp_hops} hops, {short_hops} short-tenure hops, ratio {short_ratio:.3f}", "evidence_payload_json": org_history_payload},
+                    {"character_id": character_id, "evidence_key": "repeatability_across_battles_windows", "evidence_value": repeatability, "evidence_text": f"repeatability {repeatability:.3f}: {repeatability_distinct_battles} anomalous battles across {repeatability_weeks} weekly and {repeatability_months} monthly windows", "evidence_payload_json": repeatability_payload},
+                ]
+                evidence_rows.extend(character_evidence_rows)
+                score_rows.append({"character_id": character_id, "review_priority_score": review_score, "confidence_score": min(1.0, _safe_div(float(anomaly_hits + control_hits), 8.0, 0.0)), "evidence_count": len(character_evidence_rows)})
 
             sorted_scores = sorted([float(row["review_priority_score"]) for row in score_rows])
             for row in score_rows:
