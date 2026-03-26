@@ -113,11 +113,14 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         (alliance_structure_id, reference_source_id, alliance_structure_id, reference_source_id),
     )
 
-    # Filter by item scope if configured
-    allowed_type_ids_raw = db.fetch_all(
-        "SELECT type_id FROM item_scope WHERE enabled = 1"
-    )
-    allowed_type_ids = {int(row["type_id"]) for row in allowed_type_ids_raw} if allowed_type_ids_raw else set()
+    # Filter by item scope if the table exists
+    try:
+        allowed_type_ids_raw = db.fetch_all(
+            "SELECT type_id FROM item_scope WHERE enabled = 1"
+        )
+        allowed_type_ids = {int(row["type_id"]) for row in allowed_type_ids_raw} if allowed_type_ids_raw else set()
+    except Exception:
+        allowed_type_ids = set()
 
     evaluated = []
     for row in aggregate_rows:
