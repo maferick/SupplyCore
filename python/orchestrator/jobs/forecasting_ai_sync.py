@@ -8,14 +8,20 @@ from .sync_runtime import run_sync_phase_job
 def _processor(db: SupplyCoreDb) -> dict[str, object]:
     rows = db.fetch_all(
         """SELECT
-                d.type_id,
-                AVG(CASE WHEN d.bucket_start >= DATE_SUB(CURDATE(), INTERVAL 3 DAY) THEN d.weighted_price END) AS avg_3d,
-                AVG(d.weighted_price) AS avg_14d
-            FROM market_item_price_1d d
-            WHERE d.bucket_start >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
-            GROUP BY d.type_id
-            HAVING avg_14d IS NOT NULL
-            ORDER BY ABS((avg_3d - avg_14d) / NULLIF(avg_14d, 0)) DESC
+                agg.type_id,
+                agg.avg_3d,
+                agg.avg_14d
+            FROM (
+                SELECT
+                    d.type_id,
+                    AVG(CASE WHEN d.bucket_start >= DATE_SUB(CURDATE(), INTERVAL 3 DAY) THEN d.weighted_price END) AS avg_3d,
+                    AVG(d.weighted_price) AS avg_14d
+                FROM market_item_price_1d d
+                WHERE d.bucket_start >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
+                GROUP BY d.type_id
+            ) AS agg
+            WHERE agg.avg_14d IS NOT NULL
+            ORDER BY ABS((agg.avg_3d - agg.avg_14d) / NULLIF(agg.avg_14d, 0)) DESC
             LIMIT 300"""
     )
     rows_processed = len(rows)
