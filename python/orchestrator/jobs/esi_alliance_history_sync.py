@@ -24,8 +24,15 @@ MAX_RETRIES_PER_CHARACTER = 2
 SKIP_IF_FETCHED_WITHIN_DAYS = 7
 
 
+_esi_error_limit_remain: int = 100
+
+
 def _esi_get_json(url: str, timeout: int = 20) -> tuple[int, Any]:
-    """Perform an ESI GET and return (status_code, parsed_json)."""
+    """Perform an ESI GET and return (status_code, parsed_json).
+
+    Reads X-Esi-Error-Limit-Remain header for adaptive backoff.
+    """
+    global _esi_error_limit_remain
     request = urllib.request.Request(
         url,
         method="GET",
@@ -37,11 +44,27 @@ def _esi_get_json(url: str, timeout: int = 20) -> tuple[int, Any]:
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
+            remain = response.headers.get("X-Esi-Error-Limit-Remain")
+            if remain is not None:
+                _esi_error_limit_remain = int(remain)
             return response.status, body
     except urllib.error.HTTPError as error:
+        remain = error.headers.get("X-Esi-Error-Limit-Remain") if hasattr(error, "headers") else None
+        if remain is not None:
+            _esi_error_limit_remain = int(remain)
         return error.code, None
     except (urllib.error.URLError, OSError, json.JSONDecodeError):
         return 0, None
+
+
+def _adaptive_sleep() -> None:
+    """Sleep adaptively based on ESI error-limit budget."""
+    if _esi_error_limit_remain < 20:
+        time.sleep(2.0)
+    elif _esi_error_limit_remain < 50:
+        time.sleep(0.5)
+    else:
+        time.sleep(0.2)
 
 
 def _fetch_corporation_history(character_id: int) -> list[dict[str, Any]] | None:
@@ -69,7 +92,7 @@ def _lookup_corp_alliance(corp_id: int) -> int | None:
     if status == 200 and isinstance(body, dict):
         alliance_id = int(body.get("alliance_id") or 0) or None
     _corp_alliance_cache[corp_id] = alliance_id
-    time.sleep(0.1)  # Gentle rate limit.
+    _adaptive_sleep()
     return alliance_id
 
 
@@ -155,21 +178,28 @@ def run_esi_alliance_history_sync(db: SupplyCoreDb) -> dict[str, object]:
     for row in batch:
         character_id = int(row["character_id"])
 
-        # Skip if already fetched recently.
-        existing = db.fetch_one(
-            """SELECT fetched_at FROM character_alliance_history
+        # Skip if already fetched recently.  If all existing periods are closed
+        # (ended_at IS NOT NULL) the history is immutable — skip regardless of age.
+        existing = db.fetch_all(
+            """SELECT fetched_at, ended_at FROM character_alliance_history
                WHERE character_id = %s
-                 AND fetched_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
-               LIMIT 1""",
-            (character_id, SKIP_IF_FETCHED_WITHIN_DAYS),
+               ORDER BY started_at DESC""",
+            (character_id,),
         )
         if existing:
-            db.execute(
-                "UPDATE esi_character_queue SET fetch_status = 'done', fetched_at = UTC_TIMESTAMP() WHERE character_id = %s",
-                (character_id,),
+            has_open_period = any(r.get("ended_at") is None for r in existing)
+            latest_fetch = existing[0].get("fetched_at")
+            recently_fetched = latest_fetch and db.fetch_scalar(
+                "SELECT %s >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)",
+                (latest_fetch, SKIP_IF_FETCHED_WITHIN_DAYS),
             )
-            total_skipped += 1
-            continue
+            if not has_open_period or recently_fetched:
+                db.execute(
+                    "UPDATE esi_character_queue SET fetch_status = 'done', fetched_at = UTC_TIMESTAMP() WHERE character_id = %s",
+                    (character_id,),
+                )
+                total_skipped += 1
+                continue
 
         corp_history = _fetch_corporation_history(character_id)
 
@@ -204,8 +234,8 @@ def run_esi_alliance_history_sync(db: SupplyCoreDb) -> dict[str, object]:
             (character_id,),
         )
 
-        # Gentle rate limiting — ~200ms between requests.
-        time.sleep(0.2)
+        # Adaptive rate limiting based on ESI error-limit budget.
+        _adaptive_sleep()
 
     return JobResult.success(
         job_key="esi_alliance_history_sync",

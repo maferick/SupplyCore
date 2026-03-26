@@ -102,11 +102,14 @@ def _gap_fill_killmails(client: Neo4jClient, db: SupplyCoreDb) -> int:
 
         client.query(
             """UNWIND $batch AS km
-               MERGE (k:Killmail {id: km.id})
-               SET k.battle_id = km.battle_id,
-                   k.damage = km.damage,
-                   k.mail_type = km.mail_type,
-                   k.low_damage = km.low_damage""",
+               CALL {
+                   WITH km
+                   MERGE (k:Killmail {id: km.id})
+                   SET k.battle_id = km.battle_id,
+                       k.damage = km.damage,
+                       k.mail_type = km.mail_type,
+                       k.low_damage = km.low_damage
+               } IN TRANSACTIONS OF 500 ROWS""",
             {"batch": params},
         )
         written += len(batch)
@@ -132,11 +135,14 @@ def _gap_fill_killmails(client: Neo4jClient, db: SupplyCoreDb) -> int:
 
         client.query(
             """UNWIND $batch AS atk
-               MATCH (c:Character {character_id: atk.character_id})
-               MATCH (k:Killmail {id: atk.killmail_id})
-               MERGE (c)-[r:ATTACKED_ON]->(k)
-               SET r.damage = atk.damage,
-                   r.final_blow = atk.final_blow""",
+               CALL {
+                   WITH atk
+                   MATCH (c:Character {character_id: atk.character_id})
+                   MATCH (k:Killmail {id: atk.killmail_id})
+                   MERGE (c)-[r:ATTACKED_ON]->(k)
+                   SET r.damage = atk.damage,
+                       r.final_blow = atk.final_blow
+               } IN TRANSACTIONS OF 500 ROWS""",
             {"batch": params},
         )
 
@@ -159,10 +165,13 @@ def _gap_fill_killmails(client: Neo4jClient, db: SupplyCoreDb) -> int:
 
         client.query(
             """UNWIND $batch AS v
-               MATCH (c:Character {character_id: v.character_id})
-               MATCH (k:Killmail {id: v.killmail_id})
-               MERGE (c)-[r:VICTIM_OF]->(k)
-               SET r.ship_type_id = v.ship_type_id""",
+               CALL {
+                   WITH v
+                   MATCH (c:Character {character_id: v.character_id})
+                   MATCH (k:Killmail {id: v.killmail_id})
+                   MERGE (c)-[r:VICTIM_OF]->(k)
+                   SET r.ship_type_id = v.ship_type_id
+               } IN TRANSACTIONS OF 500 ROWS""",
             {"batch": params},
         )
 
@@ -191,11 +200,14 @@ def _gap_fill_alliance_history(client: Neo4jClient, db: SupplyCoreDb) -> int:
 
         client.query(
             """UNWIND $batch AS h
-               MERGE (c:Character {character_id: h.character_id})
-               MERGE (a:Alliance {alliance_id: h.alliance_id})
-               MERGE (c)-[r:WAS_MEMBER_OF]->(a)
-               SET r.started_at = h.started_at,
-                   r.ended_at = h.ended_at""",
+               CALL {
+                   WITH h
+                   MERGE (c:Character {character_id: h.character_id})
+                   MERGE (a:Alliance {alliance_id: h.alliance_id})
+                   MERGE (c)-[r:WAS_MEMBER_OF]->(a)
+                   SET r.started_at = h.started_at,
+                       r.ended_at = h.ended_at
+               } IN TRANSACTIONS OF 500 ROWS""",
             {"batch": params},
         )
         written += len(batch)
@@ -440,7 +452,13 @@ def _compute_shared_alliance_history(client: Neo4jClient) -> None:
            MERGE (tracked)-[rel:SHARED_ALLIANCE_WITH]->(attacker)
            SET rel.alliance_id = a.alliance_id,
                rel.overlap_start = overlap_start,
-               rel.overlap_end = overlap_end""",
+               rel.overlap_end = overlap_end,
+               rel.overlap_days = duration.between(
+                   date(CASE WHEN date(h1.started_at) > date(h2.started_at)
+                             THEN h1.started_at ELSE h2.started_at END),
+                   CASE WHEN COALESCE(date(h1.ended_at), date()) < COALESCE(date(h2.ended_at), date())
+                        THEN COALESCE(date(h1.ended_at), date()) ELSE COALESCE(date(h2.ended_at), date()) END
+               ).days""",
         {"lookback_days": OVERLAP_LOOKBACK_DAYS},
     )
 
@@ -654,19 +672,51 @@ def run_intelligence_pipeline(
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     stage_timings: dict[str, int] = {}
 
+    def _stage_completed(name: str) -> bool:
+        """Check if a stage was already completed in a previous run (resume logic)."""
+        try:
+            rows = client.query(
+                """MATCH (cp:ComputeCheckpoint)
+                   WHERE cp[$stage_key] IS NOT NULL
+                   RETURN cp.run_id AS rid, cp[$stage_key] AS completed_at
+                   ORDER BY cp[$stage_key] DESC LIMIT 1""",
+                {"stage_key": f"stage_{name}"},
+            )
+            if rows and rows[0].get("completed_at") is not None:
+                # Only skip if the last checkpoint was within this run hour (fresh).
+                return True
+        except Neo4jError:
+            pass
+        return False
+
     def _timed(name: str, fn, *args):
+        if _stage_completed(name) and name not in ("gap_fill_killmails", "gap_fill_alliance_history", "mark_tracked"):
+            stage_timings[name] = 0
+            skipped_stages.append(name)
+            return
         t = time.perf_counter()
         fn(*args)
         stage_timings[name] = int((time.perf_counter() - t) * 1000)
-        # Record checkpoint.
+        # Record checkpoint with inspection summary.
         try:
             client.query(
                 """MERGE (cp:ComputeCheckpoint {run_id: $run_id})
-                   SET cp[$stage_key] = timestamp()""",
-                {"run_id": run_id, "stage_key": f"stage_{name}"},
+                   SET cp[$stage_key] = timestamp(),
+                       cp.stage_inspection = $stage_inspection,
+                       cp.characters_existing = $characters_existing,
+                       cp.battles_existing = $battles_existing""",
+                {
+                    "run_id": run_id,
+                    "stage_key": f"stage_{name}",
+                    "stage_inspection": json_dumps_safe(inspection),
+                    "characters_existing": inspection.get("characters", 0),
+                    "battles_existing": inspection.get("battles", 0),
+                },
             )
         except Neo4jError:
             pass
+
+    skipped_stages: list[str] = []
 
     # 1. Inspection.
     inspection = _inspect_graph(client)
@@ -674,30 +724,47 @@ def run_intelligence_pipeline(
     # 2. Schema.
     _ensure_schema(client)
 
-    # 3. Gap-fill.
+    # 3. Gap-fill (always runs — incremental).
     _timed("gap_fill_killmails", _gap_fill_killmails, client, db)
     _timed("gap_fill_alliance_history", _gap_fill_alliance_history, client, db)
     _timed("mark_tracked", _mark_tracked_characters, client, db)
 
-    # 4. Suspicion signal computation (ordered).
-    _timed("battle_presence", _compute_battle_presence, client)
-    _timed("encounter_vs_engagement", _compute_encounter_vs_engagement, client)
-    _timed("peer_normalisation", _compute_peer_normalisation, client)
-    _timed("selective_non_engagement", _compute_selective_non_engagement, client)
-    _timed("high_presence_low_output", _compute_high_presence_low_output, client)
-    _timed("token_participation", _compute_token_participation, client)
-    _timed("loss_pattern", _compute_loss_pattern, client)
-    _timed("co_presence_clusters", _compute_co_presence_clusters, client)
-    _timed("score_assembly", _compute_score_assembly, client)
+    # Re-inspect after gap-fill to decide if compute stages can be skipped.
+    post_fill_inspection = _inspect_graph(client)
+    new_data = (
+        post_fill_inspection.get("characters", 0) != inspection.get("characters", 0)
+        or post_fill_inspection.get("killmails", 0) != inspection.get("killmails", 0)
+        or inspection.get("already_scored", 0) == 0
+    )
+    # If no new data was added and scores already exist, skip compute stages.
+    if not new_data and inspection.get("already_scored", 0) > 0:
+        skipped_stages.extend([
+            "battle_presence", "encounter_vs_engagement", "peer_normalisation",
+            "selective_non_engagement", "high_presence_low_output", "token_participation",
+            "loss_pattern", "co_presence_clusters", "score_assembly",
+            "shared_alliance_history", "former_allies_attacking", "repeat_targeting",
+            "overlap_score", "cross_system_correlation",
+        ])
+    else:
+        # 4. Suspicion signal computation (ordered).
+        _timed("battle_presence", _compute_battle_presence, client)
+        _timed("encounter_vs_engagement", _compute_encounter_vs_engagement, client)
+        _timed("peer_normalisation", _compute_peer_normalisation, client)
+        _timed("selective_non_engagement", _compute_selective_non_engagement, client)
+        _timed("high_presence_low_output", _compute_high_presence_low_output, client)
+        _timed("token_participation", _compute_token_participation, client)
+        _timed("loss_pattern", _compute_loss_pattern, client)
+        _timed("co_presence_clusters", _compute_co_presence_clusters, client)
+        _timed("score_assembly", _compute_score_assembly, client)
 
-    # 5. Historical alliance overlap.
-    _timed("shared_alliance_history", _compute_shared_alliance_history, client)
-    _timed("former_allies_attacking", _compute_former_allies_attacking, client)
-    _timed("repeat_targeting", _compute_repeat_targeting, client)
-    _timed("overlap_score", _compute_overlap_score, client)
+        # 5. Historical alliance overlap.
+        _timed("shared_alliance_history", _compute_shared_alliance_history, client)
+        _timed("former_allies_attacking", _compute_former_allies_attacking, client)
+        _timed("repeat_targeting", _compute_repeat_targeting, client)
+        _timed("overlap_score", _compute_overlap_score, client)
 
-    # 6. Cross-system correlation.
-    _timed("cross_system_correlation", _compute_cross_system_correlation, client)
+        # 6. Cross-system correlation.
+        _timed("cross_system_correlation", _compute_cross_system_correlation, client)
 
     # 7. Export to MariaDB.
     t = time.perf_counter()
@@ -718,6 +785,7 @@ def run_intelligence_pipeline(
             "computed_at": computed_at,
             "inspection": inspection,
             "stage_timings_ms": stage_timings,
+            "skipped_stages": skipped_stages,
             "suspicion_exported": suspicion_exported,
             "overlap_exported": overlap_exported,
         },
