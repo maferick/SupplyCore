@@ -11159,6 +11159,7 @@ function killmail_overview_data(): array
                 'final_blow_alliance' => killmail_entity_preferred_name($resolvedOverviewEntities, 'alliance', $finalBlowAllianceId, '', 'Alliance'),
                 'final_blow_ship' => killmail_entity_preferred_name($resolvedOverviewEntities, 'type', $finalBlowShipTypeId, '', 'Ship'),
                 'final_blow_weapon' => killmail_entity_preferred_name($resolvedOverviewEntities, 'type', $finalBlowWeaponTypeId, '', 'Weapon'),
+                'victim_character' => killmail_entity_preferred_name($resolvedOverviewEntities, 'character', $victimCharacterId, '', 'Character'),
                 'victim_character_id' => $victimCharacterId,
                 'victim_ship_type_id' => isset($row['victim_ship_type_id']) ? (int) $row['victim_ship_type_id'] : null,
                 'victim_portrait_url' => $victimCharacterId !== null && $victimCharacterId > 0 ? killmail_entity_image_url('character', $victimCharacterId, 'portrait', 64) : null,
