@@ -79,6 +79,49 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _normalize_iso_string(value: Any) -> str | None:
+    parsed = _parse_iso_datetime(value)
+    if parsed is None:
+        return None
+    return parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _build_history_projection_rows(history_json: Any, source: str) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(history_json) if isinstance(history_json, str) and history_json.strip() else {}
+    except json.JSONDecodeError:
+        parsed = {}
+    history_rows = parsed.get("corporation_history") if isinstance(parsed, dict) else None
+    if not isinstance(history_rows, list):
+        return []
+
+    timeline: list[tuple[int, datetime]] = []
+    for row in history_rows:
+        if not isinstance(row, dict):
+            continue
+        corp_id = int(row.get("corporation_id") or 0)
+        start_dt = _parse_iso_datetime(row.get("start_date"))
+        if corp_id <= 0 or start_dt is None:
+            continue
+        timeline.append((corp_id, start_dt.astimezone(UTC)))
+    if not timeline:
+        return []
+
+    timeline.sort(key=lambda item: item[1])
+    projection_rows: list[dict[str, Any]] = []
+    for idx, (corp_id, start_dt) in enumerate(timeline):
+        end_dt = timeline[idx + 1][1] if idx + 1 < len(timeline) else None
+        projection_rows.append(
+            {
+                "corporation_id": corp_id,
+                "start": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "end": end_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if end_dt else None,
+                "source": source,
+            }
+        )
+    return projection_rows
+
+
 def _walk_nested_rows(payload: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     stack: list[Any] = [payload]
@@ -493,12 +536,105 @@ def run_compute_counterintel_pipeline(
             org_written = _enrich_org_history_cache(db, list(by_character.keys()), user_agent, org_cache_ttl_hours, org_max_fetches, org_fetch_batch_size)
 
             org_rows = db.fetch_all(
-                "SELECT character_id, corp_hops_180d, short_tenure_hops_180d FROM character_org_history_cache WHERE source = 'evewho' AND character_id IN ("
+                "SELECT character_id, corp_hops_180d, short_tenure_hops_180d, history_json, source_endpoint FROM character_org_history_cache WHERE source = 'evewho' AND character_id IN ("
                 + ",".join(["%s"] * len(by_character))
                 + ")",
                 tuple(by_character.keys()) if by_character else tuple([0]),
             ) if by_character else []
             org_by_character = {int(row["character_id"]): row for row in org_rows}
+            alliance_rows = db.fetch_all(
+                """
+                SELECT character_id, alliance_id, corporation_id, source_endpoint, fetched_at, expires_at
+                FROM character_org_alliance_adjacency_snapshots
+                WHERE source = 'evewho'
+                  AND character_id IN ("""
+                + ",".join(["%s"] * len(by_character))
+                + ")",
+                tuple(by_character.keys()) if by_character else tuple([0]),
+            ) if by_character else []
+
+            battle_to_character_rows: dict[str, list[tuple[int, bool]]] = defaultdict(list)
+            seen_battle_character: set[tuple[str, int]] = set()
+            for row in participants:
+                battle_id = str(row.get("battle_id") or "")
+                character_id = int(row.get("character_id") or 0)
+                if not battle_id or character_id <= 0:
+                    continue
+                dedupe_key = (battle_id, character_id)
+                if dedupe_key in seen_battle_character:
+                    continue
+                seen_battle_character.add(dedupe_key)
+                side_key = str(row.get("side_key") or "unknown")
+                battle_to_character_rows[battle_id].append((character_id, f"{battle_id}|{side_key}" in anomalous_battles))
+
+            copresence_aggregate: dict[tuple[int, int], dict[str, int]] = defaultdict(lambda: {"count": 0, "anomalous_count": 0})
+            for characters in battle_to_character_rows.values():
+                sorted_characters = sorted(characters, key=lambda item: item[0])
+                for left_index, (left_character_id, left_anomalous) in enumerate(sorted_characters):
+                    for right_character_id, right_anomalous in sorted_characters[left_index + 1 :]:
+                        key = (left_character_id, right_character_id)
+                        copresence_aggregate[key]["count"] += 1
+                        if left_anomalous and right_anomalous:
+                            copresence_aggregate[key]["anomalous_count"] += 1
+
+            copresence_rows = [
+                {
+                    "left_character_id": left_character_id,
+                    "right_character_id": right_character_id,
+                    "count": int(metrics.get("count") or 0),
+                    "anomalous_count": int(metrics.get("anomalous_count") or 0),
+                    "source": "battle_co_presence_aggregate",
+                }
+                for (left_character_id, right_character_id), metrics in copresence_aggregate.items()
+                if int(metrics.get("count") or 0) > 0
+            ]
+            historical_membership_rows: list[dict[str, Any]] = []
+            for character_id, org in org_by_character.items():
+                source_endpoint = str(org.get("source_endpoint") or "").strip() or "evewho"
+                history_rows = _build_history_projection_rows(org.get("history_json"), source_endpoint)
+                for row in history_rows:
+                    historical_membership_rows.append(
+                        {
+                            "character_id": character_id,
+                            "corporation_id": int(row["corporation_id"]),
+                            "start": row["start"],
+                            "end": row["end"],
+                            "source": row["source"],
+                        }
+                    )
+
+            corp_alliance_projection: dict[tuple[int, int], dict[str, str | None]] = {}
+            for row in alliance_rows:
+                alliance_id = int(row.get("alliance_id") or 0)
+                corporation_id = int(row.get("corporation_id") or 0)
+                if alliance_id <= 0 or corporation_id <= 0:
+                    continue
+                start_iso = _normalize_iso_string(row.get("fetched_at"))
+                end_iso = _normalize_iso_string(row.get("expires_at"))
+                source = str(row.get("source_endpoint") or "").strip() or "evewho"
+                key = (corporation_id, alliance_id)
+                existing = corp_alliance_projection.get(key)
+                if existing is None:
+                    corp_alliance_projection[key] = {"start": start_iso, "end": end_iso, "source": source}
+                    continue
+                existing_start = existing.get("start")
+                existing_end = existing.get("end")
+                if start_iso and (existing_start is None or start_iso < existing_start):
+                    existing["start"] = start_iso
+                if end_iso and (existing_end is None or end_iso > existing_end):
+                    existing["end"] = end_iso
+                if not str(existing.get("source") or "").strip():
+                    existing["source"] = source
+            corp_alliance_rows = [
+                {
+                    "corporation_id": corporation_id,
+                    "alliance_id": alliance_id,
+                    "start": values.get("start"),
+                    "end": values.get("end"),
+                    "source": str(values.get("source") or "evewho"),
+                }
+                for (corporation_id, alliance_id), values in corp_alliance_projection.items()
+            ]
 
             feature_rows: list[dict[str, Any]] = []
             score_rows: list[dict[str, Any]] = []
@@ -809,37 +945,84 @@ def run_compute_counterintel_pipeline(
                                 }
                             )
 
-            if neo4j and overperformance_rows:
-                neo4j.query(
-                    """
-                    UNWIND $rows AS row
-                    MERGE (b:Battle {battle_id: row.battle_id})
-                    MERGE (s:BattleSide {side_uid: row.battle_id + '|' + row.side_key})
-                    MERGE (s)-[:BELONGS_TO]->(b)
-                    SET s.overperformance_score = row.overperformance_score,
-                        s.anomaly_class = row.anomaly_class,
-                        s.computed_at = row.computed_at
-                    """,
-                    {"rows": [{**row, "computed_at": computed_at} for row in overperformance_rows]},
-                )
-                neo4j.query(
-                    """
-                    UNWIND $rows AS row
-                    MERGE (c:Character {character_id: toInteger(row.character_id)})
-                    MERGE (b:Battle {battle_id: row.battle_id})
-                    MERGE (c)-[r:PRESENT_IN_ANOMALOUS_BATTLE]->(b)
-                    SET r.review_priority_score = row.review_priority_score,
-                        r.computed_at = row.computed_at
-                    """,
-                    {
-                        "rows": [
-                            {"character_id": row["character_id"], "battle_id": p["battle_id"], "review_priority_score": row["review_priority_score"], "computed_at": computed_at}
-                            for row in score_rows
-                            for p in by_character.get(int(row["character_id"]), [])
-                            if f"{p.get('battle_id')}|{p.get('side_key')}" in anomalous_battles
-                        ]
-                    },
-                )
+            if neo4j:
+                if overperformance_rows:
+                    neo4j.query(
+                        """
+                        UNWIND $rows AS row
+                        MERGE (b:Battle {battle_id: row.battle_id})
+                        MERGE (s:BattleSide {side_uid: row.battle_id + '|' + row.side_key})
+                        MERGE (s)-[:BELONGS_TO]->(b)
+                        SET s.overperformance_score = row.overperformance_score,
+                            s.anomaly_class = row.anomaly_class,
+                            s.computed_at = row.computed_at
+                        """,
+                        {"rows": [{**row, "computed_at": computed_at} for row in overperformance_rows]},
+                    )
+                    neo4j.query(
+                        """
+                        UNWIND $rows AS row
+                        MERGE (c:Character {character_id: toInteger(row.character_id)})
+                        MERGE (b:Battle {battle_id: row.battle_id})
+                        MERGE (c)-[r:PRESENT_IN_ANOMALOUS_BATTLE]->(b)
+                        SET r.review_priority_score = row.review_priority_score,
+                            r.computed_at = row.computed_at
+                        """,
+                        {
+                            "rows": [
+                                {"character_id": row["character_id"], "battle_id": p["battle_id"], "review_priority_score": row["review_priority_score"], "computed_at": computed_at}
+                                for row in score_rows
+                                for p in by_character.get(int(row["character_id"]), [])
+                                if f"{p.get('battle_id')}|{p.get('side_key')}" in anomalous_battles
+                            ]
+                        },
+                    )
+                if copresence_rows:
+                    neo4j.query(
+                        """
+                        UNWIND $rows AS row
+                        MATCH (left:Character {character_id: toInteger(row.left_character_id)})
+                        MATCH (right:Character {character_id: toInteger(row.right_character_id)})
+                        MERGE (left)-[r:CO_PRESENT_WITH]->(right)
+                        SET r.count = toInteger(COALESCE(r.count, 0)) + toInteger(row.count),
+                            r.anomalous_count = toInteger(COALESCE(r.anomalous_count, 0)) + toInteger(row.anomalous_count),
+                            r.source = row.source,
+                            r.computed_at = $computed_at
+                        """,
+                        {"rows": copresence_rows, "computed_at": computed_at},
+                    )
+                if historical_membership_rows:
+                    neo4j.query(
+                        """
+                        UNWIND $rows AS row
+                        MERGE (c:Character {character_id: toInteger(row.character_id)})
+                        MERGE (corp:Corporation {corporation_id: toInteger(row.corporation_id)})
+                        MERGE (c)-[r:HISTORICALLY_IN {start: row.start, source: row.source}]->(corp)
+                        SET r.end = row.end
+                        """,
+                        {"rows": historical_membership_rows},
+                    )
+                if corp_alliance_rows:
+                    neo4j.query(
+                        """
+                        UNWIND $rows AS row
+                        MERGE (corp:Corporation {corporation_id: toInteger(row.corporation_id)})
+                        MERGE (alliance:Alliance {alliance_id: toInteger(row.alliance_id)})
+                        MERGE (corp)-[r:IN_ALLIANCE]->(alliance)
+                        SET r.start = CASE
+                                WHEN row.start IS NULL THEN r.start
+                                WHEN r.start IS NULL OR row.start < r.start THEN row.start
+                                ELSE r.start
+                            END,
+                            r.end = CASE
+                                WHEN row.end IS NULL THEN r.end
+                                WHEN r.end IS NULL OR row.end > r.end THEN row.end
+                                ELSE r.end
+                            END,
+                            r.source = row.source
+                        """,
+                        {"rows": corp_alliance_rows},
+                    )
 
             rows_written += len(hull_rows) + len(overperformance_rows) + len(feature_rows) + len(score_rows) + len(evidence_rows) + org_written
             _sync_state_upsert(db, COUNTERINTEL_DATASET_KEY, last_battle_id, "success", rows_written)

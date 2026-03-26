@@ -440,7 +440,7 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
 
             FOREACH(_ IN CASE WHEN toInteger(COALESCE(row.ship_type_id, 0)) > 0 THEN [1] ELSE [] END |
                 MERGE (ship:ShipType {type_id: toInteger(row.ship_type_id)})
-                MERGE (c)-[:FLEW]->(ship)
+                MERGE (c)-[:USED_SHIP]->(ship)
             )
 
             FOREACH(_ IN CASE WHEN toInteger(COALESCE(row.alliance_id, 0)) > 0 THEN [1] ELSE [] END |
@@ -454,6 +454,18 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
                 MERGE (c)-[:MEMBER_OF_CORPORATION]->(corp)
                 MERGE (side)-[:REPRESENTED_BY_CORPORATION]->(corp)
             )
+            """,
+            {"rows": rows},
+        )
+        client.query(
+            """
+            UNWIND $rows AS row
+            WITH row
+            WHERE toInteger(COALESCE(row.ship_type_id, 0)) > 0
+            MATCH (c:Character {character_id: toInteger(row.character_id)})
+            MATCH (ship:ShipType {type_id: toInteger(row.ship_type_id)})
+            OPTIONAL MATCH (c)-[legacy:FLEW]->(ship)
+            DELETE legacy
             """,
             {"rows": rows},
         )
