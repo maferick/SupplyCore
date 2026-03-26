@@ -136,7 +136,7 @@ def _finalize_job(db: SupplyCoreDb, job_key: str, result: dict[str, Any], logger
     rows_seen = max(0, int(result.get("rows_seen") or result.get("rows_processed") or 0))
     rows_written = max(0, int(result.get("rows_written") or 0))
     duration_ms = max(0, int(result.get("duration_ms") or 0))
-    error_text = str(result.get("error") or "") if status == "failed" else None
+    error_text = str(result.get("error_text") or result.get("error") or result.get("summary") or "") if status == "failed" else None
 
     dataset_key = f"scheduler.job.{job_key}"
     try:
@@ -410,6 +410,8 @@ def main(argv: list[str] | None = None) -> int:
             result = _process_job(context)
             db.complete_worker_job(int(job.get("id") or 0), worker_id, result)
             completed_payload = {"event": "worker_pool.job_completed", "worker_id": worker_id, "job_id": int(job.get("id") or 0), "job_key": context.job_key, "status": result.get("status", "success"), "execution_language": "python", "subprocess_invoked": False, "duration_ms": result.get("duration_ms", 0), "rows_processed": result.get("rows_processed", 0), "rows_written": result.get("rows_written", 0)}
+            if result.get("status") == "failed":
+                completed_payload["error"] = str(result.get("error_text") or result.get("summary") or "")
             logger.info("worker job completed", payload=completed_payload)
             job_log.write_event("worker_pool.job_completed", completed_payload)
             _finalize_job(db, context.job_key, result, logger)
