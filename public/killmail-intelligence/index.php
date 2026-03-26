@@ -242,8 +242,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <img src="<?= htmlspecialchars((string) $row['victim_portrait_url'], ENT_QUOTES) ?>" alt="" class="h-10 w-10 rounded-xl object-cover">
                                 <?php endif; ?>
                                 <div>
-                                    <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['victim_corporation'] ?? '—'), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-300"><?= htmlspecialchars((string) ($row['victim_alliance'] ?? '—'), ENT_QUOTES) ?></p>
+                                    <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['victim_character'] ?? '—'), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-300"><?= htmlspecialchars((string) ($row['victim_corporation'] ?? '—'), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($row['victim_alliance'] ?? '—'), ENT_QUOTES) ?></p>
                                     <p class="mt-2 text-xs text-muted"><?= htmlspecialchars((string) ($row['killmail_time_display'] ?? '—'), ENT_QUOTES) ?></p>
                                 </div>
                             </div>
