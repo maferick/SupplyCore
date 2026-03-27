@@ -448,6 +448,12 @@ render_unit "${REPO_ROOT}/ops/systemd/supplycore-zkill.service" "${SYSTEMD_DIR}/
 if [[ ${INSTALL_INFLUX} == true ]]; then
   render_unit "${REPO_ROOT}/ops/systemd/supplycore-influx-rollup-export.service" "${SYSTEMD_DIR}/supplycore-influx-rollup-export.service"
   cp "${REPO_ROOT}/ops/systemd/supplycore-influx-rollup-export.timer" "${SYSTEMD_DIR}/supplycore-influx-rollup-export.timer"
+  # Ensure the InfluxDB env file exists so the service doesn't warn about unset vars
+  INFLUX_ENV_FILE="/etc/default/supplycore-influx-rollup-export"
+  if [[ ! -f ${INFLUX_ENV_FILE} ]]; then
+    install -D -m 0644 "${REPO_ROOT}/ops/systemd/supplycore-influx-rollup-export.env.example" "${INFLUX_ENV_FILE}"
+    echo "Wrote InfluxDB env file to ${INFLUX_ENV_FILE}"
+  fi
 fi
 
 # ===========================  Enable and start  ===========================
