@@ -34,7 +34,8 @@ $participants = db_theater_participants($theaterId, $sideFilter, $suspiciousOnly
 $graphParticipants = db_theater_graph_participants($theaterId);
 
 $title = htmlspecialchars((string) ($theater['primary_system_name'] ?? 'Theater'), ENT_QUOTES) . ' Theater';
-$durationMin = max(1, (int) ($theater['duration_seconds'] ?? 0)) / 60;
+$durationSec = max(1, (int) ($theater['duration_seconds'] ?? 0));
+$durationLabel = $durationSec >= 120 ? number_format($durationSec / 60, 0) . 'm' : $durationSec . 's';
 $anomaly = (float) ($theater['anomaly_score'] ?? 0);
 
 include __DIR__ . '/../../src/views/partials/header.php';
@@ -79,7 +80,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
         <div class="surface-tertiary">
             <p class="text-xs text-muted">Duration</p>
-            <p class="text-lg text-slate-50 font-semibold"><?= number_format($durationMin, 0) ?>m</p>
+            <p class="text-lg text-slate-50 font-semibold"><?= $durationLabel ?></p>
         </div>
         <div class="surface-tertiary">
             <p class="text-xs text-muted">Anomaly Score</p>
