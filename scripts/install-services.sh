@@ -376,7 +376,7 @@ fi
 # ===========================  Setup  ======================================
 
 install -d -m 0755 "${SYSTEMD_DIR}"
-install -d -m 0755 "${APP_ROOT}/storage/logs" "${APP_ROOT}/storage/run"
+install -d -m 0755 "${APP_ROOT}/storage/logs" "${APP_ROOT}/storage/run" "${APP_ROOT}/storage/static-data"
 chown -R "${RUN_USER}:${RUN_GROUP}" "${APP_ROOT}/storage"
 chmod -R u+rwX "${APP_ROOT}/storage"
 
