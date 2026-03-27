@@ -33,6 +33,38 @@ $suspiciousOnly = isset($_GET['suspicious']) && $_GET['suspicious'] === '1';
 $participants = db_theater_participants($theaterId, $sideFilter, $suspiciousOnly);
 $graphParticipants = db_theater_graph_participants($theaterId);
 
+// ── Batch-resolve entity names via ESI (cache + network fallback) ──
+$entityRequests = [
+    'alliance' => [],
+    'corporation' => [],
+    'character' => [],
+];
+foreach ($allianceSummary as $row) {
+    if (($id = (int) ($row['alliance_id'] ?? 0)) > 0) {
+        $entityRequests['alliance'][$id] = $id;
+    }
+}
+foreach ($participants as $row) {
+    if (($id = (int) ($row['character_id'] ?? 0)) > 0) {
+        $entityRequests['character'][$id] = $id;
+    }
+    if (($id = (int) ($row['alliance_id'] ?? 0)) > 0) {
+        $entityRequests['alliance'][$id] = $id;
+    }
+    if (($id = (int) ($row['corporation_id'] ?? 0)) > 0) {
+        $entityRequests['corporation'][$id] = $id;
+    }
+}
+foreach ($graphParticipants as $row) {
+    if (($id = (int) ($row['character_id'] ?? 0)) > 0) {
+        $entityRequests['character'][$id] = $id;
+    }
+}
+foreach ($entityRequests as $type => $ids) {
+    $entityRequests[$type] = array_values($ids);
+}
+$resolvedEntities = killmail_entity_resolve_batch($entityRequests, true);
+
 $title = htmlspecialchars((string) ($theater['primary_system_name'] ?? 'Theater'), ENT_QUOTES) . ' Theater';
 $durationSec = max(1, (int) ($theater['duration_seconds'] ?? 0));
 $durationLabel = $durationSec >= 120 ? number_format($durationSec / 60, 0) . 'm' : $durationSec . 's';
@@ -235,7 +267,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         $sideClass = (string) ($a['side'] ?? '') === 'side_a' ? 'text-blue-300' : 'text-red-300';
                     ?>
                     <tr class="border-b border-border/50">
-                        <td class="px-3 py-2 text-slate-100"><?= htmlspecialchars((string) ($a['alliance_name'] ?? 'ID:' . (int) ($a['alliance_id'] ?? 0)), ENT_QUOTES) ?></td>
+                        <td class="px-3 py-2 text-slate-100"><?= htmlspecialchars(killmail_entity_preferred_name($resolvedEntities, 'alliance', (int) ($a['alliance_id'] ?? 0), (string) ($a['alliance_name'] ?? ''), 'Alliance'), ENT_QUOTES) ?></td>
                         <td class="px-3 py-2 <?= $sideClass ?>">
                             <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= (string) ($a['side'] ?? '') === 'side_a' ? 'bg-blue-900/60' : 'bg-red-900/60' ?>">
                                 <?= htmlspecialchars((string) ($a['side'] ?? ''), ENT_QUOTES) ?>
@@ -271,6 +303,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <thead>
                 <tr class="border-b border-border/70 text-xs uppercase tracking-[0.15em] text-muted">
                     <th class="px-3 py-2 text-left">Character</th>
+                    <th class="px-3 py-2 text-left">Alliance / Corp</th>
                     <th class="px-3 py-2 text-left">Side</th>
                     <th class="px-3 py-2 text-left">Role</th>
                     <th class="px-3 py-2 text-right">Kills</th>
@@ -283,7 +316,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </thead>
             <tbody>
                 <?php if ($participants === []): ?>
-                    <tr><td colspan="9" class="px-3 py-6 text-sm text-muted">No participants found.</td></tr>
+                    <tr><td colspan="10" class="px-3 py-6 text-sm text-muted">No participants found.</td></tr>
                 <?php else: ?>
                     <?php foreach ($participants as $p): ?>
                         <?php
@@ -293,9 +326,25 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             $pSuspClass = $pSusp >= 0.5 ? 'text-red-400 font-semibold' : ($pSusp >= 0.3 ? 'text-yellow-400' : 'text-slate-300');
                             $isSusp = (int) ($p['is_suspicious'] ?? 0);
                         ?>
+                        <?php
+                            $charName = killmail_entity_preferred_name($resolvedEntities, 'character', (int) ($p['character_id'] ?? 0), (string) ($p['character_name'] ?? ''), 'Character');
+                            $resolvedAlliance = killmail_entity_preferred_name($resolvedEntities, 'alliance', (int) ($p['alliance_id'] ?? 0), (string) ($p['alliance_name'] ?? ''), 'Alliance');
+                            $resolvedCorp = killmail_entity_preferred_name($resolvedEntities, 'corporation', (int) ($p['corporation_id'] ?? 0), (string) ($p['corporation_name'] ?? ''), 'Corp');
+                        ?>
                         <tr class="border-b border-border/50 <?= $isSusp ? 'bg-red-900/10' : '' ?>">
                             <td class="px-3 py-2 text-slate-100">
-                                <?= htmlspecialchars((string) ($p['character_name'] ?? 'ID:' . (int) ($p['character_id'] ?? 0)), ENT_QUOTES) ?>
+                                <a class="text-accent" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">
+                                    <?= htmlspecialchars($charName, ENT_QUOTES) ?>
+                                </a>
+                            </td>
+                            <td class="px-3 py-2 text-slate-300 text-xs">
+                                <?php if (!str_starts_with($resolvedAlliance, 'Alliance #') && !str_starts_with($resolvedAlliance, 'Alliance 0')): ?>
+                                    <span class="text-slate-100"><?= htmlspecialchars($resolvedAlliance, ENT_QUOTES) ?></span>
+                                <?php elseif (!str_starts_with($resolvedCorp, 'Corp #') && !str_starts_with($resolvedCorp, 'Corp 0')): ?>
+                                    <span class="text-slate-300"><?= htmlspecialchars($resolvedCorp, ENT_QUOTES) ?></span>
+                                <?php else: ?>
+                                    <span class="text-slate-500">-</span>
+                                <?php endif; ?>
                             </td>
                             <td class="px-3 py-2 <?= $pSideClass ?>">
                                 <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $pSide === 'side_a' ? 'bg-blue-900/60' : 'bg-red-900/60' ?>">
@@ -317,6 +366,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <td class="px-3 py-2 text-right">
                                 <a class="text-accent text-sm" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">Intel</a>
                             </td>
+
                         </tr>
                     <?php endforeach; ?>
                 <?php endif; ?>
@@ -398,7 +448,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <tr class="border-b border-border/50">
                                 <td class="px-3 py-2 text-slate-100">
                                     <a class="text-accent" href="/battle-intelligence/character.php?character_id=<?= (int) ($gp['character_id'] ?? 0) ?>">
-                                        <?= htmlspecialchars((string) ($gp['character_name'] ?? 'ID:' . (int) ($gp['character_id'] ?? 0)), ENT_QUOTES) ?>
+                                        <?= htmlspecialchars(killmail_entity_preferred_name($resolvedEntities, 'character', (int) ($gp['character_id'] ?? 0), (string) ($gp['character_name'] ?? ''), 'Character'), ENT_QUOTES) ?>
                                     </a>
                                 </td>
                                 <td class="px-3 py-2 text-xs"><?= htmlspecialchars((string) ($gp['side'] ?? '-'), ENT_QUOTES) ?></td>
