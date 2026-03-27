@@ -332,17 +332,17 @@ def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None 
         page_items = items[:120]
 
         generated_at_iso = datetime.now(UTC).isoformat()
-        total_buy_cost = _q2(sum(
+        total_buy_cost = _q2(sum((
             to_decimal(item.get("buy_price")) * Decimal(item.get("quantity", 0))
             for item in page_items
             if item.get("buy_price") is not None
-        ))
-        total_sell_value = _q2(sum(
+        ), DECIMAL_ZERO))
+        total_sell_value = _q2(sum((
             to_decimal(item.get("sell_price")) * Decimal(item.get("quantity", 0))
             for item in page_items
             if item.get("sell_price") is not None
-        ))
-        total_volume = _q2(sum(to_decimal(item.get("total_volume")) for item in page_items))
+        ), DECIMAL_ZERO))
+        total_volume = _q2(sum((to_decimal(item.get("total_volume")) for item in page_items), DECIMAL_ZERO))
         total_hauling = _q2(total_volume * Decimal("320"))
         total_gross_profit = _q2(total_sell_value - total_buy_cost)
         total_net_profit = _q2(total_gross_profit - total_hauling)
