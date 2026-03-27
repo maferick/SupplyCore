@@ -199,10 +199,21 @@ def _compute_timeline(
     theater_start: datetime,
     theater_end: datetime,
 ) -> list[dict[str, Any]]:
-    """Compute per-minute timeline buckets with momentum scoring."""
+    """Compute per-minute timeline buckets with momentum scoring.
+
+    Note: killmail rows are expanded per-attacker (LEFT JOIN killmail_attackers),
+    so we must deduplicate by killmail_id to avoid counting kills/ISK multiple
+    times.
+    """
     bucket_data: dict[str, dict[str, Any]] = {}
+    seen_killmail_ids: set[int] = set()
 
     for km in killmails:
+        km_id = int(km.get("killmail_id") or 0)
+        if km_id <= 0 or km_id in seen_killmail_ids:
+            continue
+        seen_killmail_ids.add(km_id)
+
         km_time = _parse_dt(km.get("killmail_time"))
         # Bucket to nearest minute
         bucket_ts = km_time.replace(second=0, microsecond=0)
@@ -311,8 +322,11 @@ def _compute_alliance_summary(
         if aid > 0 and cid > 0:
             alliance_participants[aid].add(cid)
 
-    # Process killmails for kills/losses/damage
+    # Process killmails for kills/losses/damage — deduplicate losses by
+    # killmail_id (rows are per-attacker), but attacker kills are per-row
+    seen_loss_km: set[int] = set()
     for km in killmails:
+        km_id = int(km.get("killmail_id") or 0)
         victim_id = int(km.get("victim_character_id") or 0)
         victim_alliance = int(km.get("victim_alliance_id") or 0)
         isk = float(km.get("total_value") or 0)
@@ -321,13 +335,14 @@ def _compute_alliance_summary(
         attacker_alliance = int(km.get("attacker_alliance_id") or 0)
         attacker_damage = float(km.get("attacker_damage_done") or 0)
 
-        # Record loss for victim alliance
-        if victim_alliance > 0:
+        # Record loss for victim alliance (once per killmail)
+        if victim_alliance > 0 and km_id not in seen_loss_km:
+            seen_loss_km.add(km_id)
             entry = alliance_stats.setdefault(victim_alliance, _empty_alliance_stats(victim_alliance))
             entry["total_losses"] += 1
             entry["total_isk_lost"] += isk
 
-        # Record kill/damage for attacker alliance
+        # Record kill/damage for attacker alliance (per attacker row)
         if attacker_alliance > 0:
             entry = alliance_stats.setdefault(attacker_alliance, _empty_alliance_stats(attacker_alliance))
             entry["total_kills"] += 1
@@ -422,14 +437,20 @@ def _compute_participants(
         if st > 0 and st not in char_stats[cid]["ship_type_ids"]:
             char_stats[cid]["ship_type_ids"].append(st)
 
-    # Process killmails
+    # Process killmails — deduplicate deaths by killmail_id (rows are
+    # expanded per-attacker), but attacker kills/damage are per-row
+    seen_deaths: set[tuple[int, int]] = set()  # (killmail_id, victim_id)
     for km in killmails:
+        km_id = int(km.get("killmail_id") or 0)
         km_time = _parse_dt(km.get("killmail_time"))
 
         victim_id = int(km.get("victim_character_id") or 0)
         isk = float(km.get("total_value") or 0)
 
-        if victim_id > 0 and victim_id in char_stats:
+        # Count death only once per (killmail, victim) pair
+        death_key = (km_id, victim_id)
+        if victim_id > 0 and victim_id in char_stats and death_key not in seen_deaths:
+            seen_deaths.add(death_key)
             char_stats[victim_id]["deaths"] += 1
             char_stats[victim_id]["damage_taken"] += isk
             char_times[victim_id].append(km_time)
@@ -449,8 +470,7 @@ def _compute_participants(
         entry_time = times[0].strftime("%Y-%m-%d %H:%M:%S") if times else None
         exit_time = times[-1].strftime("%Y-%m-%d %H:%M:%S") if times else None
 
-        import json
-        ship_json = json.dumps(stats["ship_type_ids"]) if stats["ship_type_ids"] else None
+        ship_json = json_dumps_safe(stats["ship_type_ids"]) if stats["ship_type_ids"] else None
 
         result.append({
             "theater_id": theater_id,

@@ -74,7 +74,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <?php else: ?>
                     <?php foreach ($theaters as $t): ?>
                         <?php
-                            $durationMin = max(1, (int) ($t['duration_seconds'] ?? 0)) / 60;
+                            $durationSec = max(1, (int) ($t['duration_seconds'] ?? 0));
+                            $durationLabel = $durationSec >= 120 ? number_format($durationSec / 60, 0) . 'm' : $durationSec . 's';
                             $anomaly = (float) ($t['anomaly_score'] ?? 0);
                             $anomalyClass = $anomaly >= 0.6 ? 'text-red-400' : ($anomaly >= 0.3 ? 'text-yellow-400' : 'text-slate-300');
                             $battleCount = (int) ($t['battle_count'] ?? 0);
@@ -92,7 +93,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <td class="px-3 py-2 text-right"><?= number_format((int) ($t['participant_count'] ?? 0)) ?></td>
                             <td class="px-3 py-2 text-right"><?= number_format((int) ($t['total_kills'] ?? 0)) ?></td>
                             <td class="px-3 py-2 text-right"><?= number_format((float) ($t['total_isk'] ?? 0), 0) ?></td>
-                            <td class="px-3 py-2 text-right"><?= number_format($durationMin, 0) ?>m</td>
+                            <td class="px-3 py-2 text-right"><?= $durationLabel ?></td>
                             <td class="px-3 py-2 text-right <?= $anomalyClass ?>"><?= number_format($anomaly, 3) ?></td>
                             <td class="px-3 py-2 text-slate-300 text-xs"><?= htmlspecialchars((string) ($t['start_time'] ?? ''), ENT_QUOTES) ?></td>
                             <td class="px-3 py-2 text-right">
