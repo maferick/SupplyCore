@@ -23504,6 +23504,10 @@ function supplycore_materialized_snapshot_read_or_bootstrap(string $snapshotKey,
     $snapshot = supplycore_materialized_snapshot_fetch($snapshotKey);
     $expired = false;
     if ($snapshot !== null) {
+        $status = trim((string) ($snapshot['meta']['status'] ?? ''));
+        if ($status === 'updating') {
+            $expired = true;
+        }
         $expiresAt = trim((string) ($snapshot['meta']['expires_at'] ?? ''));
         if ($expiresAt !== '' && strtotime($expiresAt) !== false && strtotime($expiresAt) < time()) {
             $expired = true;
@@ -24496,6 +24500,10 @@ function doctrine_snapshot_cache_payload(): ?array
     }
 
     foreach ([$fitSnapshot, $groupSnapshot] as $snap) {
+        $status = trim((string) ($snap['meta']['status'] ?? ''));
+        if ($status === 'updating') {
+            return null;
+        }
         $expiresAt = trim((string) ($snap['meta']['expires_at'] ?? ''));
         if ($expiresAt !== '' && strtotime($expiresAt) !== false && strtotime($expiresAt) < time()) {
             return null;
@@ -24594,6 +24602,8 @@ function doctrine_schedule_intelligence_refresh(string $reason = 'manual'): void
     foreach ([doctrine_fit_snapshot_key(), doctrine_group_snapshot_key(), market_comparison_snapshot_key(), loss_demand_snapshot_key(), dashboard_snapshot_key(), activity_priority_snapshot_key()] as $snapshotKey) {
         supplycore_materialized_snapshot_mark_updating($snapshotKey, $reason);
     }
+
+    supplycore_cache_bust(['doctrine', 'dashboard']);
 
     try {
         db_sync_schedule_force_due_by_job_keys(doctrine_refresh_trigger_job_keys());
