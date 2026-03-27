@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         context = ZKillContext(
             app_root=app_root,
             php_binary=runtime.php_binary,
-            timeout_seconds=max(30, int(worker_settings.get("claim_ttl_seconds", 300))),
+            timeout_seconds=max(60, int(worker_settings.get("claim_ttl_seconds", 600))),
             memory_abort_threshold_bytes=abort_threshold,
             logger=logger,
         )
@@ -202,8 +202,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.once:
             return 0
-        sleep_for = max(3, args.poll_sleep if int(result.get("rows_written") or 0) == 0 else 3)
-        time.sleep(sleep_for)
+        # Immediately start next cycle — the stream function handles its own
+        # 404-sleep and rate-limit backoff internally. Only pause briefly to
+        # let the PHP context refresh pick up any settings changes.
+        time.sleep(1)
 
 
 if __name__ == "__main__":

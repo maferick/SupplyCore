@@ -376,7 +376,7 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
     base_url = str(job_context.get("base_url") or "").rstrip("/")
     user_agent = str(job_context.get("user_agent") or "SupplyCore killmail-ingestion/2.0")
     poll_sleep_seconds = max(6, int(job_context.get("poll_sleep_seconds") or 10))
-    max_sequences = max(1, int(job_context.get("max_sequences_per_run") or 120))
+    max_sequences = max(1, int(job_context.get("max_sequences_per_run") or 10000))
     batch_size = max(1, min(50, context.batch_size // 20 or 25))
     entity_resolver = KillmailEntityResolver(user_agent)
 
