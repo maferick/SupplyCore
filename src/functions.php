@@ -26591,7 +26591,33 @@ function activity_priority_refresh_summary_job_result(string $reason = 'manual')
 
 function activity_priority_page_data(): array
 {
-    return activity_priority_snapshot_payload();
+    $snapshot = activity_priority_snapshot_payload();
+    if (!activity_priority_snapshot_has_computed_metrics($snapshot)) {
+        $snapshot = activity_priority_refresh_summary('page-contract-repair');
+    }
+
+    return $snapshot;
+}
+
+function activity_priority_snapshot_has_computed_metrics(array $snapshot): bool
+{
+    $rows = array_values((array) ($snapshot['active_doctrines'] ?? []));
+    if ($rows === []) {
+        return true;
+    }
+
+    $row = (array) ($rows[0] ?? []);
+    $hasDoctrineIdentity = array_key_exists('entity_id', $row)
+        || array_key_exists('id', $row);
+    $hasDoctrineName = array_key_exists('doctrine_name', $row)
+        || array_key_exists('group_name', $row)
+        || array_key_exists('entity_name', $row);
+    $hasScore = array_key_exists('activity_score', $row);
+    $hasLossMetrics = array_key_exists('hull_losses_24h', $row)
+        || array_key_exists('module_losses_24h', $row)
+        || array_key_exists('fit_equivalent_losses_24h', $row);
+
+    return $hasDoctrineIdentity && $hasDoctrineName && $hasScore && $hasLossMetrics;
 }
 
 

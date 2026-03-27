@@ -51,7 +51,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <div class="flex flex-wrap items-start justify-between gap-3">
                         <div class="min-w-0 flex-1">
                             <div class="flex flex-wrap items-center gap-2">
-                                <h3 class="truncate text-lg font-semibold text-white"><?= htmlspecialchars((string) ($row['doctrine_name'] ?? ''), ENT_QUOTES) ?></h3>
+                                <?php $doctrineGroupId = (int) ($row['entity_id'] ?? 0); ?>
+                                <?php if ($doctrineGroupId > 0): ?>
+                                    <a href="/doctrine/group?group_id=<?= $doctrineGroupId ?>" class="truncate text-lg font-semibold text-cyan-100 transition hover:text-cyan-50 hover:underline">
+                                        <?= htmlspecialchars((string) ($row['doctrine_name'] ?? ''), ENT_QUOTES) ?>
+                                    </a>
+                                <?php else: ?>
+                                    <h3 class="truncate text-lg font-semibold text-white"><?= htmlspecialchars((string) ($row['doctrine_name'] ?? ''), ENT_QUOTES) ?></h3>
+                                <?php endif; ?>
                                 <span class="badge <?= htmlspecialchars($tone, ENT_QUOTES) ?>"><?= htmlspecialchars(ucfirst((string) ($row['activity_level'] ?? 'low')), ENT_QUOTES) ?></span>
                                 <span class="badge border-white/10 bg-white/5 text-slate-200">#<?= (int) ($row['rank_position'] ?? 0) ?></span>
                                 <span class="badge border-white/10 bg-white/5 text-slate-300"><?= htmlspecialchars((string) ($row['movement_label'] ?? 'Holding'), ENT_QUOTES) ?></span>
