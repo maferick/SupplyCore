@@ -1,11 +1,11 @@
--- Counter-intelligence model extensions.
+-- Counter-intelligence model extensions (idempotent — safe to re-run).
 ALTER TABLE killmail_events
     ADD COLUMN IF NOT EXISTS victim_damage_taken BIGINT UNSIGNED DEFAULT NULL AFTER victim_ship_type_id,
     ADD COLUMN IF NOT EXISTS battle_id CHAR(64) DEFAULT NULL AFTER victim_damage_taken,
     ADD COLUMN IF NOT EXISTS zkb_fitted_value DECIMAL(20,2) DEFAULT NULL AFTER zkb_total_value,
     ADD COLUMN IF NOT EXISTS zkb_dropped_value DECIMAL(20,2) DEFAULT NULL AFTER zkb_fitted_value,
     ADD COLUMN IF NOT EXISTS zkb_destroyed_value DECIMAL(20,2) DEFAULT NULL AFTER zkb_dropped_value,
-    ADD KEY idx_killmail_events_battle (battle_id, effective_killmail_at);
+    ADD KEY IF NOT EXISTS idx_killmail_events_battle (battle_id, effective_killmail_at);
 
 ALTER TABLE killmail_attackers
     ADD COLUMN IF NOT EXISTS damage_done BIGINT UNSIGNED DEFAULT NULL AFTER weapon_type_id;

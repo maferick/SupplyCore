@@ -403,6 +403,136 @@ function db_app_setting_set(string $settingKey, string $value): bool
     return db_app_settings_upsert_many([$settingKey => $value]);
 }
 
+function db_quote_identifier(string $identifier): string
+{
+    if (!preg_match('/^[A-Za-z0-9_]+$/', $identifier)) {
+        throw new InvalidArgumentException('Invalid SQL identifier.');
+    }
+
+    return '`' . str_replace('`', '``', $identifier) . '`';
+}
+
+function db_table_names(): array
+{
+    $rows = db_select('SHOW TABLES');
+    $tables = [];
+    foreach ($rows as $row) {
+        $name = (string) array_values($row)[0];
+        if ($name === '') {
+            continue;
+        }
+        $tables[] = $name;
+    }
+
+    sort($tables, SORT_NATURAL | SORT_FLAG_CASE);
+
+    return $tables;
+}
+
+function db_table_columns(string $tableName): array
+{
+    if (!db_table_exists($tableName)) {
+        return [];
+    }
+
+    $rows = db_select('SHOW COLUMNS FROM ' . db_quote_identifier($tableName));
+    $columns = [];
+    foreach ($rows as $row) {
+        $name = trim((string) ($row['Field'] ?? ''));
+        if ($name === '') {
+            continue;
+        }
+        $columns[] = $name;
+    }
+
+    return $columns;
+}
+
+function db_table_export_rows(string $tableName): array
+{
+    if (!db_table_exists($tableName)) {
+        return [];
+    }
+
+    return db_select('SELECT * FROM ' . db_quote_identifier($tableName));
+}
+
+function db_tables_export_payload(array $tables): array
+{
+    $export = [];
+    foreach ($tables as $tableName) {
+        $safeTable = trim((string) $tableName);
+        if ($safeTable === '' || !db_table_exists($safeTable)) {
+            continue;
+        }
+
+        $rows = db_table_export_rows($safeTable);
+        $export[$safeTable] = [
+            'columns' => db_table_columns($safeTable),
+            'row_count' => count($rows),
+            'rows' => $rows,
+        ];
+    }
+
+    return $export;
+}
+
+function db_tables_replace_from_payload(array $tablesPayload): array
+{
+    $tableNames = array_keys($tablesPayload);
+    $summary = [];
+
+    if ($tableNames === []) {
+        return $summary;
+    }
+
+    db_transaction(static function () use ($tableNames, $tablesPayload, &$summary): void {
+        db_execute('SET FOREIGN_KEY_CHECKS=0');
+
+        try {
+            foreach ($tableNames as $tableName) {
+                $safeTable = trim((string) $tableName);
+                if ($safeTable === '' || !db_table_exists($safeTable)) {
+                    continue;
+                }
+
+                $tableQuoted = db_quote_identifier($safeTable);
+                db_execute('DELETE FROM ' . $tableQuoted);
+
+                $tableRows = (array) ($tablesPayload[$safeTable]['rows'] ?? []);
+                $columns = db_table_columns($safeTable);
+                if ($tableRows === [] || $columns === []) {
+                    $summary[$safeTable] = ['deleted' => true, 'inserted' => 0];
+                    continue;
+                }
+
+                $quotedColumns = implode(', ', array_map(
+                    static fn (string $column): string => db_quote_identifier($column),
+                    $columns
+                ));
+                $placeholders = implode(', ', array_fill(0, count($columns), '?'));
+                $sql = 'INSERT INTO ' . $tableQuoted . ' (' . $quotedColumns . ') VALUES (' . $placeholders . ')';
+                $inserted = 0;
+
+                foreach ($tableRows as $row) {
+                    $values = [];
+                    foreach ($columns as $column) {
+                        $values[] = $row[$column] ?? null;
+                    }
+                    db_execute($sql, $values);
+                    $inserted++;
+                }
+
+                $summary[$safeTable] = ['deleted' => true, 'inserted' => $inserted];
+            }
+        } finally {
+            db_execute('SET FOREIGN_KEY_CHECKS=1');
+        }
+    });
+
+    return $summary;
+}
+
 function db_runtime_schema_checks_enabled(): bool
 {
     static $enabled = null;
@@ -14163,10 +14293,14 @@ function db_battle_intelligence_top_battles(int $limit = 50): array
         'SELECT eos.battle_id, eos.side_key, eos.anomaly_class, eos.overperformance_score, eos.sustain_lift_score,
                 eos.hull_survival_lift_score, eos.control_delta_score, eos.evidence_json, eos.computed_at,
                 br.system_id, br.started_at, br.ended_at, br.participant_count,
-                COALESCE(rs.system_name, CONCAT("System #", br.system_id)) AS system_name
+                COALESCE(rs.system_name, CONCAT("System #", br.system_id)) AS system_name,
+                COALESCE(emc_side.entity_name, eos.side_key) AS side_name
          FROM battle_enemy_overperformance_scores eos
          INNER JOIN battle_rollups br ON br.battle_id = eos.battle_id
          LEFT JOIN ref_systems rs ON rs.system_id = br.system_id
+         LEFT JOIN entity_metadata_cache emc_side
+             ON emc_side.entity_type = CASE WHEN eos.side_key LIKE "a:%" THEN "alliance" WHEN eos.side_key LIKE "c:%" THEN "corporation" ELSE "" END
+             AND emc_side.entity_id = CAST(SUBSTRING(eos.side_key, 3) AS UNSIGNED)
          ORDER BY eos.overperformance_score DESC, br.participant_count DESC
          LIMIT ' . $safeLimit
     );
@@ -14216,11 +14350,15 @@ function db_battle_intelligence_character_battles(int $characterId, int $limit =
                 baf.participated_in_high_sustain, baf.participated_in_low_sustain,
                 eos.overperformance_score, eos.sustain_lift_score, eos.hull_survival_lift_score, eos.control_delta_score, eos.anomaly_class,
                 br.system_id, br.started_at, br.ended_at, br.participant_count,
-                COALESCE(rs.system_name, CONCAT("System #", br.system_id)) AS system_name
+                COALESCE(rs.system_name, CONCAT("System #", br.system_id)) AS system_name,
+                COALESCE(emc_side.entity_name, baf.side_key) AS side_name
          FROM battle_actor_features baf
          INNER JOIN battle_rollups br ON br.battle_id = baf.battle_id
          LEFT JOIN battle_enemy_overperformance_scores eos ON eos.battle_id = baf.battle_id AND eos.side_key = baf.side_key
          LEFT JOIN ref_systems rs ON rs.system_id = br.system_id
+         LEFT JOIN entity_metadata_cache emc_side
+             ON emc_side.entity_type = CASE WHEN baf.side_key LIKE "a:%" THEN "alliance" WHEN baf.side_key LIKE "c:%" THEN "corporation" ELSE "" END
+             AND emc_side.entity_id = CAST(SUBSTRING(baf.side_key, 3) AS UNSIGNED)
          WHERE baf.character_id = ?
          ORDER BY ABS(COALESCE(eos.overperformance_score, 0)) DESC, br.started_at DESC
          LIMIT ' . $safeLimit,
@@ -14257,9 +14395,13 @@ function db_battle_intelligence_battle_sides(string $battleId): array
     return db_select(
         'SELECT eos.battle_id, eos.side_key, eos.overperformance_score, eos.sustain_lift_score, eos.hull_survival_lift_score, eos.control_delta_score,
                 eos.anomaly_class, eos.evidence_json, eos.computed_at,
-                bsm.participant_count, bsm.kill_rate_per_minute, bsm.median_sustain_factor, bsm.z_efficiency_score, bsm.efficiency_score
+                bsm.participant_count, bsm.kill_rate_per_minute, bsm.median_sustain_factor, bsm.z_efficiency_score, bsm.efficiency_score,
+                COALESCE(emc_side.entity_name, eos.side_key) AS side_name
          FROM battle_enemy_overperformance_scores eos
          LEFT JOIN battle_side_metrics bsm ON bsm.battle_id = eos.battle_id AND bsm.side_key = eos.side_key
+         LEFT JOIN entity_metadata_cache emc_side
+             ON emc_side.entity_type = CASE WHEN eos.side_key LIKE "a:%" THEN "alliance" WHEN eos.side_key LIKE "c:%" THEN "corporation" ELSE "" END
+             AND emc_side.entity_id = CAST(SUBSTRING(eos.side_key, 3) AS UNSIGNED)
          WHERE eos.battle_id = ?
          ORDER BY eos.overperformance_score DESC',
         [$safeBattleId]
@@ -14294,10 +14436,16 @@ function db_battle_intelligence_battle_hull_anomalies(string $battleId, int $lim
     $safeLimit = max(1, min(200, $limit));
 
     return db_select(
-        'SELECT battle_id, side_key, victim_ship_type_id, hull_survival_seconds, baseline_survival_seconds, survival_lift, sample_count, computed_at
-         FROM hull_survival_anomaly_metrics
-         WHERE battle_id = ?
-         ORDER BY ABS(survival_lift) DESC, sample_count DESC
+        'SELECT hsam.battle_id, hsam.side_key, hsam.victim_ship_type_id, hsam.hull_survival_seconds, hsam.baseline_survival_seconds, hsam.survival_lift, hsam.sample_count, hsam.computed_at,
+                COALESCE(emc_side.entity_name, hsam.side_key) AS side_name,
+                COALESCE(rit.type_name, CONCAT("Type #", hsam.victim_ship_type_id)) AS ship_name
+         FROM hull_survival_anomaly_metrics hsam
+         LEFT JOIN entity_metadata_cache emc_side
+             ON emc_side.entity_type = CASE WHEN hsam.side_key LIKE "a:%" THEN "alliance" WHEN hsam.side_key LIKE "c:%" THEN "corporation" ELSE "" END
+             AND emc_side.entity_id = CAST(SUBSTRING(hsam.side_key, 3) AS UNSIGNED)
+         LEFT JOIN ref_item_types rit ON rit.type_id = hsam.victim_ship_type_id
+         WHERE hsam.battle_id = ?
+         ORDER BY ABS(hsam.survival_lift) DESC, hsam.sample_count DESC
          LIMIT ' . $safeLimit,
         [$safeBattleId]
     );
@@ -14315,9 +14463,13 @@ function db_battle_intelligence_battle_notable_actors(string $battleId, int $lim
     return db_select(
         'SELECT baf.character_id, baf.side_key, baf.centrality_score, baf.visibility_score, baf.participation_count,
                 baf.participated_in_high_sustain, baf.participated_in_low_sustain,
-                COALESCE(emc.entity_name, CONCAT("Character #", baf.character_id)) AS character_name
+                COALESCE(emc.entity_name, CONCAT("Character #", baf.character_id)) AS character_name,
+                COALESCE(emc_side.entity_name, baf.side_key) AS side_name
          FROM battle_actor_features baf
          LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = baf.character_id
+         LEFT JOIN entity_metadata_cache emc_side
+             ON emc_side.entity_type = CASE WHEN baf.side_key LIKE "a:%" THEN "alliance" WHEN baf.side_key LIKE "c:%" THEN "corporation" ELSE "" END
+             AND emc_side.entity_id = CAST(SUBSTRING(baf.side_key, 3) AS UNSIGNED)
          WHERE baf.battle_id = ?
          ORDER BY baf.visibility_score DESC, baf.centrality_score DESC
          LIMIT ' . $safeLimit,

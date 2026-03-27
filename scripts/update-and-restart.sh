@@ -28,15 +28,14 @@ CORE_UNITS=(
 )
 
 # Units that are opt-in only — update if already installed, but don't install.
-OPTIN_UNITS=(
-  supplycore-orchestrator.service
-  supplycore-worker@.service
-)
+OPTIN_UNITS=()
 
 # Known stale units that should be stopped, disabled, and removed.
 STALE_UNITS=(
   supplycore-php-compute-worker.service
   supplycore-php-compute-worker@.service
+  supplycore-orchestrator.service
+  supplycore-worker@.service
 )
 
 usage() {
@@ -203,11 +202,35 @@ discover_services() {
   local -a discovered=()
   local unit load_state
 
+  # Collect timer-triggered service names so we skip them (only restart the timer)
+  local -a timer_triggered=()
+  local triggers_line
+  while read -r timer_unit _rest; do
+    [[ -z "${timer_unit}" ]] && continue
+    triggers_line=$(systemctl show -p Triggers --value "${timer_unit}" 2>/dev/null || true)
+    if [[ -n "${triggers_line}" ]]; then
+      timer_triggered+=("${triggers_line}")
+    fi
+  done < <(systemctl list-units --type=timer --no-legend --plain 2>/dev/null \
+    | awk '/^supplycore-/ {print $1}' \
+    || true)
+
   while read -r unit load_state _rest; do
     [[ -z "${unit}" ]] && continue
     [[ "${unit}" == *'@.service' ]] && continue
     [[ "${load_state}" == "not-found" ]] && continue
     [[ "${load_state}" == "masked" ]] && continue
+    # Skip services that are triggered by timers — we restart the timer instead
+    local is_timer_triggered=false
+    for tt in "${timer_triggered[@]+"${timer_triggered[@]}"}"; do
+      if [[ "${tt}" == "${unit}" ]]; then
+        is_timer_triggered=true
+        break
+      fi
+    done
+    if [[ ${is_timer_triggered} == true ]]; then
+      continue
+    fi
     discovered+=("${unit}")
   done < <(systemctl list-units --type=service --no-legend --plain 2>/dev/null \
     | awk '/^supplycore-/ {print $1, $2}' \
