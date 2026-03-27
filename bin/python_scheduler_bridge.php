@@ -38,6 +38,20 @@ try {
         python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_killmail_context()]);
     }
 
+    if ($action === 'killmail-backfill-context') {
+        python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_killmail_backfill_context()]);
+    }
+
+    if ($action === 'update-setting') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $key = trim((string) ($input['key'] ?? ''));
+        $value = (string) ($input['value'] ?? '');
+        if ($key !== '') {
+            save_settings([$key => $value]);
+        }
+        python_scheduler_bridge_output(['ok' => true]);
+    }
+
     if ($action === 'market-hub-local-history-context') {
         python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_market_hub_local_history_context()]);
     }
