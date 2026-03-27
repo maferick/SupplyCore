@@ -18653,9 +18653,11 @@ function killmail_settings_from_request(array $request): array
         (string) ($request['tracked_corporation_names'] ?? '')
     );
 
+    // Note: killmail_ingestion_enabled is NOT included here — it is controlled
+    // exclusively from the Automation Control section to avoid accidentally
+    // disabling ingestion when saving killmail intelligence settings.
     return [
         'settings' => [
-            'killmail_ingestion_enabled' => sanitize_enabled_flag($request['killmail_ingestion_enabled'] ?? null),
             'killmail_ingestion_poll_sleep_seconds' => (string) max(6, min(300, (int) ($request['killmail_ingestion_poll_sleep_seconds'] ?? 10))),
             'killmail_ingestion_max_sequences_per_run' => (string) max(1, min(5000, (int) ($request['killmail_ingestion_max_sequences_per_run'] ?? 120))),
             'killmail_demand_prediction_mode' => trim((string) ($request['killmail_demand_prediction_mode'] ?? 'baseline')),
@@ -18702,7 +18704,8 @@ function save_killmail_intelligence_settings(array $request): array
             throw new RuntimeException('Killmail tracked entity readback mismatch after save.');
         }
         $saved = true;
-    } catch (Throwable) {
+    } catch (Throwable $e) {
+        error_log('[killmail-settings] Save failed: ' . $e->getMessage());
         $saved = false;
     }
 

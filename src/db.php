@@ -10982,14 +10982,17 @@ function db_killmail_items_replace(int $sequenceId, array $rows): int
 
 function db_killmail_tracked_alliances_replace(array $rows): bool
 {
+    // DDL must run OUTSIDE the transaction — MySQL implicitly commits on CREATE TABLE,
+    // which would break any enclosing transaction (e.g. save_killmail_intelligence_settings).
+    db_execute('CREATE TABLE IF NOT EXISTS killmail_tracked_alliances (
+        alliance_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+        label VARCHAR(255) DEFAULT NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
     return db_transaction(static function () use ($rows): bool {
-        db_execute('CREATE TABLE IF NOT EXISTS killmail_tracked_alliances (
-            alliance_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
-            label VARCHAR(255) DEFAULT NULL,
-            is_active TINYINT(1) NOT NULL DEFAULT 1,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
         db_execute('DELETE FROM killmail_tracked_alliances');
 
         foreach ($rows as $row) {
@@ -11006,14 +11009,17 @@ function db_killmail_tracked_alliances_replace(array $rows): bool
 
 function db_killmail_tracked_corporations_replace(array $rows): bool
 {
+    // DDL must run OUTSIDE the transaction — MySQL implicitly commits on CREATE TABLE,
+    // which would break any enclosing transaction (e.g. save_killmail_intelligence_settings).
+    db_execute('CREATE TABLE IF NOT EXISTS killmail_tracked_corporations (
+        corporation_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+        label VARCHAR(255) DEFAULT NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
     return db_transaction(static function () use ($rows): bool {
-        db_execute('CREATE TABLE IF NOT EXISTS killmail_tracked_corporations (
-            corporation_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
-            label VARCHAR(255) DEFAULT NULL,
-            is_active TINYINT(1) NOT NULL DEFAULT 1,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
         db_execute('DELETE FROM killmail_tracked_corporations');
 
         foreach ($rows as $row) {
