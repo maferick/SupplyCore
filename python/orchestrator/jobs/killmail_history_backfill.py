@@ -251,6 +251,7 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
         time.sleep(2)
 
     total_killmails_seen = len(all_kills)
+    logger.info("Collection complete: %d unique killmails found across all entities", total_killmails_seen)
 
     # Pre-filter: remove killmails we already have in the DB
     all_km_ids = list(all_kills.keys())
@@ -268,6 +269,7 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
 
     new_kills = {km_id: km_hash for km_id, km_hash in all_kills.items() if km_id not in existing_ids}
     total_skipped_existing = total_killmails_seen - len(new_kills)
+    logger.info("Dedup: %d already in DB, %d new killmails to fetch from ESI", total_skipped_existing, len(new_kills))
 
     # Fetch from ESI and process in batches
     kill_pairs = list(new_kills.items())
@@ -299,6 +301,10 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
                 total_duplicates += int(batch_result.get("duplicates") or 0)
             except Exception:
                 pass
+
+        logger.info("ESI batch %d/%d: fetched=%d failed=%d written=%d filtered=%d",
+                    batch_start + len(batch_pairs), total_to_fetch,
+                    total_esi_fetched, total_esi_failed, total_written, total_filtered)
 
         # Update progress every batch
         try:
