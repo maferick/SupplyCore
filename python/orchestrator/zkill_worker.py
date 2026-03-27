@@ -66,7 +66,7 @@ def _no_progress_state(previous_state: dict[str, Any], result: dict[str, Any], t
     previous_result = previous_state.get("result")
     previous_meta = previous_result.get("meta") if isinstance(previous_result, dict) else {}
     previous_cursor_after = ""
-    if isinstance(previous_meta, dict):
+    if isinstance(previous_meta, dict) and isinstance(previous_result, dict):
         previous_cursor_after = str(previous_meta.get("cursor_after") or previous_result.get("cursor") or "").strip()
     repeated_count = int(previous_state.get("same_cursor_no_progress_count") or 0)
     if rows_written == 0 and cursor_after != "" and cursor_after == previous_cursor_after:
