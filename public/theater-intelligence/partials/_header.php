@@ -1,34 +1,32 @@
 <section class="surface-primary">
-    <a href="/theater-intelligence" class="text-sm text-accent">&#8592; Back to theaters</a>
+    <a href="/theater-intelligence" class="text-sm text-accent">&#8592; Back to Theater Overview</a>
 
-    <div class="mt-3 flex items-center justify-between gap-4">
-        <div>
-            <p class="text-xs uppercase tracking-[0.16em] text-muted">Theater Intelligence</p>
+    <div class="mt-3 flex items-start justify-between gap-4">
+        <div class="flex-1">
+            <p class="text-xs uppercase tracking-[0.16em] text-muted">Battle Intelligence — Theater Detail</p>
             <h1 class="mt-1 text-2xl font-semibold text-slate-50">
                 <?= htmlspecialchars((string) ($theater['primary_system_name'] ?? 'Unknown'), ENT_QUOTES) ?>
                 <?php if ((int) ($theater['system_count'] ?? 0) > 1): ?>
-                    <span class="text-sm text-muted">+<?= (int) ($theater['system_count'] ?? 0) - 1 ?> systems</span>
+                    <span class="text-sm text-muted font-normal">+<?= (int) ($theater['system_count'] ?? 0) - 1 ?> systems</span>
                 <?php endif; ?>
             </h1>
-            <p class="mt-1 text-base text-slate-200">
+            <div class="mt-2 flex flex-wrap items-center gap-2 text-base">
                 <span class="text-blue-300 font-semibold"><?= htmlspecialchars($sideLabels['friendly'] ?? 'Friendlies', ENT_QUOTES) ?></span>
-                <span class="text-[10px] uppercase tracking-wider bg-blue-900/60 text-blue-300 rounded-full px-1.5 py-0.5 ml-1">Friendly</span>
-                <span class="text-slate-500 mx-2">vs</span>
+                <span class="text-[10px] uppercase tracking-wider bg-blue-900/60 text-blue-300 rounded-full px-1.5 py-0.5">Friendly</span>
+                <span class="text-slate-500">vs</span>
                 <span class="text-red-300 font-semibold"><?= htmlspecialchars($sideLabels['opponent'] ?? 'Opposition', ENT_QUOTES) ?></span>
+                <span class="text-[10px] uppercase tracking-wider bg-red-900/60 text-red-300 rounded-full px-1.5 py-0.5">Hostile</span>
                 <?php $thirdPartyCount = count($sideAlliancesByPilots['third_party'] ?? []); ?>
                 <?php if ($thirdPartyCount > 0): ?>
-                    <span class="text-slate-400 ml-2 text-sm">(+<?= $thirdPartyCount ?> third party)</span>
+                    <span class="text-slate-400 text-sm">(+<?= $thirdPartyCount ?> unidentified)</span>
                 <?php endif; ?>
-            </p>
-            <p class="mt-1 text-xs text-muted">
-                Friendly alliances: <?= number_format(count($sideAlliancesByPilots['friendly'] ?? [])) ?> &middot;
-                Opponent alliances: <?= number_format(count($sideAlliancesByPilots['opponent'] ?? [])) ?>
-            </p>
-            <p class="mt-1 text-sm text-slate-300">
-                <?= htmlspecialchars((string) ($theater['region_name'] ?? ''), ENT_QUOTES) ?>
-                &middot; <?= htmlspecialchars($theaterStartActual, ENT_QUOTES) ?>
-                &mdash; <?= htmlspecialchars($theaterEndActual, ENT_QUOTES) ?>
-            </p>
+            </div>
+            <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
+                <span><?= htmlspecialchars((string) ($theater['region_name'] ?? ''), ENT_QUOTES) ?></span>
+                <span><?= htmlspecialchars($theaterStartActual, ENT_QUOTES) ?> — <?= htmlspecialchars($theaterEndActual, ENT_QUOTES) ?></span>
+                <span>Friendly: <?= number_format(count($sideAlliancesByPilots['friendly'] ?? [])) ?> alliances</span>
+                <span>Hostile: <?= number_format(count($sideAlliancesByPilots['opponent'] ?? [])) ?> alliances</span>
+            </div>
         </div>
     </div>
 

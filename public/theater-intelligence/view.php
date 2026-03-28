@@ -83,6 +83,11 @@ $classifyAlliance = static function (int $allianceId) use ($trackedAllianceIds, 
     if ($allianceId > 0 && in_array($allianceId, $opponentAllianceIds, true)) {
         return 'opponent';
     }
+    // In a battle context, not-friendly means hostile — only use third_party
+    // when there is no usable alliance identity at all.
+    if ($allianceId > 0) {
+        return 'opponent';
+    }
     return 'third_party';
 };
 
@@ -95,7 +100,7 @@ $sideLabels = [
     'third_party' => 'Third Party',
 ];
 
-// Build friendly/opponent labels from actual alliance names
+// Build friendly/opponent lists from actual alliance names
 $sideAlliancesByPilots = ['friendly' => [], 'opponent' => [], 'third_party' => []];
 foreach ($allianceSummary as $a) {
     $aid = (int) ($a['alliance_id'] ?? 0);
@@ -104,6 +109,7 @@ foreach ($allianceSummary as $a) {
     $sideAlliancesByPilots[$classification][$aid] = ($sideAlliancesByPilots[$classification][$aid] ?? 0) + $pilots;
 }
 
+// Generate smart opponent labels supporting multiple hostile alliances
 foreach (['friendly', 'opponent'] as $side) {
     $alliances = $sideAlliancesByPilots[$side];
     if ($alliances === []) {
@@ -114,6 +120,28 @@ foreach (['friendly', 'opponent'] as $side) {
     $preferredName = killmail_entity_preferred_name($resolvedEntities, 'alliance', $preferredAllianceId, '', 'Alliance');
     $otherCount = count($alliances) - 1;
     $sideLabels[$side] = $preferredName . ($otherCount > 0 ? " +{$otherCount}" : '');
+}
+
+// Structured opponent model for programmatic access
+$opponentModel = [
+    'primary_opponent' => null,
+    'opponents' => [],
+    'opponent_summary_label' => $sideLabels['opponent'],
+];
+$opponentAlliances = $sideAlliancesByPilots['opponent'];
+arsort($opponentAlliances);
+foreach ($opponentAlliances as $aid => $pilots) {
+    $name = killmail_entity_preferred_name($resolvedEntities, 'alliance', (int) $aid, '', 'Alliance');
+    $entry = ['alliance_id' => (int) $aid, 'name' => $name, 'pilots' => $pilots];
+    $opponentModel['opponents'][] = $entry;
+    if ($opponentModel['primary_opponent'] === null) {
+        $opponentModel['primary_opponent'] = $entry;
+    }
+}
+if ($opponentModel['opponents'] === []) {
+    $opponentModel['opponent_summary_label'] = 'Unclassified Hostiles';
+} elseif (count($opponentModel['opponents']) === 1) {
+    $opponentModel['opponent_summary_label'] = $opponentModel['primary_opponent']['name'];
 }
 
 $sideColorClass = [

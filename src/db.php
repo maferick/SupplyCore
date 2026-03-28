@@ -15423,20 +15423,51 @@ function db_theater_side_labels(array $theaterIds): array
          ORDER BY tas.participant_count DESC",
         $theaterIds
     );
-    // Group by theater → side → pick top alliance by pilot count
+
+    // Load tracked/opponent alliance IDs for runtime classification
+    $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+    $opponentAllianceIds = array_map('intval', array_column(db_killmail_opponent_alliances_active(), 'alliance_id'));
+    $trackedSet = array_flip($trackedAllianceIds);
+    $opponentSet = array_flip($opponentAllianceIds);
+
+    // Group alliances per theater into friendly / hostile buckets based on
+    // runtime classification — not the raw side column which may use legacy
+    // side_a/side_b values or have gaps.
     $grouped = [];
     foreach ($rows as $r) {
         $tid = (string) $r['theater_id'];
-        $side = (string) $r['side'];
-        if (!isset($grouped[$tid][$side])) {
-            $grouped[$tid][$side] = [
-                'top_name' => (string) $r['alliance_name'],
-                'top_alliance_id' => (int) $r['alliance_id'],
+        $aid = (int) $r['alliance_id'];
+        $pilots = (int) $r['participant_count'];
+        $name = (string) $r['alliance_name'];
+
+        if ($aid > 0 && isset($trackedSet[$aid])) {
+            $bucket = 'friendly';
+        } elseif ($aid > 0 && isset($opponentSet[$aid])) {
+            $bucket = 'hostile';
+        } else {
+            // Not-friendly defaults to hostile in a combat context
+            $bucket = 'hostile';
+        }
+
+        if (!isset($grouped[$tid][$bucket])) {
+            $grouped[$tid][$bucket] = [
+                'top_name' => $name,
+                'top_alliance_id' => $aid,
+                'top_pilots' => $pilots,
                 'count' => 0,
+                'total_pilots' => 0,
             ];
         }
-        $grouped[$tid][$side]['count']++;
+        $grouped[$tid][$bucket]['count']++;
+        $grouped[$tid][$bucket]['total_pilots'] += $pilots;
+        // Keep top alliance by pilot count
+        if ($pilots > $grouped[$tid][$bucket]['top_pilots']) {
+            $grouped[$tid][$bucket]['top_name'] = $name;
+            $grouped[$tid][$bucket]['top_alliance_id'] = $aid;
+            $grouped[$tid][$bucket]['top_pilots'] = $pilots;
+        }
     }
+
     return $grouped;
 }
 
