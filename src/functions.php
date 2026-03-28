@@ -673,6 +673,10 @@ function ai_briefing_setting_defaults(): array
         'ollama_capability_tier' => 'auto',
         'ollama_runpod_url' => '',
         'ollama_runpod_api_key' => '',
+        'claude_api_key' => '',
+        'claude_model' => 'claude-sonnet-4-20250514',
+        'groq_api_key' => '',
+        'groq_model' => 'meta-llama/llama-4-scout-17b-16e-instruct',
         'theater_aar_prompt' => '',
     ];
 }
@@ -813,6 +817,8 @@ function ollama_provider_options(): array
     return [
         'local' => 'Local Ollama',
         'runpod' => 'Runpod Serverless',
+        'claude' => 'Claude API (Anthropic)',
+        'groq' => 'Groq (Free tier)',
     ];
 }
 
@@ -25254,6 +25260,10 @@ function supplycore_ai_ollama_config(): array
         'capability_override' => sanitize_ollama_capability_tier($settings['ollama_capability_tier'] ?? $defaults['ollama_capability_tier']),
         'runpod_url' => sanitize_ollama_runpod_url($settings['ollama_runpod_url'] ?? $defaults['ollama_runpod_url']),
         'runpod_api_key' => sanitize_ollama_runpod_api_key($settings['ollama_runpod_api_key'] ?? $defaults['ollama_runpod_api_key']),
+        'claude_api_key' => trim((string) ($settings['claude_api_key'] ?? $defaults['claude_api_key'])),
+        'claude_model' => trim((string) ($settings['claude_model'] ?? $defaults['claude_model'])),
+        'groq_api_key' => trim((string) ($settings['groq_api_key'] ?? $defaults['groq_api_key'])),
+        'groq_model' => trim((string) ($settings['groq_model'] ?? $defaults['groq_model'])),
     ];
 
     $inferredTier = supplycore_ai_infer_model_capability_tier((string) ($config['model'] ?? ''));
@@ -25272,6 +25282,12 @@ function supplycore_ai_ollama_config(): array
         'runpod_url' => (string) ($config['runpod_url'] ?? ''),
         'runpod_api_key' => (string) ($config['runpod_api_key'] ?? ''),
         'runpod_api_key_masked' => supplycore_mask_secret((string) ($config['runpod_api_key'] ?? '')),
+        'claude_api_key' => (string) ($config['claude_api_key'] ?? ''),
+        'claude_api_key_masked' => supplycore_mask_secret((string) ($config['claude_api_key'] ?? '')),
+        'claude_model' => (string) ($config['claude_model'] ?? 'claude-sonnet-4-20250514'),
+        'groq_api_key' => (string) ($config['groq_api_key'] ?? ''),
+        'groq_api_key_masked' => supplycore_mask_secret((string) ($config['groq_api_key'] ?? '')),
+        'groq_model' => (string) ($config['groq_model'] ?? 'meta-llama/llama-4-scout-17b-16e-instruct'),
         'inferred_tier' => $inferredTier,
         'capability_tier' => $effectiveTier,
         'strategy' => $strategy,
@@ -26387,6 +26403,129 @@ function supplycore_ai_decode_json_string(string $value): ?array
 }
 
 // ---------------------------------------------------------------------------
+// Claude API Provider
+// ---------------------------------------------------------------------------
+
+function supplycore_ai_claude_generate_json(array $config, string $systemPrompt, string $userPrompt, array $schema): array
+{
+    $apiKey = trim((string) ($config['claude_api_key'] ?? ''));
+    if ($apiKey === '') {
+        throw new RuntimeException('Claude API key is not configured');
+    }
+    $model = trim((string) ($config['claude_model'] ?? 'claude-sonnet-4-20250514'));
+
+    $schemaJson = json_encode($schema, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+
+    $requestPayload = [
+        'model' => $model,
+        'max_tokens' => 4096,
+        'system' => $systemPrompt,
+        'messages' => [
+            [
+                'role' => 'user',
+                'content' => $userPrompt . "\n\nReturn JSON only matching this schema:\n" . $schemaJson,
+            ],
+        ],
+    ];
+
+    $response = http_post_json(
+        'https://api.anthropic.com/v1/messages',
+        [
+            'x-api-key: ' . $apiKey,
+            'anthropic-version: 2023-06-01',
+        ],
+        $requestPayload,
+        max(120, (int) ($config['timeout'] ?? 60))
+    );
+
+    $status = (int) ($response['status'] ?? 0);
+    $json = is_array($response['json'] ?? null) ? $response['json'] : [];
+    if ($status < 200 || $status >= 300) {
+        $errorMsg = (string) ($json['error']['message'] ?? 'unknown');
+        throw new RuntimeException('Claude API returned HTTP ' . $status . ': ' . $errorMsg);
+    }
+
+    $content = $json['content'] ?? [];
+    $textBlock = '';
+    foreach ($content as $block) {
+        if (($block['type'] ?? '') === 'text') {
+            $textBlock .= (string) ($block['text'] ?? '');
+        }
+    }
+
+    $textBlock = trim($textBlock);
+    // Strip markdown JSON fences if present
+    if (str_starts_with($textBlock, '```')) {
+        $textBlock = preg_replace('/^```(?:json)?\s*/i', '', $textBlock);
+        $textBlock = preg_replace('/\s*```\s*$/', '', $textBlock);
+    }
+
+    $decoded = json_decode($textBlock, true);
+    if (!is_array($decoded)) {
+        throw new RuntimeException('Claude API returned malformed JSON');
+    }
+
+    return $decoded;
+}
+
+function supplycore_ai_groq_generate_json(array $config, string $systemPrompt, string $userPrompt, array $schema): array
+{
+    $apiKey = trim((string) ($config['groq_api_key'] ?? ''));
+    if ($apiKey === '') {
+        throw new RuntimeException('Groq API key is not configured');
+    }
+    $model = trim((string) ($config['groq_model'] ?? 'meta-llama/llama-4-scout-17b-16e-instruct'));
+
+    $schemaJson = json_encode($schema, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+
+    $requestPayload = [
+        'model' => $model,
+        'temperature' => 0.2,
+        'max_tokens' => 4096,
+        'response_format' => ['type' => 'json_object'],
+        'messages' => [
+            ['role' => 'system', 'content' => $systemPrompt . "\n\nReturn valid JSON matching this schema:\n" . $schemaJson],
+            ['role' => 'user', 'content' => $userPrompt],
+        ],
+    ];
+
+    $response = http_post_json(
+        'https://api.groq.com/openai/v1/chat/completions',
+        [
+            'Authorization: Bearer ' . $apiKey,
+        ],
+        $requestPayload,
+        max(120, (int) ($config['timeout'] ?? 60))
+    );
+
+    $status = (int) ($response['status'] ?? 0);
+    $json = is_array($response['json'] ?? null) ? $response['json'] : [];
+    if ($status < 200 || $status >= 300) {
+        $errorMsg = (string) ($json['error']['message'] ?? 'unknown');
+        throw new RuntimeException('Groq API returned HTTP ' . $status . ': ' . $errorMsg);
+    }
+
+    $choices = $json['choices'] ?? [];
+    $rawResponse = trim((string) (($choices[0]['message']['content'] ?? '')));
+    if ($rawResponse === '') {
+        throw new RuntimeException('Groq API returned empty response');
+    }
+
+    // Strip markdown JSON fences if present
+    if (str_starts_with($rawResponse, '```')) {
+        $rawResponse = preg_replace('/^```(?:json)?\s*/i', '', $rawResponse);
+        $rawResponse = preg_replace('/\s*```\s*$/', '', $rawResponse);
+    }
+
+    $decoded = json_decode($rawResponse, true);
+    if (!is_array($decoded)) {
+        throw new RuntimeException('Groq API returned malformed JSON');
+    }
+
+    return $decoded;
+}
+
+// ---------------------------------------------------------------------------
 // Theater Intelligence AI Summary
 // ---------------------------------------------------------------------------
 
@@ -26423,8 +26562,26 @@ function theater_ai_summary_generate(string $theaterId, bool $forceRegenerate = 
     $userPrompt = theater_ai_user_prompt($facts);
     $schema = theater_ai_output_schema();
 
+    // Concurrency lock: only one AI generation at a time (CPU Ollama is single-threaded)
+    $lockFile = sys_get_temp_dir() . '/supplycore_ai_generation.lock';
+    $lockFp = fopen($lockFile, 'c');
+    if ($lockFp === false) {
+        error_log('[theater-ai] Cannot open lock file');
+        return null;
+    }
+    if (!flock($lockFp, LOCK_EX | LOCK_NB)) {
+        fclose($lockFp);
+        error_log('[theater-ai] Another AI generation is already running, skipping ' . $theaterId);
+        return null;
+    }
+
     try {
-        if (($config['provider'] ?? 'local') === 'runpod') {
+        $provider = (string) ($config['provider'] ?? 'local');
+        if ($provider === 'claude') {
+            $decoded = supplycore_ai_claude_generate_json($config, $systemPrompt, $userPrompt, $schema);
+        } elseif ($provider === 'groq') {
+            $decoded = supplycore_ai_groq_generate_json($config, $systemPrompt, $userPrompt, $schema);
+        } elseif ($provider === 'runpod') {
             $decoded = supplycore_ai_runpod_generate_json($config, $systemPrompt, $userPrompt, $schema);
         } else {
             $endpoint = $config['url'] . '/generate';
@@ -26436,8 +26593,8 @@ function theater_ai_summary_generate(string $theaterId, bool $forceRegenerate = 
                 'format' => $schema,
                 'options' => [
                     'temperature' => 0.2,
-                    'num_predict' => 8192,
-                    'num_ctx' => 16384,
+                    'num_predict' => 4096,
+                    'num_ctx' => 8192,
                 ],
             ];
             $response = http_post_json($endpoint, [], $requestPayload, max(300, $config['timeout']));
@@ -26467,17 +26624,27 @@ function theater_ai_summary_generate(string $theaterId, bool $forceRegenerate = 
             $headline = mb_substr($summary, 0, 80);
         }
 
-        theater_ai_summary_store($theaterId, $headline, $summary, $verdict, (string) $config['model']);
+        $modelLabel = match ($provider) {
+            'claude' => (string) ($config['claude_model'] ?? 'claude-sonnet-4-20250514'),
+            'groq' => (string) ($config['groq_model'] ?? 'llama-4-scout'),
+            default => (string) $config['model'],
+        };
+        theater_ai_summary_store($theaterId, $headline, $summary, $verdict, $modelLabel);
+
+        flock($lockFp, LOCK_UN);
+        fclose($lockFp);
 
         return [
             'headline' => $headline,
             'summary' => $summary,
             'verdict' => $verdict,
-            'model' => (string) $config['model'],
+            'model' => $modelLabel,
             'generated_at' => date('Y-m-d H:i:s'),
             'cached' => false,
         ];
     } catch (Throwable $e) {
+        flock($lockFp, LOCK_UN);
+        fclose($lockFp);
         error_log('[theater-ai] Failed to generate AAR for ' . $theaterId . ': ' . $e->getMessage());
         return null;
     }
@@ -26624,14 +26791,28 @@ function theater_ai_build_facts(string $theaterId, array $theater): array
 
 function theater_ai_system_prompt(): string
 {
-    return "You are an experienced EVE Online Fleet Commander and military analyst writing a detailed After Action Report (AAR).\n\n"
-         . "IMPORTANT INSTRUCTIONS:\n"
-         . "- Generate a COMPREHENSIVE, DETAILED report. Do NOT be brief. Aim for at least 1500-3000 words in the summary field.\n"
-         . "- Follow ALL numbered sections in the user prompt. Each section must have substantial content.\n"
-         . "- Use markdown formatting: ## for section headers, **bold** for emphasis, - for bullet points.\n"
-         . "- Analyze the battle data thoroughly. Reference specific alliances, ship types, ISK values, and pilot names from the data.\n"
-         . "- Focus on tactical clarity, decision-making, and actionable insights.\n\n"
-         . "Return valid JSON with the required fields. The 'summary' field must contain the full multi-section AAR in markdown.";
+    $config = supplycore_ai_ollama_config();
+    $provider = (string) ($config['provider'] ?? 'local');
+
+    if ($provider === 'claude' || $provider === 'groq') {
+        return "You are an experienced EVE Online Fleet Commander and military analyst writing a detailed After Action Report (AAR).\n\n"
+             . "IMPORTANT INSTRUCTIONS:\n"
+             . "- Generate a COMPREHENSIVE, DETAILED report. Aim for 1500-3000 words in the summary field.\n"
+             . "- Follow ALL numbered sections in the user prompt. Each section must have substantial content.\n"
+             . "- Use markdown formatting: ## for section headers, **bold** for emphasis, - for bullet points.\n"
+             . "- Analyze the battle data thoroughly. Reference specific alliances, ship types, ISK values, and pilot names.\n"
+             . "- Focus on tactical clarity, decision-making, and actionable insights.\n\n"
+             . "Return valid JSON with the required fields. The 'summary' field must contain the full multi-section AAR in markdown.";
+    }
+
+    // Concise prompt for local Ollama (CPU-friendly)
+    return "You are an EVE Online FC writing a battle After Action Report (AAR).\n\n"
+         . "INSTRUCTIONS:\n"
+         . "- Write a clear, structured AAR (300-800 words).\n"
+         . "- Use ## headers, **bold**, and - bullets.\n"
+         . "- Reference alliances, ships, ISK values from the data.\n"
+         . "- Focus on what happened, who won, and why.\n\n"
+         . "Return valid JSON with the required fields.";
 }
 
 function theater_ai_user_prompt(array $facts): string
@@ -26710,6 +26891,15 @@ PROMPT;
 
 function theater_ai_output_schema(): array
 {
+    $config = supplycore_ai_ollama_config();
+    $provider = (string) ($config['provider'] ?? 'local');
+
+    if ($provider === 'claude' || $provider === 'groq') {
+        $summaryDesc = 'Full structured After Action Report (1500-3000 words). Must include ALL numbered sections from the prompt with detailed analysis. Use markdown: ## for headers, **bold** for emphasis, - for bullets. Each section needs multiple paragraphs or bullet points.';
+    } else {
+        $summaryDesc = 'Structured After Action Report (300-800 words). Cover the key sections from the prompt. Use markdown: ## for headers, **bold** for emphasis, - for bullets.';
+    }
+
     return [
         'type' => 'object',
         'required' => ['headline', 'summary', 'verdict'],
@@ -26720,7 +26910,7 @@ function theater_ai_output_schema(): array
             ],
             'summary' => [
                 'type' => 'string',
-                'description' => 'Full structured After Action Report (1500-3000 words minimum). Must include ALL numbered sections from the prompt with detailed analysis. Use markdown: ## for headers, **bold** for emphasis, - for bullets. Do NOT be brief — each section needs multiple paragraphs or bullet points.',
+                'description' => $summaryDesc,
             ],
             'verdict' => [
                 'type' => 'string',
