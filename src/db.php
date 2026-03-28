@@ -14504,6 +14504,31 @@ function db_buy_all_summary_latest(string $modeKey, string $sortKey, string $fil
     return $row ?: null;
 }
 
+function db_buy_all_summary_latest_lightweight(string $modeKey, string $sortKey, string $filtersHash, int $maxAgeSeconds = 1800): ?array
+{
+    $safeMode = mb_substr(trim($modeKey), 0, 40);
+    $safeSort = mb_substr(trim($sortKey), 0, 40);
+    $safeHash = mb_substr(trim($filtersHash), 0, 64);
+    if ($safeMode === '' || $safeSort === '' || $safeHash === '') {
+        return null;
+    }
+
+    $safeMaxAge = max(60, min(86400, $maxAgeSeconds));
+    $row = db_select_one(
+        'SELECT id, mode_key, sort_key, filters_hash, summary_json, computed_at
+         FROM buy_all_summary
+         WHERE mode_key = ?
+           AND sort_key = ?
+           AND filters_hash = ?
+           AND computed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? SECOND)
+         ORDER BY computed_at DESC, id DESC
+         LIMIT 1',
+        [$safeMode, $safeSort, $safeHash, $safeMaxAge]
+    );
+
+    return $row ?: null;
+}
+
 function db_buy_all_items_by_summary_id(int $summaryId): array
 {
     if ($summaryId <= 0) {

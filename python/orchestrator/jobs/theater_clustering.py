@@ -46,6 +46,11 @@ MIN_PARTICIPANT_OVERLAP = 0.10  # 10%
 # Minimum number of participants across all battles for a theater to be stored.
 MIN_THEATER_PARTICIPANTS = 10
 
+# Minimum number of distinct killmails for a battle to be theater-eligible.
+# Prevents ganks (e.g. a single Rorqual kill with 27 attackers) from showing
+# as "battles" — a real battle should have kills on BOTH sides.
+MIN_THEATER_KILLMAILS = 3
+
 BATCH_SIZE = 500
 
 
@@ -105,7 +110,11 @@ class _UnionFind:
 # ── Core logic ──────────────────────────────────────────────────────────────
 
 def _load_battles(db: SupplyCoreDb) -> list[dict[str, Any]]:
-    """Load all eligible battles with system/constellation/region metadata."""
+    """Load all eligible battles with system/constellation/region metadata.
+
+    Filters out ganks/single-target kills by requiring both a minimum
+    participant count AND a minimum number of distinct killmails.
+    """
     return db.fetch_all(
         """
         SELECT
@@ -118,13 +127,21 @@ def _load_battles(db: SupplyCoreDb) -> list[dict[str, Any]]:
             br.battle_size_class,
             rs.constellation_id,
             rs.region_id,
-            rs.system_name
+            rs.system_name,
+            km_counts.killmail_count
         FROM battle_rollups br
         INNER JOIN ref_systems rs ON rs.system_id = br.system_id
+        INNER JOIN (
+            SELECT battle_id, COUNT(DISTINCT killmail_id) AS killmail_count
+            FROM killmail_events
+            WHERE battle_id IS NOT NULL
+            GROUP BY battle_id
+            HAVING COUNT(DISTINCT killmail_id) >= %s
+        ) km_counts ON km_counts.battle_id = br.battle_id
         WHERE br.participant_count >= %s
         ORDER BY br.started_at ASC
         """,
-        (MIN_THEATER_PARTICIPANTS,),
+        (MIN_THEATER_KILLMAILS, MIN_THEATER_PARTICIPANTS),
     )
 
 
@@ -347,13 +364,25 @@ def _flush_theaters(
     """Write theater data to MariaDB. Returns total rows written."""
     rows_written = 0
 
-    with db.transaction() as (_, cursor):
-        # Truncate and rewrite (full-refresh pattern)
-        cursor.execute("DELETE FROM theater_systems")
-        cursor.execute("DELETE FROM theater_battles")
-        cursor.execute("DELETE FROM theaters")
+    new_theater_ids = {t["theater_id"] for t in theaters}
 
-        # Insert theaters
+    with db.transaction() as (_, cursor):
+        # Prune stale theaters that no longer exist, preserve analysis fields
+        # (total_kills, total_isk, anomaly_score) for re-clustered theaters.
+        if new_theater_ids:
+            id_placeholders = ",".join(["%s"] * len(new_theater_ids))
+            cursor.execute(f"DELETE FROM theater_systems WHERE theater_id NOT IN ({id_placeholders})", tuple(new_theater_ids))
+            cursor.execute(f"DELETE FROM theater_battles WHERE theater_id NOT IN ({id_placeholders})", tuple(new_theater_ids))
+            cursor.execute(f"DELETE FROM theaters WHERE theater_id NOT IN ({id_placeholders})", tuple(new_theater_ids))
+            # Remove child rows for theaters we're re-inserting
+            cursor.execute(f"DELETE FROM theater_systems WHERE theater_id IN ({id_placeholders})", tuple(new_theater_ids))
+            cursor.execute(f"DELETE FROM theater_battles WHERE theater_id IN ({id_placeholders})", tuple(new_theater_ids))
+        else:
+            cursor.execute("DELETE FROM theater_systems")
+            cursor.execute("DELETE FROM theater_battles")
+            cursor.execute("DELETE FROM theaters")
+
+        # Upsert theaters — preserve analysis-computed fields
         for t in theaters:
             cursor.execute(
                 """
@@ -363,6 +392,17 @@ def _flush_theaters(
                     battle_count, system_count, total_kills, total_isk,
                     participant_count, anomaly_score, computed_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    label = VALUES(label),
+                    primary_system_id = VALUES(primary_system_id),
+                    region_id = VALUES(region_id),
+                    start_time = VALUES(start_time),
+                    end_time = VALUES(end_time),
+                    duration_seconds = VALUES(duration_seconds),
+                    battle_count = VALUES(battle_count),
+                    system_count = VALUES(system_count),
+                    participant_count = VALUES(participant_count),
+                    computed_at = VALUES(computed_at)
                 """,
                 (
                     t["theater_id"], t["label"], t["primary_system_id"], t["region_id"],
