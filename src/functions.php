@@ -7437,21 +7437,11 @@ function dashboard_intelligence_data_build(): array
 
 function dashboard_snapshot_payload(): array
 {
-    $result = supplycore_materialized_snapshot_read_or_bootstrap(
+    return supplycore_materialized_snapshot_read_or_bootstrap(
         dashboard_snapshot_key(),
         static fn (): array => dashboard_intelligence_data_build(),
         'dashboard-bootstrap'
     );
-
-    if (!isset($result['priority_queues'])) {
-        $payload = dashboard_intelligence_data_build();
-        return supplycore_materialized_snapshot_store(dashboard_snapshot_key(), $payload, [
-            'reason' => 'dashboard-format-recovery',
-            'status' => 'ready',
-        ]);
-    }
-
-    return $result;
 }
 
 function dashboard_refresh_summary(string $reason = 'manual'): array
@@ -23685,21 +23675,15 @@ function supplycore_materialized_snapshot_mark_updating(string $snapshotKey, str
 function supplycore_materialized_snapshot_read_or_bootstrap(string $snapshotKey, callable $builder, string $reason): array
 {
     $snapshot = supplycore_materialized_snapshot_fetch($snapshotKey);
-    $expired = false;
-    if ($snapshot !== null) {
-        $status = trim((string) ($snapshot['meta']['status'] ?? ''));
-        if ($status === 'updating') {
-            $expired = true;
-        }
-        $expiresAt = trim((string) ($snapshot['meta']['expires_at'] ?? ''));
-        if ($expiresAt !== '' && strtotime($expiresAt) !== false && strtotime($expiresAt) < time()) {
-            $expired = true;
-        }
-    }
-    if (!$expired && $snapshot !== null && is_array($snapshot['payload'] ?? null) && $snapshot['payload'] !== []) {
+
+    // Serve existing snapshot even if stale/expired — never rebuild inline on
+    // web requests.  Background Python jobs are responsible for keeping
+    // snapshots fresh.  This prevents 64MB+ inline rebuilds on page load.
+    if ($snapshot !== null && is_array($snapshot['payload'] ?? null) && $snapshot['payload'] !== []) {
         return supplycore_materialized_snapshot_attach_meta($snapshot['payload'], is_array($snapshot['meta'] ?? null) ? $snapshot['meta'] : []);
     }
 
+    // Only rebuild if there is NO snapshot at all (first-time bootstrap)
     $payload = $builder();
     if (!is_array($payload)) {
         $payload = [];
@@ -28866,8 +28850,17 @@ function buy_all_planner_data_uncached(array $query = []): array
 
 function buy_all_dashboard_summary(): array
 {
-    $planner = buy_all_planner_data(['mode' => 'blended', 'page' => 1]);
-    $summary = is_array($planner['summary'] ?? null) ? $planner['summary'] : [];
+    // Lightweight path: only load summary_json, skip the huge payload_json LONGTEXT
+    $request = buy_all_request(['mode' => 'blended', 'page' => 1]);
+    $filtersHash = hash('sha256', json_encode((array) ($request['filters'] ?? []), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
+    $row = db_buy_all_summary_latest_lightweight((string) ($request['mode'] ?? 'blended'), (string) ($request['sort'] ?? 'blended_score'), $filtersHash, 3600);
+    $summary = [];
+    if (is_array($row) && isset($row['summary_json'])) {
+        $decoded = json_decode((string) $row['summary_json'], true);
+        if (is_array($decoded)) {
+            $summary = $decoded;
+        }
+    }
     $recommendedMode = 'blended';
     if ((int) ($summary['doctrine_critical_count'] ?? 0) > 0) {
         $recommendedMode = 'doctrine_critical';

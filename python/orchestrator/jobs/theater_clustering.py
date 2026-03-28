@@ -347,13 +347,29 @@ def _flush_theaters(
     """Write theater data to MariaDB. Returns total rows written."""
     rows_written = 0
 
-    with db.transaction() as (_, cursor):
-        # Truncate and rewrite (full-refresh pattern)
-        cursor.execute("DELETE FROM theater_systems")
-        cursor.execute("DELETE FROM theater_battles")
-        cursor.execute("DELETE FROM theaters")
+    # Collect new theater IDs so we can prune stale rows
+    new_theater_ids = {t["theater_id"] for t in theaters}
 
-        # Insert theaters
+    with db.transaction() as (_, cursor):
+        # Remove theaters/battles/systems that no longer exist, but
+        # preserve analysis-computed fields (total_kills, total_isk,
+        # anomaly_score) for theaters that are being re-clustered.
+        if new_theater_ids:
+            id_placeholders = ",".join(["%s"] * len(new_theater_ids))
+            cursor.execute(f"DELETE FROM theater_systems WHERE theater_id NOT IN ({id_placeholders})", tuple(new_theater_ids))
+            cursor.execute(f"DELETE FROM theater_battles WHERE theater_id NOT IN ({id_placeholders})", tuple(new_theater_ids))
+            cursor.execute(f"DELETE FROM theaters WHERE theater_id NOT IN ({id_placeholders})", tuple(new_theater_ids))
+        else:
+            cursor.execute("DELETE FROM theater_systems")
+            cursor.execute("DELETE FROM theater_battles")
+            cursor.execute("DELETE FROM theaters")
+
+        # Delete existing battle/system rows for theaters we're re-inserting
+        if new_theater_ids:
+            cursor.execute(f"DELETE FROM theater_systems WHERE theater_id IN ({id_placeholders})", tuple(new_theater_ids))
+            cursor.execute(f"DELETE FROM theater_battles WHERE theater_id IN ({id_placeholders})", tuple(new_theater_ids))
+
+        # Upsert theaters — preserve analysis fields (total_kills, total_isk, anomaly_score)
         for t in theaters:
             cursor.execute(
                 """
@@ -363,6 +379,17 @@ def _flush_theaters(
                     battle_count, system_count, total_kills, total_isk,
                     participant_count, anomaly_score, computed_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    label = VALUES(label),
+                    primary_system_id = VALUES(primary_system_id),
+                    region_id = VALUES(region_id),
+                    start_time = VALUES(start_time),
+                    end_time = VALUES(end_time),
+                    duration_seconds = VALUES(duration_seconds),
+                    battle_count = VALUES(battle_count),
+                    system_count = VALUES(system_count),
+                    participant_count = VALUES(participant_count),
+                    computed_at = VALUES(computed_at)
                 """,
                 (
                     t["theater_id"], t["label"], t["primary_system_id"], t["region_id"],
