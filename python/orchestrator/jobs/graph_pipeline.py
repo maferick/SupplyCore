@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..db import SupplyCoreDb
-from ..eve_constants import FLEET_FUNCTION_BY_GROUP
+from ..eve_constants import FLEET_FUNCTION_BY_GROUP, SHIP_SIZE_BY_GROUP
 from ..job_result import JobResult
 from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
@@ -444,10 +444,11 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
                 cursor_character_id = 0
             break
 
-        # Enrich rows with fleet function from group_id
+        # Enrich rows with fleet function and ship size from group_id
         for row in rows:
             gid = int(row.get("ship_group_id") or 0)
             row["fleet_function"] = FLEET_FUNCTION_BY_GROUP.get(gid, "mainline_dps")
+            row["ship_size"] = SHIP_SIZE_BY_GROUP.get(gid, "medium")
 
         client.query(
             """
@@ -474,7 +475,8 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
 
             FOREACH(_ IN CASE WHEN toInteger(COALESCE(row.ship_type_id, 0)) > 0 THEN [1] ELSE [] END |
                 MERGE (ship:ShipType {type_id: toInteger(row.ship_type_id)})
-                  SET ship.fleet_function = row.fleet_function
+                  SET ship.fleet_function = row.fleet_function,
+                      ship.ship_size = row.ship_size
                 MERGE (c)-[:USED_SHIP]->(ship)
             )
 

@@ -72,3 +72,46 @@ HIGH_LOSS_ROLES: frozenset[str] = frozenset({
 LOW_KILL_ROLES: frozenset[str] = frozenset({
     "logistics", "capital_logistics", "command", "ewar", "scout",
 })
+
+# ── Ship size class by group_id ──────────────────────────────────────────────
+# Used for peer normalization: only compare pilots who flew similar-sized hulls.
+# A battleship naturally out-damages a frigate — comparing them is meaningless.
+
+SHIP_SIZE_BY_GROUP: dict[int, str] = {
+    # Small (frigates, destroyers)
+    25: "small",        # Frigate
+    324: "small",       # Assault Frigate
+    380: "small",       # Destroyer
+    420: "small",       # Destroyer (alt)
+    831: "small",       # Interceptor
+    541: "small",       # Interdictor
+    830: "small",       # Covert Ops
+    834: "small",       # Stealth Bomber
+    893: "small",       # Electronic Attack Frigate
+    1283: "small",      # Expedition Frigate
+    1305: "small",      # Tactical Destroyer
+    1527: "small",      # Logistics Frigate
+    1534: "small",      # Command Destroyer
+    # Medium (cruisers, battlecruisers)
+    26: "medium",       # Cruiser
+    358: "medium",      # Heavy Assault Cruiser
+    419: "medium",      # Battlecruiser
+    540: "medium",      # Command Ship
+    832: "medium",      # Logistics Cruiser
+    833: "medium",      # Force Recon
+    894: "medium",      # Heavy Interdictor
+    906: "medium",      # Combat Recon
+    963: "medium",      # Strategic Cruiser
+    1201: "medium",     # Attack Battlecruiser
+    1972: "medium",     # Flag Cruiser
+    # Large (battleships)
+    27: "large",        # Battleship
+    898: "large",       # Black Ops
+    900: "large",       # Marauder
+    # Capital
+    485: "capital",     # Dreadnought
+    547: "capital",     # Carrier
+    659: "capital",     # Supercarrier
+    30: "capital",      # Titan
+    1973: "capital",    # Force Auxiliary
+}

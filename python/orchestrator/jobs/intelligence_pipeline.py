@@ -307,14 +307,15 @@ def _compute_battle_presence(client: Neo4jClient) -> None:
 
 
 def _compute_fleet_function(client: Neo4jClient) -> None:
-    """Compute primary fleet function per character from most-used ship type."""
+    """Compute primary fleet function and ship size per character from most-used ship type."""
     client.query(
         """MATCH (c:Character)-[:USED_SHIP]->(s:ShipType)
            WHERE c.tracked = true AND s.fleet_function IS NOT NULL
-           WITH c, s.fleet_function AS ff, count(*) AS usage
+           WITH c, s.fleet_function AS ff, s.ship_size AS sz, count(*) AS usage
            ORDER BY usage DESC
-           WITH c, collect(ff)[0] AS primary_ff
-           SET c.primary_fleet_function = primary_ff"""
+           WITH c, collect(ff)[0] AS primary_ff, collect(sz)[0] AS primary_sz
+           SET c.primary_fleet_function = primary_ff,
+               c.primary_ship_size = COALESCE(primary_sz, 'medium')"""
     )
 
 
@@ -341,19 +342,22 @@ def _compute_encounter_vs_engagement(client: Neo4jClient) -> None:
 
 
 def _compute_peer_normalisation(client: Neo4jClient) -> None:
-    """Step 5.3: Peer normalisation by fleet function.
+    """Step 5.3: Peer normalisation by fleet function and ship size.
 
     Compares each character against peers who fly the same fleet function
-    (e.g., tackle vs tackle, logi vs logi) rather than exact ship type.
-    Falls back to ship type if fleet_function is not set.
+    AND same ship size class (small/medium/large/capital). A battleship
+    pilot is only compared to other battleship pilots, not cruiser pilots.
     """
     client.query(
         """MATCH (c:Character)-[:USED_SHIP]->(sc:ShipType)
            WHERE c.tracked = true AND c.battles_present > 0
-           WITH c, COALESCE(c.primary_fleet_function, sc.fleet_function, 'mainline_dps') AS my_ff
+           WITH c,
+                COALESCE(c.primary_fleet_function, sc.fleet_function, 'mainline_dps') AS my_ff,
+                COALESCE(c.primary_ship_size, sc.ship_size, 'medium') AS my_sz
            MATCH (peer:Character)-[:USED_SHIP]->(ps:ShipType)
            WHERE peer <> c AND peer.battles_present > 0
              AND COALESCE(peer.primary_fleet_function, ps.fleet_function, 'mainline_dps') = my_ff
+             AND COALESCE(peer.primary_ship_size, ps.ship_size, 'medium') = my_sz
            WITH c,
                 avg(toFloat(peer.kills_total) / peer.battles_present) AS peer_avg_kpb,
                 avg(toFloat(peer.damage_total) / peer.battles_present) AS peer_avg_dpb
