@@ -25479,15 +25479,85 @@ function supplycore_ai_ollama_enabled(): bool
 {
     $config = supplycore_ai_ollama_config();
 
-    if ($config['enabled'] !== true || $config['model'] === '') {
+    if ($config['enabled'] !== true) {
         return false;
     }
 
-    if (($config['provider'] ?? 'local') === 'runpod') {
-        return ($config['runpod_url'] ?? '') !== '' && ($config['runpod_api_key'] ?? '') !== '';
-    }
+    $provider = (string) ($config['provider'] ?? 'local');
 
-    return ($config['url'] ?? '') !== '';
+    return match ($provider) {
+        'claude' => ($config['claude_api_key'] ?? '') !== '',
+        'groq' => ($config['groq_api_key'] ?? '') !== '',
+        'runpod' => ($config['runpod_url'] ?? '') !== '' && ($config['runpod_api_key'] ?? '') !== '',
+        default => ($config['url'] ?? '') !== '' && ($config['model'] ?? '') !== '',
+    };
+}
+
+/**
+ * Test the current AI provider connection with a minimal request.
+ * Returns ['success' => true, 'model' => ..., 'response' => ...] or ['success' => false, 'error' => ...].
+ */
+function supplycore_ai_test_connection(): array
+{
+    $config = supplycore_ai_ollama_config();
+    $provider = (string) ($config['provider'] ?? 'local');
+
+    $systemPrompt = 'You are a test assistant. Return valid JSON only.';
+    $userPrompt = 'Respond with: {"status":"ok","provider":"' . $provider . '"}';
+    $schema = [
+        'type' => 'object',
+        'required' => ['status', 'provider'],
+        'properties' => [
+            'status' => ['type' => 'string'],
+            'provider' => ['type' => 'string'],
+        ],
+    ];
+
+    try {
+        $startTime = microtime(true);
+        if ($provider === 'claude') {
+            $decoded = supplycore_ai_claude_generate_json($config, $systemPrompt, $userPrompt, $schema);
+            $model = (string) ($config['claude_model'] ?? '');
+        } elseif ($provider === 'groq') {
+            $decoded = supplycore_ai_groq_generate_json($config, $systemPrompt, $userPrompt, $schema);
+            $model = (string) ($config['groq_model'] ?? '');
+        } elseif ($provider === 'runpod') {
+            $decoded = supplycore_ai_runpod_generate_json($config, $systemPrompt, $userPrompt, $schema);
+            $model = (string) ($config['model'] ?? '');
+        } else {
+            // Local Ollama — simple /api/tags check
+            $response = http_get_json(
+                rtrim((string) $config['url'], '/') . '/tags',
+                [],
+                min(10, max(1, (int) ($config['timeout'] ?? 10)))
+            );
+            $status = (int) ($response['status'] ?? 0);
+            if ($status < 200 || $status >= 300) {
+                return ['success' => false, 'error' => 'Ollama returned HTTP ' . $status, 'provider' => $provider];
+            }
+            $models = $response['json']['models'] ?? [];
+            $modelNames = array_map(fn($m) => $m['name'] ?? '', $models);
+            $elapsed = round((microtime(true) - $startTime) * 1000);
+            return [
+                'success' => true,
+                'provider' => $provider,
+                'model' => (string) ($config['model'] ?? ''),
+                'response' => 'Connected. Available models: ' . (implode(', ', $modelNames) ?: 'none'),
+                'elapsed_ms' => $elapsed,
+            ];
+        }
+
+        $elapsed = round((microtime(true) - $startTime) * 1000);
+        return [
+            'success' => true,
+            'provider' => $provider,
+            'model' => $model,
+            'response' => json_encode($decoded, JSON_UNESCAPED_SLASHES),
+            'elapsed_ms' => $elapsed,
+        ];
+    } catch (Throwable $e) {
+        return ['success' => false, 'error' => $e->getMessage(), 'provider' => $provider];
+    }
 }
 
 function supplycore_ai_ollama_available(): bool
@@ -26491,13 +26561,15 @@ function supplycore_ai_groq_generate_json(array $config, string $systemPrompt, s
     $requestPayload = [
         'model' => $model,
         'temperature' => 0.2,
-        'max_tokens' => 4096,
+        'max_completion_tokens' => 4096,
         'response_format' => ['type' => 'json_object'],
         'messages' => [
-            ['role' => 'system', 'content' => $systemPrompt . "\n\nReturn valid JSON matching this schema:\n" . $schemaJson],
+            ['role' => 'system', 'content' => $systemPrompt . "\n\nYou MUST return valid JSON matching this schema:\n" . $schemaJson],
             ['role' => 'user', 'content' => $userPrompt],
         ],
     ];
+
+    error_log('[groq-api] Sending request to Groq: model=' . $model . ', messages=' . count($requestPayload['messages']) . ', system_len=' . strlen($requestPayload['messages'][0]['content']) . ', user_len=' . strlen($requestPayload['messages'][1]['content']));
 
     $response = http_post_json(
         'https://api.groq.com/openai/v1/chat/completions',
@@ -26509,16 +26581,31 @@ function supplycore_ai_groq_generate_json(array $config, string $systemPrompt, s
     );
 
     $status = (int) ($response['status'] ?? 0);
+    $body = (string) ($response['body'] ?? '');
     $json = is_array($response['json'] ?? null) ? $response['json'] : [];
+
+    error_log('[groq-api] Response: HTTP ' . $status . ', body_len=' . strlen($body));
+
     if ($status < 200 || $status >= 300) {
-        $errorMsg = (string) ($json['error']['message'] ?? 'unknown');
+        $errorMsg = (string) ($json['error']['message'] ?? $body);
+        error_log('[groq-api] Error response: ' . $errorMsg);
         throw new RuntimeException('Groq API returned HTTP ' . $status . ': ' . $errorMsg);
     }
 
     $choices = $json['choices'] ?? [];
-    $rawResponse = trim((string) (($choices[0]['message']['content'] ?? '')));
+    if ($choices === []) {
+        error_log('[groq-api] No choices in response: ' . $body);
+        throw new RuntimeException('Groq API returned no choices');
+    }
+
+    $finishReason = (string) ($choices[0]['finish_reason'] ?? '');
+    $rawResponse = trim((string) ($choices[0]['message']['content'] ?? ''));
+
+    error_log('[groq-api] finish_reason=' . $finishReason . ', content_len=' . strlen($rawResponse));
+
     if ($rawResponse === '') {
-        throw new RuntimeException('Groq API returned empty response');
+        error_log('[groq-api] Empty content. Full response: ' . mb_substr($body, 0, 2000));
+        throw new RuntimeException('Groq API returned empty response (finish_reason=' . $finishReason . ')');
     }
 
     // Strip markdown JSON fences if present
@@ -26529,9 +26616,11 @@ function supplycore_ai_groq_generate_json(array $config, string $systemPrompt, s
 
     $decoded = json_decode($rawResponse, true);
     if (!is_array($decoded)) {
-        throw new RuntimeException('Groq API returned malformed JSON');
+        error_log('[groq-api] Malformed JSON: ' . mb_substr($rawResponse, 0, 500));
+        throw new RuntimeException('Groq API returned malformed JSON: ' . mb_substr($rawResponse, 0, 200));
     }
 
+    error_log('[groq-api] Success: keys=' . implode(',', array_keys($decoded)));
     return $decoded;
 }
 
@@ -26659,8 +26748,9 @@ function theater_ai_summary_generate(string $theaterId, bool $forceRegenerate = 
     } catch (Throwable $e) {
         flock($lockFp, LOCK_UN);
         fclose($lockFp);
-        error_log('[theater-ai] Failed to generate AAR for ' . $theaterId . ': ' . $e->getMessage());
-        return null;
+        $errorMsg = $e->getMessage();
+        error_log('[theater-ai] Failed to generate AAR for ' . $theaterId . ': ' . $errorMsg);
+        return ['error' => $errorMsg];
     }
 }
 

@@ -118,11 +118,20 @@ $anomaly = (float) ($theater['anomaly_score'] ?? 0);
 
 // ── Handle AAR regeneration request ──────────────────────────────────
 $aarRegenerated = false;
+$aarError = null;
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['regenerate_aar']) && $_POST['regenerate_aar'] === '1') {
     $aiSummary = theater_ai_summary_generate($theaterId, true);
+    if (is_array($aiSummary) && isset($aiSummary['error'])) {
+        $aarError = (string) $aiSummary['error'];
+        $aiSummary = null;
+    }
     $aarRegenerated = $aiSummary !== null;
 } else {
     $aiSummary = theater_ai_summary_generate($theaterId);
+    if (is_array($aiSummary) && isset($aiSummary['error'])) {
+        $aarError = (string) $aiSummary['error'];
+        $aiSummary = null;
+    }
 }
 
 include __DIR__ . '/../../src/views/partials/header.php';
@@ -245,7 +254,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <div class="flex items-center justify-between">
         <div>
             <h2 class="text-lg font-semibold text-slate-50">AI Briefing</h2>
-            <p class="text-sm text-muted mt-1">No AAR has been generated for this theater yet.</p>
+            <?php if ($aarError !== null): ?>
+                <p class="text-sm text-red-400 mt-1">AAR generation failed: <?= htmlspecialchars($aarError, ENT_QUOTES) ?></p>
+            <?php else: ?>
+                <p class="text-sm text-muted mt-1">No AAR has been generated for this theater yet.</p>
+            <?php endif; ?>
         </div>
         <form method="POST" class="inline">
             <input type="hidden" name="regenerate_aar" value="1">
