@@ -78,6 +78,43 @@ $kpiThemes = [
     ],
 ];
 
+$kpiCards = [];
+$knownKpiLabels = array_keys($kpiThemes);
+$seenKpiLabels = [];
+foreach ((array) ($intel['kpis'] ?? []) as $rawCard) {
+    if (!is_array($rawCard)) {
+        continue;
+    }
+
+    $label = trim((string) ($rawCard['label'] ?? ''));
+    if ($label === '' || !in_array($label, $knownKpiLabels, true) || isset($seenKpiLabels[$label])) {
+        continue;
+    }
+
+    $value = trim((string) ($rawCard['value'] ?? ''));
+    $context = trim((string) ($rawCard['context'] ?? ''));
+    if ($value === '' && $context === '') {
+        continue;
+    }
+
+    $kpiCards[] = [
+        'label' => $label,
+        'value' => $value !== '' ? $value : '—',
+        'context' => $context,
+    ];
+    $seenKpiLabels[$label] = true;
+}
+
+if ($kpiCards === []) {
+    $kpiCards = [
+        [
+            'label' => 'Top Opportunities',
+            'value' => '—',
+            'context' => 'No KPI data available yet. Refresh dashboard snapshots to populate intelligence cards.',
+        ],
+    ];
+}
+
 $queuePanels = [
     'opportunities' => [
         'title' => 'Top Opportunity Queue',
@@ -145,7 +182,7 @@ try {
 ?>
 <!-- ui-section:dashboard-kpis:start -->
 <section class="grid gap-4 xl:grid-cols-4" data-ui-section="dashboard-kpis">
-    <?php foreach (($intel['kpis'] ?? []) as $card): ?>
+    <?php foreach ($kpiCards as $card): ?>
         <?php $theme = $kpiThemes[$card['label'] ?? ''] ?? $kpiThemes['Top Opportunities']; ?>
         <article class="kpi-card">
             <div class="absolute inset-x-0 top-0 h-24 bg-gradient-to-r <?= htmlspecialchars($theme['accent'], ENT_QUOTES) ?>"></div>

@@ -23,6 +23,7 @@ $battles = db_theater_battles($theaterId);
 $systems = db_theater_systems($theaterId);
 $timeline = db_theater_timeline($theaterId);
 $allianceSummary = db_theater_alliance_summary($theaterId);
+$fleetComposition = db_theater_fleet_composition($theaterId);
 $suspicion = db_theater_suspicion_summary($theaterId);
 $graphSummary = db_theater_graph_summary($theaterId);
 $turningPoints = db_theater_turning_points($theaterId);
@@ -30,6 +31,7 @@ $turningPoints = db_theater_turning_points($theaterId);
 // Load participants (side filter from query string)
 $sideFilter = isset($_GET['side']) ? (string) $_GET['side'] : null;
 $suspiciousOnly = isset($_GET['suspicious']) && $_GET['suspicious'] === '1';
+$participantsAll = db_theater_participants($theaterId, null, false, 1000);
 $participants = db_theater_participants($theaterId, $sideFilter, $suspiciousOnly);
 $graphParticipants = db_theater_graph_participants($theaterId);
 
@@ -119,6 +121,97 @@ $durationSec = max(1, (int) ($theater['duration_seconds'] ?? 0));
 $durationLabel = $durationSec >= 120 ? number_format($durationSec / 60, 0) . 'm' : $durationSec . 's';
 $anomaly = (float) ($theater['anomaly_score'] ?? 0);
 
+// ── Derived aggregates / data-quality guards ───────────────────────────────
+$timelineKillTotal = 0;
+foreach ($timeline as $row) {
+    $timelineKillTotal += (int) ($row['kills'] ?? 0);
+}
+$allianceKillTotal = 0;
+$allianceLossTotal = 0;
+foreach ($allianceSummary as $row) {
+    $allianceKillTotal += (int) ($row['total_kills'] ?? 0);
+    $allianceLossTotal += (int) ($row['total_losses'] ?? 0);
+}
+$participantKillTotal = 0;
+foreach ($participantsAll as $row) {
+    $participantKillTotal += (int) ($row['kills'] ?? 0);
+}
+$reportedKillTotal = (int) ($theater['total_kills'] ?? 0);
+$observedKillTotal = max($timelineKillTotal, $allianceKillTotal, $participantKillTotal);
+$displayKillTotal = $reportedKillTotal;
+if ($displayKillTotal <= 0 && $observedKillTotal > 0) {
+    $displayKillTotal = $observedKillTotal;
+}
+
+$dataQualityNotes = [];
+if ($reportedKillTotal !== $observedKillTotal) {
+    $dataQualityNotes[] = 'Theater aggregate kills (' . number_format($reportedKillTotal) . ') differ from observed detail kills (' . number_format($observedKillTotal) . ').';
+}
+if ($allianceKillTotal > 0 && $allianceLossTotal > 0 && abs($allianceKillTotal - $allianceLossTotal) > 0) {
+    $dataQualityNotes[] = 'Alliance summary kills/losses differ (' . number_format($allianceKillTotal) . ' vs ' . number_format($allianceLossTotal) . '). This usually indicates delayed side-attribution refresh.';
+}
+
+// Build side overview panels from alliance + participant + composition data
+$sidePanels = [
+    'side_a' => [
+        'pilots' => 0,
+        'kills' => 0,
+        'losses' => 0,
+        'isk_killed' => 0.0,
+        'isk_lost' => 0.0,
+        'alliances' => [],
+        'ship_pilots' => 0,
+        'ships' => [],
+    ],
+    'side_b' => [
+        'pilots' => 0,
+        'kills' => 0,
+        'losses' => 0,
+        'isk_killed' => 0.0,
+        'isk_lost' => 0.0,
+        'alliances' => [],
+        'ship_pilots' => 0,
+        'ships' => [],
+    ],
+];
+
+foreach ($allianceSummary as $a) {
+    $side = (string) ($a['side'] ?? '');
+    if (!isset($sidePanels[$side])) {
+        continue;
+    }
+    $sidePanels[$side]['pilots'] += (int) ($a['participant_count'] ?? 0);
+    $sidePanels[$side]['kills'] += (int) ($a['total_kills'] ?? 0);
+    $sidePanels[$side]['losses'] += (int) ($a['total_losses'] ?? 0);
+    $sidePanels[$side]['isk_killed'] += (float) ($a['total_isk_killed'] ?? 0);
+    $sidePanels[$side]['isk_lost'] += (float) ($a['total_isk_lost'] ?? 0);
+    $sidePanels[$side]['alliances'][] = [
+        'name' => killmail_entity_preferred_name($resolvedEntities, 'alliance', (int) ($a['alliance_id'] ?? 0), (string) ($a['alliance_name'] ?? ''), 'Alliance'),
+        'pilots' => (int) ($a['participant_count'] ?? 0),
+    ];
+}
+foreach ($sidePanels as $side => $data) {
+    usort($data['alliances'], static fn(array $l, array $r): int => $r['pilots'] <=> $l['pilots']);
+    $sidePanels[$side]['alliances'] = array_slice($data['alliances'], 0, 4);
+}
+
+foreach ($fleetComposition as $row) {
+    $side = (string) ($row['side'] ?? '');
+    if (!isset($sidePanels[$side])) {
+        continue;
+    }
+    $pilots = (int) ($row['pilot_count'] ?? 0);
+    $sidePanels[$side]['ship_pilots'] += $pilots;
+    $sidePanels[$side]['ships'][] = [
+        'name' => (string) ($row['ship_name'] ?? 'Unknown Hull'),
+        'pilots' => $pilots,
+    ];
+}
+foreach ($sidePanels as $side => $data) {
+    usort($data['ships'], static fn(array $l, array $r): int => $r['pilots'] <=> $l['pilots']);
+    $sidePanels[$side]['ships'] = array_slice($data['ships'], 0, 6);
+}
+
 // ── Handle AAR regeneration request ──────────────────────────────────
 // Only generate/regenerate on explicit POST. On GET, read the stored summary.
 $aarRegenerated = false;
@@ -181,7 +274,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
         <div class="surface-tertiary">
             <p class="text-xs text-muted">Kills</p>
-            <p class="text-lg text-slate-50 font-semibold"><?= number_format((int) ($theater['total_kills'] ?? 0)) ?></p>
+            <p class="text-lg text-slate-50 font-semibold"><?= number_format($displayKillTotal) ?></p>
+            <?php if ($reportedKillTotal !== $observedKillTotal): ?>
+                <p class="mt-1 text-[10px] text-muted">Stored: <?= number_format($reportedKillTotal) ?> · Observed: <?= number_format($observedKillTotal) ?></p>
+            <?php endif; ?>
         </div>
         <div class="surface-tertiary">
             <p class="text-xs text-muted">Duration</p>
@@ -194,7 +290,96 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </p>
         </div>
     </div>
+
+    <?php if ($dataQualityNotes !== []): ?>
+        <div class="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 p-3">
+            <p class="text-xs uppercase tracking-[0.15em] text-amber-300">Data quality notes</p>
+            <ul class="mt-1 list-disc space-y-1 pl-5 text-sm text-amber-100/90">
+                <?php foreach ($dataQualityNotes as $note): ?>
+                    <li><?= htmlspecialchars($note, ENT_QUOTES) ?></li>
+                <?php endforeach; ?>
+            </ul>
+        </div>
+    <?php endif; ?>
 </section>
+
+<!-- Side Overview -->
+<?php if ($allianceSummary !== []): ?>
+<section class="surface-primary mt-4">
+    <h2 class="text-lg font-semibold text-slate-50">Side Overview</h2>
+    <p class="mt-1 text-xs text-muted">Two-sided layout with coalition totals, major alliances, and most-used hulls.</p>
+    <div class="mt-3 grid gap-3 lg:grid-cols-2">
+        <?php foreach ([$ourSide ?? 'side_a', $enemySide] as $panelSide): ?>
+            <?php
+                $panel = $sidePanels[$panelSide] ?? [];
+                $panelKills = (int) ($panel['kills'] ?? 0);
+                $panelLosses = (int) ($panel['losses'] ?? 0);
+                $panelEff = ($panelKills + $panelLosses) > 0 ? ($panelKills / ($panelKills + $panelLosses)) : 0;
+            ?>
+            <article class="rounded-xl border border-border/70 bg-black/20 p-4">
+                <div class="flex items-center justify-between gap-3">
+                    <h3 class="text-base font-semibold <?= $sideColorClass[$panelSide] ?? 'text-slate-100' ?>">
+                        <?= htmlspecialchars($sideLabels[$panelSide] ?? $panelSide, ENT_QUOTES) ?>
+                    </h3>
+                    <?php if ($panelSide === ($ourSide ?? 'side_a')): ?>
+                        <span class="rounded-full bg-blue-900/60 px-2 py-0.5 text-[10px] uppercase tracking-wider text-blue-300">Tracked Side</span>
+                    <?php endif; ?>
+                </div>
+                <div class="mt-3 grid grid-cols-2 gap-2 text-sm">
+                    <div class="rounded-lg border border-border/50 bg-black/30 p-2">
+                        <p class="text-xs text-muted">Pilots</p>
+                        <p class="mt-1 text-slate-50 font-semibold"><?= number_format((int) ($panel['pilots'] ?? 0)) ?></p>
+                    </div>
+                    <div class="rounded-lg border border-border/50 bg-black/30 p-2">
+                        <p class="text-xs text-muted">Efficiency</p>
+                        <p class="mt-1 text-slate-50 font-semibold"><?= number_format($panelEff * 100, 1) ?>%</p>
+                    </div>
+                    <div class="rounded-lg border border-border/50 bg-black/30 p-2">
+                        <p class="text-xs text-muted">Kills / Losses</p>
+                        <p class="mt-1 text-slate-50 font-semibold"><?= number_format($panelKills) ?> / <?= number_format($panelLosses) ?></p>
+                    </div>
+                    <div class="rounded-lg border border-border/50 bg-black/30 p-2">
+                        <p class="text-xs text-muted">ISK Killed / Lost</p>
+                        <p class="mt-1 text-slate-50 font-semibold text-xs md:text-sm"><?= number_format((float) ($panel['isk_killed'] ?? 0), 0) ?> / <?= number_format((float) ($panel['isk_lost'] ?? 0), 0) ?></p>
+                    </div>
+                </div>
+                <div class="mt-4 grid gap-3 sm:grid-cols-2">
+                    <div>
+                        <p class="text-xs uppercase tracking-[0.12em] text-muted">Top alliances</p>
+                        <?php if (($panel['alliances'] ?? []) === []): ?>
+                            <p class="mt-1 text-xs text-slate-500">No alliance data.</p>
+                        <?php else: ?>
+                            <ul class="mt-1 space-y-1 text-sm">
+                                <?php foreach (($panel['alliances'] ?? []) as $allianceRow): ?>
+                                    <li class="flex items-center justify-between gap-3">
+                                        <span class="text-slate-100"><?= htmlspecialchars((string) ($allianceRow['name'] ?? ''), ENT_QUOTES) ?></span>
+                                        <span class="text-xs text-muted"><?= number_format((int) ($allianceRow['pilots'] ?? 0)) ?> pilots</span>
+                                    </li>
+                                <?php endforeach; ?>
+                            </ul>
+                        <?php endif; ?>
+                    </div>
+                    <div>
+                        <p class="text-xs uppercase tracking-[0.12em] text-muted">Top hulls</p>
+                        <?php if (($panel['ships'] ?? []) === []): ?>
+                            <p class="mt-1 text-xs text-slate-500">No ship data.</p>
+                        <?php else: ?>
+                            <ul class="mt-1 space-y-1 text-sm">
+                                <?php foreach (($panel['ships'] ?? []) as $shipRow): ?>
+                                    <li class="flex items-center justify-between gap-3">
+                                        <span class="text-slate-100"><?= htmlspecialchars((string) ($shipRow['name'] ?? ''), ENT_QUOTES) ?></span>
+                                        <span class="text-xs text-muted"><?= number_format((int) ($shipRow['pilots'] ?? 0)) ?></span>
+                                    </li>
+                                <?php endforeach; ?>
+                            </ul>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </article>
+        <?php endforeach; ?>
+    </div>
+</section>
+<?php endif; ?>
 
 <!-- AI Briefing -->
 <?php if ($aiSummary !== null): ?>
