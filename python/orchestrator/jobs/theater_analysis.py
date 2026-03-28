@@ -27,11 +27,13 @@ if __package__ in (None, ""):
     if package_root not in sys.path:
         sys.path.insert(0, package_root)
     from orchestrator.db import SupplyCoreDb
+    from orchestrator.eve_constants import FLEET_FUNCTION_BY_GROUP
     from orchestrator.job_result import JobResult
     from orchestrator.json_utils import json_dumps_safe
     from orchestrator.job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
 else:
     from ..db import SupplyCoreDb
+    from ..eve_constants import FLEET_FUNCTION_BY_GROUP
     from ..job_result import JobResult
     from ..json_utils import json_dumps_safe
     from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
@@ -124,6 +126,18 @@ def _load_killmails_for_battles(db: SupplyCoreDb, battle_ids: list[str]) -> list
         )
         all_rows.extend(rows)
     return all_rows
+
+
+def _load_ship_group_map(db: SupplyCoreDb) -> dict[int, int]:
+    """Load type_id → group_id mapping for fleet function resolution."""
+    rows = db.fetch_all("SELECT type_id, group_id FROM ref_item_types WHERE group_id IS NOT NULL")
+    return {int(r["type_id"]): int(r["group_id"]) for r in rows}
+
+
+def _resolve_fleet_function(ship_type_id: int, ship_group_map: dict[int, int]) -> str:
+    """Resolve a ship type ID to its fleet function string."""
+    group_id = ship_group_map.get(ship_type_id, 0)
+    return FLEET_FUNCTION_BY_GROUP.get(group_id, "mainline_dps")
 
 
 def _load_battle_participants_for_theater(
@@ -323,9 +337,10 @@ def _compute_alliance_summary(
         if aid > 0 and cid > 0:
             alliance_participants[aid].add(cid)
 
-    # Process killmails for kills/losses/damage — deduplicate losses by
-    # killmail_id (rows are per-attacker), but attacker kills are per-row
+    # Process killmails for kills/losses/damage — deduplicate by killmail_id
+    # since rows are expanded per-attacker from the LEFT JOIN.
     seen_loss_km: set[int] = set()
+    seen_kill_km: set[tuple[int, int]] = set()  # (killmail_id, alliance_id)
     for km in killmails:
         km_id = int(km.get("killmail_id") or 0)
         victim_id = int(km.get("victim_character_id") or 0)
@@ -343,11 +358,13 @@ def _compute_alliance_summary(
             entry["total_losses"] += 1
             entry["total_isk_lost"] += isk
 
-        # Record kill for attacker alliance (final blow only, like zKillboard)
+        # Record kill for attacker alliance (once per killmail per alliance)
         if attacker_alliance > 0:
             entry = alliance_stats.setdefault(attacker_alliance, _empty_alliance_stats(attacker_alliance))
             entry["total_damage"] += attacker_damage
-            if int(km.get("attacker_final_blow") or 0) == 1:
+            kill_key = (km_id, attacker_alliance)
+            if kill_key not in seen_kill_km:
+                seen_kill_km.add(kill_key)
                 entry["total_kills"] += 1
                 entry["total_isk_killed"] += isk
 
@@ -390,6 +407,7 @@ def _compute_participants(
     bp_rows: list[dict[str, Any]],
     char_sides: dict[int, str],
     theater_id: str,
+    ship_group_map: dict[int, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Compute per-character stats across the theater."""
     char_stats: dict[int, dict[str, Any]] = {}
@@ -408,17 +426,22 @@ def _compute_participants(
             aid = int(p.get("alliance_id") or 0)
             corp_id = int(p.get("corporation_id") or 0)
             ship_type_id = int(p.get("ship_type_id") or 0)
-            is_logi = int(p.get("is_logi") or 0)
-            is_command = int(p.get("is_command") or 0)
-            is_capital = int(p.get("is_capital") or 0)
 
-            role_proxy = "dps"
-            if is_logi:
-                role_proxy = "logi"
-            elif is_command:
-                role_proxy = "command"
-            elif is_capital:
-                role_proxy = "capital"
+            # Resolve fleet function from ship group
+            if ship_group_map is not None:
+                role_proxy = _resolve_fleet_function(ship_type_id, ship_group_map)
+            else:
+                # Fallback to legacy boolean flags
+                is_logi = int(p.get("is_logi") or 0)
+                is_command = int(p.get("is_command") or 0)
+                is_capital = int(p.get("is_capital") or 0)
+                role_proxy = "mainline_dps"
+                if is_logi:
+                    role_proxy = "logistics"
+                elif is_command:
+                    role_proxy = "command"
+                elif is_capital:
+                    role_proxy = "capital_dps"
 
             char_stats[cid] = {
                 "character_id": cid,
@@ -439,9 +462,10 @@ def _compute_participants(
         if st > 0 and st not in char_stats[cid]["ship_type_ids"]:
             char_stats[cid]["ship_type_ids"].append(st)
 
-    # Process killmails — deduplicate deaths by killmail_id (rows are
-    # expanded per-attacker), but attacker kills/damage are per-row
+    # Process killmails — deduplicate by killmail_id since rows are expanded
+    # per-attacker from the LEFT JOIN.
     seen_deaths: set[tuple[int, int]] = set()  # (killmail_id, victim_id)
+    seen_attacker_kills: set[tuple[int, int]] = set()  # (killmail_id, attacker_id)
     for km in killmails:
         km_id = int(km.get("killmail_id") or 0)
         km_time = _parse_dt(km.get("killmail_time"))
@@ -461,10 +485,13 @@ def _compute_participants(
         attacker_damage = float(km.get("attacker_damage_done") or 0)
 
         if attacker_id > 0 and attacker_id in char_stats:
-            if int(km.get("attacker_final_blow") or 0) == 1:
+            # Count kill participation once per (killmail, attacker) pair
+            atk_key = (km_id, attacker_id)
+            if atk_key not in seen_attacker_kills:
+                seen_attacker_kills.add(atk_key)
                 char_stats[attacker_id]["kills"] += 1
+                char_times[attacker_id].append(km_time)
             char_stats[attacker_id]["damage_done"] += attacker_damage
-            char_times[attacker_id].append(km_time)
 
     # Build final rows
     result: list[dict[str, Any]] = []
@@ -696,6 +723,9 @@ def run_theater_analysis(
         rows_processed = len(theaters)
         _theater_log(runtime, "theater_analysis.theaters_loaded", {"count": len(theaters)})
 
+        # Load ship type → group mapping for fleet function resolution
+        ship_group_map = _load_ship_group_map(db)
+
         if not theaters:
             finish_job_run(db, job, status="success", rows_processed=0, rows_written=0, meta={"theaters_analyzed": 0})
             duration_ms = int((datetime.now(UTC) - started_monotonic).total_seconds() * 1000)
@@ -733,7 +763,7 @@ def run_theater_analysis(
             alliance_summary = _compute_alliance_summary(killmails, bp_rows, side_labels, char_sides)
 
             # Compute participant stats
-            participant_stats = _compute_participants(killmails, bp_rows, char_sides, theater_id)
+            participant_stats = _compute_participants(killmails, bp_rows, char_sides, theater_id, ship_group_map)
 
             # Compute totals
             total_kills = sum(t["kills"] for t in timeline)
