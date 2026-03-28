@@ -244,6 +244,12 @@ function nav_items(): array
             ],
         ],
         [
+            'label' => 'Economic Warfare',
+            'path' => '/economic-warfare',
+            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48 2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48 2.83-2.83"/><circle cx="12" cy="12" r="4"/></svg>',
+            'children' => [],
+        ],
+        [
             'label' => 'Activity Priority',
             'path' => '/activity-priority',
             'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16"/><path stroke-linecap="round" stroke-linejoin="round" d="M6 12h12"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 17h6"/><path stroke-linecap="round" stroke-linejoin="round" d="m15 5 4 4-4 4"/></svg>',
