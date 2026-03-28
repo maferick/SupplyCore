@@ -3,7 +3,7 @@
 declare(strict_types=1);
 require_once __DIR__ . '/../../src/bootstrap.php';
 
-$title = 'Theater Intelligence';
+$title = 'Battle Intelligence — Theater Overview';
 
 // Filters
 $regionFilter = isset($_GET['region_id']) ? (string) $_GET['region_id'] : null;
@@ -14,11 +14,12 @@ $offset = ($page - 1) * $perPage;
 
 $theaters = db_theaters_list($perPage, $offset, $regionFilter, $minAnomaly);
 
-// Load tracked alliances and side labels for matchup display
-$trackedAlliances = db_killmail_tracked_alliances_active();
-$trackedAllianceIds = array_map('intval', array_column($trackedAlliances, 'alliance_id'));
 $theaterIds = array_column($theaters, 'theater_id');
 $sideLabelsMap = db_theater_side_labels($theaterIds);
+
+// Tracked alliances for the region filter dropdown
+$trackedAlliances = db_killmail_tracked_alliances_active();
+$trackedAllianceIds = array_map('intval', array_column($trackedAlliances, 'alliance_id'));
 
 // Load distinct regions that have theaters for the filter dropdown (tracked alliances only)
 $theaterRegions = [];
@@ -44,12 +45,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
 <section class="surface-primary">
     <div class="flex items-center justify-between gap-4">
         <div>
-            <p class="text-xs uppercase tracking-[0.16em] text-muted">Intelligence</p>
-            <h1 class="mt-1 text-2xl font-semibold text-slate-50">Theater Intelligence</h1>
-            <p class="mt-2 text-sm text-muted">Multi-system battle theaters grouped by time proximity, system proximity, and participant overlap.</p>
+            <p class="text-xs uppercase tracking-[0.16em] text-muted">Battle Intelligence</p>
+            <h1 class="mt-1 text-2xl font-semibold text-slate-50">Theater Overview</h1>
+            <p class="mt-2 text-sm text-muted">Battles grouped into strategic theaters by system proximity, time window, and participant overlap. Each theater shows the primary matchup and outcome assessment.</p>
         </div>
         <div class="flex gap-2">
-            <a href="/battle-intelligence" class="btn-secondary">Battle Intelligence</a>
+            <a href="/battle-intelligence" class="btn-secondary">Suspicion Board</a>
+            <a href="/battle-intelligence/battles.php" class="btn-secondary">Battle Anomalies</a>
         </div>
     </div>
 </section>
@@ -86,89 +88,95 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <thead>
                 <tr class="border-b border-border/70 text-xs uppercase tracking-[0.15em] text-muted">
                     <th class="px-3 py-2 text-left">Matchup</th>
-                    <th class="px-3 py-2 text-left">Verdict</th>
-                    <th class="px-3 py-2 text-left">Region</th>
-                    <th class="px-3 py-2 text-left">System</th>
-                    <th class="px-3 py-2 text-right">Battles</th>
-                    <th class="px-3 py-2 text-right">Participants</th>
-                    <th class="px-3 py-2 text-right">Kills</th>
-                    <th class="px-3 py-2 text-right">ISK</th>
+                    <th class="px-3 py-2 text-left">Outcome</th>
+                    <th class="px-3 py-2 text-left">Location</th>
+                    <th class="px-3 py-2 text-right">Scale</th>
+                    <th class="px-3 py-2 text-right">ISK Destroyed</th>
                     <th class="px-3 py-2 text-right">Duration</th>
-                    <th class="px-3 py-2 text-right">Anomaly</th>
-                    <th class="px-3 py-2 text-left">Start</th>
+                    <th class="px-3 py-2 text-left">When</th>
                     <th class="px-3 py-2 text-right"></th>
                 </tr>
             </thead>
             <tbody>
                 <?php if ($theaters === []): ?>
-                    <tr><td colspan="12" class="px-3 py-6 text-sm text-muted">No theaters found for tracked alliances.</td></tr>
+                    <tr><td colspan="8" class="px-3 py-6 text-sm text-muted">No theaters found for tracked alliances.</td></tr>
                 <?php else: ?>
                     <?php foreach ($theaters as $t): ?>
                         <?php
                             $durationSec = max(1, (int) ($t['duration_seconds'] ?? 0));
-                            $durationLabel = $durationSec >= 120 ? number_format($durationSec / 60, 0) . 'm' : $durationSec . 's';
+                            $durationLabel = $durationSec >= 3600 ? number_format($durationSec / 3600, 1) . 'h' : ($durationSec >= 120 ? number_format($durationSec / 60, 0) . 'm' : $durationSec . 's');
                             $anomaly = (float) ($t['anomaly_score'] ?? 0);
-                            $anomalyClass = $anomaly >= 0.6 ? 'text-red-400' : ($anomaly >= 0.3 ? 'text-yellow-400' : 'text-slate-300');
                             $battleCount = (int) ($t['battle_count'] ?? 0);
-                            $sizeLabel = $battleCount > 5 ? 'bg-red-900/60 text-red-300' : ($battleCount > 2 ? 'bg-orange-900/60 text-orange-300' : 'bg-slate-700 text-slate-300');
+                            $participantCount = (int) ($t['participant_count'] ?? 0);
+                            $killCount = (int) ($t['total_kills'] ?? 0);
+                            $scaleLabel = number_format($participantCount) . ' pilots · ' . number_format($killCount) . ' kills';
+                            if ($battleCount > 1) {
+                                $scaleLabel .= ' · ' . $battleCount . ' battles';
+                            }
                         ?>
                         <?php
-                            // Determine matchup label for this theater
+                            // Determine matchup label from friendly/hostile buckets
                             $tid = (string) ($t['theater_id'] ?? '');
                             $sides = $sideLabelsMap[$tid] ?? [];
-                            $listOurSide = null;
-                            $listEnemySide = null;
-                            foreach ($sides as $sKey => $sData) {
-                                if (in_array($sData['top_alliance_id'], $trackedAllianceIds, true)) {
-                                    $listOurSide = $sKey;
-                                }
+                            $friendlyBucket = $sides['friendly'] ?? null;
+                            $hostileBucket = $sides['hostile'] ?? null;
+
+                            if ($friendlyBucket !== null) {
+                                $ourLabel = $friendlyBucket['top_name'] . ($friendlyBucket['count'] > 1 ? ' +' . ($friendlyBucket['count'] - 1) : '');
+                            } else {
+                                $ourLabel = 'Friendlies';
                             }
-                            if ($listOurSide === null) {
-                                $listOurSide = isset($sides['side_a']) ? 'side_a' : array_key_first($sides);
+
+                            if ($hostileBucket !== null) {
+                                $otherCount = $hostileBucket['count'] - 1;
+                                $enemyLabel = $hostileBucket['top_name'] . ($otherCount > 0 ? ' +' . $otherCount : '');
+                            } else {
+                                $enemyLabel = 'Unclassified Hostiles';
                             }
-                            $listEnemySide = ($listOurSide === 'side_a') ? 'side_b' : 'side_a';
-                            $ourLabel = isset($sides[$listOurSide]) ? $sides[$listOurSide]['top_name'] . ($sides[$listOurSide]['count'] > 1 ? ' +' . ($sides[$listOurSide]['count'] - 1) : '') : '?';
-                            $enemyLabel = isset($sides[$listEnemySide]) ? $sides[$listEnemySide]['top_name'] . ($sides[$listEnemySide]['count'] > 1 ? ' +' . ($sides[$listEnemySide]['count'] - 1) : '') : '?';
                         ?>
                         <?php
                             $listVerdict = (string) ($t['ai_verdict'] ?? '');
                             $listHeadline = (string) ($t['ai_headline'] ?? '');
                         ?>
-                        <tr class="border-b border-border/50">
-                            <td class="px-3 py-2">
-                                <div class="text-sm">
+                        <tr class="border-b border-border/50 hover:bg-accent/5 transition">
+                            <td class="px-3 py-3">
+                                <div class="text-sm font-medium">
                                     <span class="text-blue-300"><?= htmlspecialchars($ourLabel, ENT_QUOTES) ?></span>
                                     <span class="text-slate-500 mx-1">vs</span>
                                     <span class="text-red-300"><?= htmlspecialchars($enemyLabel, ENT_QUOTES) ?></span>
                                 </div>
                                 <?php if ($listHeadline !== ''): ?>
-                                    <p class="text-[11px] text-slate-400 mt-0.5 leading-tight"><?= htmlspecialchars($listHeadline, ENT_QUOTES) ?></p>
+                                    <p class="text-[11px] text-slate-400 mt-0.5 leading-tight max-w-xs"><?= htmlspecialchars($listHeadline, ENT_QUOTES) ?></p>
+                                <?php endif; ?>
+                                <?php if ($anomaly >= 0.3): ?>
+                                    <span class="inline-block mt-1 rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-wider <?= $anomaly >= 0.6 ? 'bg-red-900/40 text-red-300' : 'bg-yellow-900/40 text-yellow-300' ?>">Anomaly <?= number_format($anomaly, 2) ?></span>
                                 <?php endif; ?>
                             </td>
-                            <td class="px-3 py-2">
+                            <td class="px-3 py-3">
                                 <?php if ($listVerdict !== ''): ?>
                                     <span class="inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider <?= theater_ai_verdict_color_class($listVerdict) ?> <?= str_contains($listVerdict, 'victory') ? 'bg-green-900/40' : (str_contains($listVerdict, 'defeat') ? 'bg-red-900/40' : 'bg-slate-700') ?>">
                                         <?= htmlspecialchars(theater_ai_verdict_label($listVerdict), ENT_QUOTES) ?>
                                     </span>
                                 <?php else: ?>
-                                    <span class="text-slate-500 text-xs">-</span>
+                                    <span class="text-slate-500 text-xs">Pending</span>
                                 <?php endif; ?>
                             </td>
-                            <td class="px-3 py-2 text-slate-100"><?= htmlspecialchars((string) ($t['region_name'] ?? 'Unknown'), ENT_QUOTES) ?></td>
-                            <td class="px-3 py-2 text-slate-100"><?= htmlspecialchars((string) ($t['primary_system_name'] ?? '-'), ENT_QUOTES) ?></td>
-                            <td class="px-3 py-2 text-right">
-                                <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $sizeLabel ?>">
-                                    <?= (int) ($t['battle_count'] ?? 0) ?>
-                                </span>
+                            <td class="px-3 py-3">
+                                <p class="text-sm text-slate-100"><?= htmlspecialchars((string) ($t['primary_system_name'] ?? '-'), ENT_QUOTES) ?></p>
+                                <p class="text-[11px] text-muted"><?= htmlspecialchars((string) ($t['region_name'] ?? 'Unknown'), ENT_QUOTES) ?></p>
+                                <?php if ((int) ($t['system_count'] ?? 0) > 1): ?>
+                                    <p class="text-[10px] text-slate-500">+<?= (int) ($t['system_count'] ?? 0) - 1 ?> systems</p>
+                                <?php endif; ?>
                             </td>
-                            <td class="px-3 py-2 text-right"><?= number_format((int) ($t['participant_count'] ?? 0)) ?></td>
-                            <td class="px-3 py-2 text-right"><?= number_format((int) ($t['total_kills'] ?? 0)) ?></td>
-                            <td class="px-3 py-2 text-right"><?= number_format((float) ($t['total_isk'] ?? 0), 0) ?></td>
-                            <td class="px-3 py-2 text-right"><?= $durationLabel ?></td>
-                            <td class="px-3 py-2 text-right <?= $anomalyClass ?>"><?= number_format($anomaly, 3) ?></td>
-                            <td class="px-3 py-2 text-slate-300 text-xs"><?= htmlspecialchars((string) ($t['start_time'] ?? ''), ENT_QUOTES) ?></td>
-                            <td class="px-3 py-2 text-right">
-                                <a class="text-accent text-sm" href="/theater-intelligence/view.php?theater_id=<?= urlencode((string) ($t['theater_id'] ?? '')) ?>">View</a>
+                            <td class="px-3 py-3 text-right">
+                                <p class="text-sm text-slate-100"><?= number_format($participantCount) ?> pilots</p>
+                                <p class="text-[11px] text-muted"><?= number_format($killCount) ?> kills<?= $battleCount > 1 ? ' · ' . $battleCount . ' battles' : '' ?></p>
+                            </td>
+                            <td class="px-3 py-3 text-right text-sm text-slate-100"><?= supplycore_format_isk((float) ($t['total_isk'] ?? 0)) ?></td>
+                            <td class="px-3 py-3 text-right text-sm text-slate-300"><?= $durationLabel ?></td>
+                            <td class="px-3 py-3 text-slate-300 text-xs"><?= htmlspecialchars((string) ($t['start_time'] ?? ''), ENT_QUOTES) ?></td>
+                            <td class="px-3 py-3 text-right">
+                                <a class="btn-primary px-3 py-1.5 text-xs" href="/theater-intelligence/view.php?theater_id=<?= urlencode((string) ($t['theater_id'] ?? '')) ?>">View Theater</a>
                             </td>
                         </tr>
                     <?php endforeach; ?>

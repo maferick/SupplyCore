@@ -103,5 +103,107 @@ class TheaterSideDeterminationTests(unittest.TestCase):
         self.assertEqual(_classify_alliance(0, 0, config), "third_party")
 
 
+    def test_one_friendly_vs_one_hostile(self) -> None:
+        """One friendly alliance vs one hostile alliance — both classified correctly."""
+        participants = [
+            {"character_id": 40, "side_key": "LEFT", "alliance_id": 100, "corporation_id": 0},
+            {"character_id": 41, "side_key": "LEFT", "alliance_id": 100, "corporation_id": 0},
+            {"character_id": 42, "side_key": "RIGHT", "alliance_id": 200, "corporation_id": 0},
+            {"character_id": 43, "side_key": "RIGHT", "alliance_id": 200, "corporation_id": 0},
+        ]
+        config = {
+            "friendly_alliance_ids": {100},
+            "friendly_corporation_ids": set(),
+            "opponent_alliance_ids": {200},
+            "opponent_corporation_ids": set(),
+        }
+        _, char_sides, meta = _determine_sides(participants, config)
+        self.assertEqual(char_sides[40], "friendly")
+        self.assertEqual(char_sides[41], "friendly")
+        self.assertEqual(char_sides[42], "opponent")
+        self.assertEqual(char_sides[43], "opponent")
+        self.assertEqual(meta["total_friendly_matches"], 2)
+        self.assertEqual(meta["total_opponent_matches"], 2)
+        self.assertEqual(meta["total_third_party"], 0)
+
+    def test_one_friendly_vs_multiple_hostile(self) -> None:
+        """Friendlies vs multiple hostile alliances."""
+        participants = [
+            {"character_id": 50, "side_key": "LEFT", "alliance_id": 100, "corporation_id": 0},
+            {"character_id": 51, "side_key": "RIGHT", "alliance_id": 200, "corporation_id": 0},
+            {"character_id": 52, "side_key": "RIGHT", "alliance_id": 300, "corporation_id": 0},
+            {"character_id": 53, "side_key": "RIGHT", "alliance_id": 400, "corporation_id": 0},
+        ]
+        config = {
+            "friendly_alliance_ids": {100},
+            "friendly_corporation_ids": set(),
+            "opponent_alliance_ids": {200, 300},
+            "opponent_corporation_ids": set(),
+        }
+        _, char_sides, meta = _determine_sides(participants, config)
+        self.assertEqual(char_sides[50], "friendly")
+        self.assertEqual(char_sides[51], "opponent")
+        self.assertEqual(char_sides[52], "opponent")
+        # 400 is not in opponent list — classified as third_party by backend
+        self.assertEqual(char_sides[53], "third_party")
+        self.assertEqual(meta["total_friendly_matches"], 1)
+        self.assertEqual(meta["total_opponent_matches"], 2)
+        self.assertEqual(meta["total_third_party"], 1)
+
+    def test_hostile_not_explicitly_tracked(self) -> None:
+        """Alliances not in either friendly or opponent lists become third_party
+        at the backend level. The PHP layer then reclassifies them as hostile."""
+        participants = [
+            {"character_id": 60, "side_key": "LEFT", "alliance_id": 100, "corporation_id": 0},
+            {"character_id": 61, "side_key": "RIGHT", "alliance_id": 999, "corporation_id": 0},
+        ]
+        config = {
+            "friendly_alliance_ids": {100},
+            "friendly_corporation_ids": set(),
+            "opponent_alliance_ids": set(),
+            "opponent_corporation_ids": set(),
+        }
+        _, char_sides, meta = _determine_sides(participants, config)
+        self.assertEqual(char_sides[60], "friendly")
+        # Backend classifies as third_party; PHP frontend reclassifies to opponent
+        self.assertEqual(char_sides[61], "third_party")
+        self.assertEqual(meta["total_third_party"], 1)
+
+    def test_missing_alliance_metadata(self) -> None:
+        """Characters with no alliance or corporation identity data."""
+        participants = [
+            {"character_id": 70, "side_key": "LEFT", "alliance_id": 100, "corporation_id": 0},
+            {"character_id": 71, "side_key": "RIGHT", "alliance_id": 0, "corporation_id": 0},
+            {"character_id": 72, "side_key": "RIGHT"},
+        ]
+        config = {
+            "friendly_alliance_ids": {100},
+            "friendly_corporation_ids": set(),
+            "opponent_alliance_ids": set(),
+            "opponent_corporation_ids": set(),
+        }
+        _, char_sides, meta = _determine_sides(participants, config)
+        self.assertEqual(char_sides[70], "friendly")
+        self.assertEqual(char_sides[71], "third_party")
+        self.assertEqual(char_sides[72], "third_party")
+
+    def test_no_question_mark_in_label_generation(self) -> None:
+        """Verify that the classify_alliance function never returns '?'."""
+        config = {
+            "friendly_alliance_ids": {100},
+            "friendly_corporation_ids": set(),
+            "opponent_alliance_ids": {200},
+            "opponent_corporation_ids": set(),
+        }
+        # All possible edge cases
+        for alliance_id in [0, 100, 200, 500, 999999]:
+            for corp_id in [0, 100, 200]:
+                result = _classify_alliance(alliance_id, corp_id, config)
+                self.assertIn(result, ("friendly", "opponent", "third_party"),
+                              f"Unexpected classification '{result}' for alliance={alliance_id}, corp={corp_id}")
+                self.assertNotEqual(result, "?",
+                                    f"Got '?' for alliance={alliance_id}, corp={corp_id}")
+
+
 if __name__ == "__main__":
     unittest.main()
