@@ -14301,6 +14301,11 @@ function db_signals_recent(int $limit = 200): array
 function db_battle_intelligence_top_characters(int $limit = 50): array
 {
     $safeLimit = max(1, min(200, $limit));
+    $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+    if ($trackedAllianceIds === []) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
 
     return db_select(
         'SELECT ccs.character_id, ccs.review_priority_score, ccs.percentile_rank, ccs.confidence_score, ccs.evidence_count, ccs.computed_at,
@@ -14311,8 +14316,13 @@ function db_battle_intelligence_top_characters(int $limit = 50): array
          FROM character_counterintel_scores ccs
          LEFT JOIN character_counterintel_features ccf ON ccf.character_id = ccs.character_id
          LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = ccs.character_id
+         WHERE ccs.character_id IN (
+             SELECT DISTINCT bp.character_id FROM battle_participants bp
+             WHERE bp.alliance_id IN (' . $placeholders . ')
+         )
          ORDER BY ccs.review_priority_score DESC, ccs.percentile_rank DESC, ccs.evidence_count DESC
-         LIMIT ' . $safeLimit
+         LIMIT ' . $safeLimit,
+        $trackedAllianceIds
     );
 }
 
@@ -14704,8 +14714,20 @@ function db_graph_query_preset_execute(string $presetKey, array $params = []): a
     $merged = array_merge($defaultParams, $params);
     $limit = max(1, min(500, (int)($merged['limit'] ?? 50)));
 
-    // Replace the single ? placeholder with the limit
-    return db_select($template, [$limit]);
+    // For character-based presets, inject a tracked-alliance filter so only
+    // characters belonging to our tracked alliances appear in results.
+    $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+    $queryParams = [$limit];
+
+    if ($trackedAllianceIds !== [] && stripos($template, 'character_id') !== false && $presetKey !== 'recurring_motifs') {
+        $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
+        $trackedCte = 'SELECT _inner.* FROM (' . $template . ') _inner '
+            . 'WHERE _inner.character_id IN (SELECT DISTINCT bp.character_id FROM battle_participants bp WHERE bp.alliance_id IN (' . $placeholders . '))';
+        $template = $trackedCte;
+        $queryParams = array_merge([$limit], $trackedAllianceIds);
+    }
+
+    return db_select($template, $queryParams);
 }
 
 function db_graph_community_overview(int $limit = 30): array
