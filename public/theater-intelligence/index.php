@@ -23,14 +23,23 @@ $trackedAllianceIds = array_map('intval', array_column($trackedAlliances, 'allia
 $theaterIds = array_column($theaters, 'theater_id');
 $sideLabelsMap = db_theater_side_labels($theaterIds);
 
-// Load distinct regions that have theaters for the filter dropdown
-$theaterRegions = db_select(
-    'SELECT DISTINCT t.region_id, rr.region_name
-     FROM theaters t
-     LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
-     WHERE t.region_id IS NOT NULL
-     ORDER BY rr.region_name ASC'
-);
+// Load distinct regions that have theaters for the filter dropdown (tracked alliances only)
+$theaterRegions = [];
+if ($trackedAllianceIds !== []) {
+    $regionPlaceholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
+    $theaterRegions = db_select(
+        'SELECT DISTINCT t.region_id, rr.region_name
+         FROM theaters t
+         INNER JOIN theater_alliance_summary tas
+             ON tas.theater_id = t.theater_id
+             AND tas.alliance_id IN (' . $regionPlaceholders . ')
+             AND tas.participant_count >= 2
+         LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
+         WHERE t.region_id IS NOT NULL
+         ORDER BY rr.region_name ASC',
+        $trackedAllianceIds
+    );
+}
 
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
