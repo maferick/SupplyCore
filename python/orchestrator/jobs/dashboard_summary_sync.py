@@ -61,6 +61,9 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
             **market_kpis,
         },
         "freshness": freshness,
+        # Include priority_queues so PHP doesn't trigger an expensive inline rebuild.
+        # Full queue data is populated by the PHP build path on first bootstrap.
+        "priority_queues": {},
     }
     rows_written = db.upsert_intelligence_snapshot(
         snapshot_key="dashboard_summaries",

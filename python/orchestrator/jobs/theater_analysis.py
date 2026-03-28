@@ -353,6 +353,8 @@ def _compute_alliance_summary(
     # since rows are expanded per-attacker from the LEFT JOIN.
     seen_loss_km: set[int] = set()
     seen_kill_km: set[tuple[int, int]] = set()  # (killmail_id, alliance_id)
+    km_alliance_damage: dict[int, dict[int, float]] = {}  # km_id -> {alliance_id -> total_damage}
+    km_isk: dict[int, float] = {}  # km_id -> isk value
     for km in killmails:
         km_id = int(km.get("killmail_id") or 0)
         victim_id = int(km.get("victim_character_id") or 0)
@@ -371,6 +373,7 @@ def _compute_alliance_summary(
             entry["total_isk_lost"] += isk
 
         # Record kill for attacker alliance (once per killmail per alliance)
+        # ISK is attributed proportionally by damage dealt, not duplicated.
         if attacker_alliance > 0:
             entry = alliance_stats.setdefault(attacker_alliance, _empty_alliance_stats(attacker_alliance))
             entry["total_damage"] += attacker_damage
@@ -378,7 +381,20 @@ def _compute_alliance_summary(
             if kill_key not in seen_kill_km:
                 seen_kill_km.add(kill_key)
                 entry["total_kills"] += 1
-                entry["total_isk_killed"] += isk
+                # Track per-killmail damage by alliance for proportional ISK later
+                km_alliance_damage.setdefault(km_id, {})[attacker_alliance] = \
+                    km_alliance_damage.get(km_id, {}).get(attacker_alliance, 0.0) + attacker_damage
+                km_isk[km_id] = isk
+
+    # Distribute ISK proportionally by damage dealt per alliance
+    for km_id, alliance_damages in km_alliance_damage.items():
+        total_damage = sum(alliance_damages.values())
+        isk = km_isk.get(km_id, 0.0)
+        for aid, dmg in alliance_damages.items():
+            share = dmg / total_damage if total_damage > 0 else 1.0 / len(alliance_damages)
+            entry = alliance_stats.get(aid)
+            if entry is not None:
+                entry["total_isk_killed"] += isk * share
 
     # Finalize
     result: list[dict[str, Any]] = []
