@@ -559,12 +559,12 @@ def run_compute_alliance_dossiers(
         for d in dossiers:
             co_list = json.loads(d["top_co_present_json"]) if d["top_co_present_json"] else []
             for item in co_list:
-                item["name"] = name_map.get(item["alliance_id"], f"Alliance #{item['alliance_id']}")
+                item["alliance_name"] = name_map.get(item["alliance_id"], f"Alliance #{item['alliance_id']}")
             d["top_co_present_json"] = json_dumps_safe(co_list)
 
             en_list = json.loads(d["top_enemies_json"]) if d["top_enemies_json"] else []
             for item in en_list:
-                item["name"] = name_map.get(item["alliance_id"], f"Alliance #{item['alliance_id']}")
+                item["alliance_name"] = name_map.get(item["alliance_id"], f"Alliance #{item['alliance_id']}")
             d["top_enemies_json"] = json_dumps_safe(en_list)
 
         if not dry_run:
