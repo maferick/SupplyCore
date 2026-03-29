@@ -3,17 +3,62 @@
 Queries Neo4j for alliance relationship patterns (co-presence, engagement,
 geographic spread) and MariaDB for aggregate combat statistics. Results are
 materialized to the ``alliance_dossiers`` table for PHP consumption.
+
+Payload Contract (JSON columns stored in alliance_dossiers)
+-----------------------------------------------------------
+
+**top_co_present_json** — alliances co-occurring on the same side::
+
+    [{"alliance_id": int, "alliance_name": str, "shared_battles": int,
+      "shared_pilots": int, "source": "neo4j"|"sql"}]
+
+**top_enemies_json** — alliances fought against on opposing sides::
+
+    [{"alliance_id": int, "alliance_name": str, "engagements": int,
+      "source": "neo4j"|"sql"}]
+
+**top_regions_json**::
+
+    [{"region_id": int, "region_name": str, "battle_count": int}]
+
+**top_systems_json**::
+
+    [{"system_id": int, "system_name": str, "region_name": str, "battle_count": int}]
+
+**top_ship_classes_json**::
+
+    [{"class": str, "count": int}]
+
+**top_ship_types_json**::
+
+    [{"type_id": int, "name": str, "fleet_function": str, "count": int}]
+
+**behavior_summary_json**::
+
+    {"avg_engagement_rate": float, "avg_token_participation": float,
+     "posture": str, "total_appearances": int,
+     "high_sustain_count": int, "low_sustain_count": int}
+
+    Posture values: "committed", "opportunistic", "infrequent", "balanced"
+
+**trend_summary_json**::
+
+    {"battles_7d": int, "battles_8_30d": int, "battles_31_90d": int,
+     "activity_trend": "rising"|"declining"|"stable"}
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sys
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 if __package__ in (None, ""):
     package_root = str(Path(__file__).resolve().parents[2])
@@ -205,12 +250,16 @@ def _load_behavior_metrics(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]
 
 
 def _query_co_presence_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
-    """SQL fallback: find alliances appearing in the same battles (same side)."""
+    """SQL fallback: find alliances appearing on the same side in the same battles.
+
+    Semantics are aligned with the Neo4j co-presence query: same-side
+    co-occurrence in battle_participants, grouped by alliance.
+    """
     rows = db.fetch_all(
         """
         SELECT bp2.alliance_id AS co_alliance_id,
-               COUNT(DISTINCT bp1.battle_id) AS co_battles,
-               COUNT(DISTINCT bp2.character_id) AS co_pilots
+               COUNT(DISTINCT bp1.battle_id) AS shared_battles,
+               COUNT(DISTINCT bp2.character_id) AS shared_pilots
         FROM battle_participants bp1
         INNER JOIN battle_participants bp2
              ON bp2.battle_id = bp1.battle_id
@@ -219,18 +268,22 @@ def _query_co_presence_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
         WHERE bp1.alliance_id = %s
           AND bp2.alliance_id IS NOT NULL AND bp2.alliance_id > 0
         GROUP BY bp2.alliance_id
-        HAVING co_battles >= 2
-        ORDER BY co_battles DESC
+        HAVING shared_battles >= 2
+        ORDER BY shared_battles DESC
         LIMIT 15
         """,
         (alliance_id,),
     )
-    return [{"alliance_id": int(r["co_alliance_id"]), "co_battles": int(r["co_battles"]),
-             "co_pilots": int(r["co_pilots"])} for r in rows]
+    return [{"alliance_id": int(r["co_alliance_id"]), "shared_battles": int(r["shared_battles"]),
+             "shared_pilots": int(r["shared_pilots"]), "source": "sql"} for r in rows]
 
 
 def _query_enemies_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
-    """SQL fallback: find alliances on opposing sides in the same battles."""
+    """SQL fallback: find alliances on opposing sides in the same battles.
+
+    Semantics are aligned with the Neo4j enemy query: opposite-side
+    engagement in battle_participants, grouped by alliance.
+    """
     rows = db.fetch_all(
         """
         SELECT bp2.alliance_id AS enemy_id,
@@ -249,41 +302,50 @@ def _query_enemies_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
         """,
         (alliance_id,),
     )
-    return [{"alliance_id": int(r["enemy_id"]), "engagements": int(r["engagements"])} for r in rows]
+    return [{"alliance_id": int(r["enemy_id"]), "engagements": int(r["engagements"]),
+             "source": "sql"} for r in rows]
 
 
 def _query_co_presence_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
-    """Query Neo4j for alliances whose members co-occur in the same battles.
+    """Query Neo4j for alliances whose members fight on the same side.
 
-    Uses ENGAGED_ALLIANCE relationships (created by intelligence_pipeline)
-    to find alliances whose characters share engagement patterns with the
-    target alliance's characters.
+    Primary path: ON_SIDE → BattleSide — ensures same-side co-presence
+    (not just same-battle, which would conflate allies with enemies).
+
+    Fallback path: ENGAGED_ALLIANCE — alliances whose characters engage
+    the same target alliances (coalition alignment signal).
+
+    Returns canonical contract: ``{alliance_id, shared_battles, shared_pilots, source}``.
     """
     if neo4j_client is None:
         return []
     try:
-        # First try the PARTICIPATED_IN path (battle_intelligence sync)
+        # Primary: ON_SIDE path — same BattleSide = same side in battle
+        # This is semantically equivalent to the SQL fallback (same side_key)
         rows = neo4j_client.query(
             """
             MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
-                  -[:PARTICIPATED_IN]->(b:Battle)<-[:PARTICIPATED_IN]-(c2:Character)
+                  -[:ON_SIDE]->(side:BattleSide)<-[:ON_SIDE]-(c2:Character)
                   -[:MEMBER_OF_ALLIANCE]->(a2:Alliance)
             WHERE a2.alliance_id <> $aid
-            WITH a2.alliance_id AS co_alliance_id, COUNT(DISTINCT b) AS co_battles,
-                 COUNT(DISTINCT c2) AS co_pilots
-            WHERE co_battles >= 2
-            RETURN co_alliance_id, co_battles, co_pilots
-            ORDER BY co_battles DESC
+            WITH a2.alliance_id AS co_alliance_id,
+                 COUNT(DISTINCT side) AS shared_battles,
+                 COUNT(DISTINCT c2) AS shared_pilots
+            WHERE shared_battles >= 2
+            RETURN co_alliance_id, shared_battles, shared_pilots
+            ORDER BY shared_battles DESC
             LIMIT 15
             """,
             {"aid": alliance_id},
         )
         if rows:
-            return [{"alliance_id": int(r["co_alliance_id"]), "co_battles": int(r["co_battles"]),
-                     "co_pilots": int(r["co_pilots"])} for r in rows]
+            return [{"alliance_id": int(r["co_alliance_id"]),
+                     "shared_battles": int(r["shared_battles"]),
+                     "shared_pilots": int(r["shared_pilots"]),
+                     "source": "neo4j"} for r in rows]
 
-        # Fallback: use ENGAGED_ALLIANCE path (intelligence_pipeline)
-        # Find alliances whose characters engage the same target alliances
+        # Fallback: ENGAGED_ALLIANCE path (intelligence_pipeline)
+        # Alliances whose characters engage the same target alliances
         rows = neo4j_client.query(
             """
             MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
@@ -294,17 +356,19 @@ def _query_co_presence_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
             MATCH (c2)-[:MEMBER_OF_ALLIANCE]->(a2:Alliance)
             WHERE a2.alliance_id <> $aid
             WITH a2.alliance_id AS co_alliance_id,
-                 COUNT(DISTINCT target) AS shared_targets,
-                 COUNT(DISTINCT c2) AS co_pilots
-            WHERE shared_targets >= 2
-            RETURN co_alliance_id, shared_targets AS co_battles, co_pilots
-            ORDER BY co_battles DESC
+                 COUNT(DISTINCT target) AS shared_battles,
+                 COUNT(DISTINCT c2) AS shared_pilots
+            WHERE shared_battles >= 2
+            RETURN co_alliance_id, shared_battles, shared_pilots
+            ORDER BY shared_battles DESC
             LIMIT 15
             """,
             {"aid": alliance_id},
         )
-        return [{"alliance_id": int(r["co_alliance_id"]), "co_battles": int(r["co_battles"]),
-                 "co_pilots": int(r["co_pilots"])} for r in rows]
+        return [{"alliance_id": int(r["co_alliance_id"]),
+                 "shared_battles": int(r["shared_battles"]),
+                 "shared_pilots": int(r["shared_pilots"]),
+                 "source": "neo4j"} for r in rows]
     except Exception:
         return []
 
@@ -312,14 +376,18 @@ def _query_co_presence_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
 def _query_enemies_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
     """Query Neo4j for alliances most often on the opposing side.
 
-    Uses ENGAGED_ALLIANCE (intelligence_pipeline) as primary source,
-    falling back to ON_SIDE/HAS_SIDE path (battle_intelligence sync).
+    Primary: ENGAGED_ALLIANCE (intelligence_pipeline) — direct engagement
+    relationships with encounter counts.
+
+    Fallback: ON_SIDE/HAS_SIDE path (battle_intelligence sync) — opposite
+    side representation, semantically equivalent to the SQL fallback.
+
+    Returns canonical contract: ``{alliance_id, engagements, source}``.
     """
     if neo4j_client is None:
         return []
     try:
-        # Primary: use ENGAGED_ALLIANCE — directly shows which alliances
-        # this alliance's characters have fought
+        # Primary: ENGAGED_ALLIANCE — direct engagement relationships
         rows = neo4j_client.query(
             """
             MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
@@ -336,9 +404,10 @@ def _query_enemies_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
             {"aid": alliance_id},
         )
         if rows:
-            return [{"alliance_id": int(r["enemy_id"]), "engagements": int(r["engagements"])} for r in rows]
+            return [{"alliance_id": int(r["enemy_id"]), "engagements": int(r["engagements"]),
+                     "source": "neo4j"} for r in rows]
 
-        # Fallback: ON_SIDE/HAS_SIDE path (requires battle_intelligence sync)
+        # Fallback: ON_SIDE/HAS_SIDE path — opposite side in battle
         rows = neo4j_client.query(
             """
             MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
@@ -354,7 +423,8 @@ def _query_enemies_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
             """,
             {"aid": alliance_id},
         )
-        return [{"alliance_id": int(r["enemy_id"]), "engagements": int(r["engagements"])} for r in rows]
+        return [{"alliance_id": int(r["enemy_id"]), "engagements": int(r["engagements"]),
+                 "source": "neo4j"} for r in rows]
     except Exception:
         return []
 
@@ -521,9 +591,13 @@ def run_compute_alliance_dossiers(
             co_present = _query_co_presence_neo4j(neo4j_client, aid)
             if not co_present:
                 co_present = _query_co_presence_sql(db, aid)
+                if co_present:
+                    logger.info("alliance %d: co-presence from SQL fallback (%d results)", aid, len(co_present))
             enemies = _query_enemies_neo4j(neo4j_client, aid)
             if not enemies:
                 enemies = _query_enemies_sql(db, aid)
+                if enemies:
+                    logger.info("alliance %d: enemies from SQL fallback (%d results)", aid, len(enemies))
 
             for cp in co_present:
                 all_ally_ids.add(cp["alliance_id"])
@@ -556,16 +630,31 @@ def run_compute_alliance_dossiers(
 
         # Resolve names for co-present and enemy alliances, enrich JSON
         name_map = _resolve_alliance_names(db, list(all_ally_ids))
+        unresolved_ids: list[int] = []
         for d in dossiers:
             co_list = json.loads(d["top_co_present_json"]) if d["top_co_present_json"] else []
             for item in co_list:
-                item["alliance_name"] = name_map.get(item["alliance_id"], f"Alliance #{item['alliance_id']}")
+                resolved = name_map.get(item["alliance_id"])
+                item["alliance_name"] = resolved or f"Alliance #{item['alliance_id']}"
+                if not resolved:
+                    unresolved_ids.append(item["alliance_id"])
             d["top_co_present_json"] = json_dumps_safe(co_list)
 
             en_list = json.loads(d["top_enemies_json"]) if d["top_enemies_json"] else []
             for item in en_list:
-                item["alliance_name"] = name_map.get(item["alliance_id"], f"Alliance #{item['alliance_id']}")
+                resolved = name_map.get(item["alliance_id"])
+                item["alliance_name"] = resolved or f"Alliance #{item['alliance_id']}"
+                if not resolved:
+                    unresolved_ids.append(item["alliance_id"])
             d["top_enemies_json"] = json_dumps_safe(en_list)
+
+        if unresolved_ids:
+            unique_unresolved = sorted(set(unresolved_ids))
+            logger.warning(
+                "Could not resolve names for %d alliance IDs (first 10: %s). "
+                "These will display as 'Alliance #ID'. Check entity_metadata_cache population.",
+                len(unique_unresolved), unique_unresolved[:10],
+            )
 
         if not dry_run:
             rows_written = _flush_dossiers(db, dossiers)

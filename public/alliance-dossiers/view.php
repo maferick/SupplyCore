@@ -23,10 +23,10 @@ $title = $allianceName . ' — Alliance Dossier';
 
 $posture = (string) ($dossier['posture'] ?? 'unknown');
 $postureColors = [
-    'aggressive' => 'bg-red-900/60 text-red-300 ring-1 ring-red-400/30',
-    'defensive' => 'bg-blue-900/60 text-blue-300 ring-1 ring-blue-400/30',
-    'balanced' => 'bg-amber-900/60 text-amber-300 ring-1 ring-amber-400/30',
-    'skirmish' => 'bg-purple-900/60 text-purple-300 ring-1 ring-purple-400/30',
+    'committed'     => 'bg-red-900/60 text-red-300 ring-1 ring-red-400/30',
+    'opportunistic' => 'bg-purple-900/60 text-purple-300 ring-1 ring-purple-400/30',
+    'balanced'      => 'bg-amber-900/60 text-amber-300 ring-1 ring-amber-400/30',
+    'infrequent'    => 'bg-slate-700/60 text-slate-400 ring-1 ring-slate-500/30',
 ];
 $postureClass = $postureColors[$posture] ?? 'bg-slate-700/60 text-slate-300';
 
@@ -170,12 +170,22 @@ include __DIR__ . '/../../src/views/partials/header.php';
 <?php endif; ?>
 
 <div class="mt-4 grid gap-4 lg:grid-cols-2">
-    <!-- Co-Present Alliances (Graph-derived) -->
+    <!-- Co-Present Alliances -->
     <section class="surface-primary">
-        <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wider">Co-Present Alliances <span class="text-[10px] text-muted font-normal ml-1">via Neo4j</span></h2>
-        <p class="mt-1 text-xs text-muted">Alliances most frequently appearing in the same battles. Higher co-occurrence suggests coalition alignment.</p>
+        <?php
+            $cpSource = '';
+            if ($coPresent !== []) {
+                $cpSource = (string) ($coPresent[0]['source'] ?? '');
+            }
+        ?>
+        <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wider">Co-Present Alliances
+            <?php if ($cpSource): ?>
+                <span class="text-[10px] text-muted font-normal ml-1">via <?= htmlspecialchars($cpSource, ENT_QUOTES) ?></span>
+            <?php endif; ?>
+        </h2>
+        <p class="mt-1 text-xs text-muted">Alliances most frequently fighting on the same side. Higher co-occurrence suggests coalition alignment.</p>
         <?php if ($coPresent === []): ?>
-            <p class="mt-3 text-sm text-muted">No co-presence data available.</p>
+            <p class="mt-3 text-sm text-muted">No co-presence data available. This may indicate graph sync has not completed — try running the pipeline rebuild.</p>
         <?php else: ?>
             <div class="mt-3 space-y-1.5">
                 <?php foreach (array_slice($coPresent, 0, 10) as $cp): ?>
@@ -186,19 +196,29 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <a href="/alliance-dossiers/view.php?alliance_id=<?= (int) ($cp['alliance_id'] ?? 0) ?>"
                                class="text-sm text-accent hover:underline"><?= htmlspecialchars((string) ($cp['alliance_name'] ?? 'Unknown'), ENT_QUOTES) ?></a>
                         </div>
-                        <span class="text-xs text-muted"><?= (int) ($cp['shared_battles'] ?? $cp['count'] ?? 0) ?> shared battles</span>
+                        <span class="text-xs text-muted"><?= (int) ($cp['shared_battles'] ?? 0) ?> shared battles</span>
                     </div>
                 <?php endforeach; ?>
             </div>
         <?php endif; ?>
     </section>
 
-    <!-- Top Enemies (Graph-derived) -->
+    <!-- Primary Enemies -->
     <section class="surface-primary">
-        <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wider">Primary Enemies <span class="text-[10px] text-muted font-normal ml-1">via Neo4j</span></h2>
+        <?php
+            $enSource = '';
+            if ($enemies !== []) {
+                $enSource = (string) ($enemies[0]['source'] ?? '');
+            }
+        ?>
+        <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wider">Primary Enemies
+            <?php if ($enSource): ?>
+                <span class="text-[10px] text-muted font-normal ml-1">via <?= htmlspecialchars($enSource, ENT_QUOTES) ?></span>
+            <?php endif; ?>
+        </h2>
         <p class="mt-1 text-xs text-muted">Alliances most frequently fought against on opposing sides.</p>
         <?php if ($enemies === []): ?>
-            <p class="mt-3 text-sm text-muted">No enemy data available.</p>
+            <p class="mt-3 text-sm text-muted">No enemy data available. This may indicate graph sync has not completed — try running the pipeline rebuild.</p>
         <?php else: ?>
             <div class="mt-3 space-y-1.5">
                 <?php foreach (array_slice($enemies, 0, 10) as $en): ?>
@@ -209,7 +229,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <a href="/alliance-dossiers/view.php?alliance_id=<?= (int) ($en['alliance_id'] ?? 0) ?>"
                                class="text-sm text-red-300 hover:underline"><?= htmlspecialchars((string) ($en['alliance_name'] ?? 'Unknown'), ENT_QUOTES) ?></a>
                         </div>
-                        <span class="text-xs text-muted"><?= (int) ($en['engagements'] ?? $en['count'] ?? 0) ?> engagements</span>
+                        <span class="text-xs text-muted"><?= (int) ($en['engagements'] ?? 0) ?> engagements</span>
                     </div>
                 <?php endforeach; ?>
             </div>
@@ -267,7 +287,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <div class="mt-2 space-y-1.5">
                 <?php foreach (array_slice($topShipClasses, 0, 6) as $sc): ?>
                     <?php
-                        $role = (string) ($sc['class'] ?? $sc['ship_class'] ?? $sc['fleet_function'] ?? 'unknown');
+                        $role = (string) ($sc['class'] ?? 'unknown');
                         $label = $roleLabels[$role] ?? ucfirst($role);
                         $count = (int) ($sc['count'] ?? 0);
                         $pct = $count / $maxClassCount * 100;
@@ -291,7 +311,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <div class="mt-2 space-y-1">
                 <?php foreach (array_slice($topShipTypes, 0, 6) as $st): ?>
                     <div class="flex items-center justify-between text-sm">
-                        <span class="text-slate-300"><?= htmlspecialchars((string) ($st['name'] ?? $st['ship_name'] ?? $st['type_name'] ?? ''), ENT_QUOTES) ?></span>
+                        <span class="text-slate-300"><?= htmlspecialchars((string) ($st['name'] ?? ''), ENT_QUOTES) ?></span>
                         <span class="text-xs text-muted"><?= number_format((int) ($st['count'] ?? 0)) ?></span>
                     </div>
                 <?php endforeach; ?>
@@ -371,7 +391,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
 </div>
 
 <section class="surface-primary mt-4">
-    <p class="text-xs text-muted">Dossier computed at <?= htmlspecialchars((string) ($dossier['computed_at'] ?? ''), ENT_QUOTES) ?>. Graph-derived metrics sourced from Neo4j co-occurrence and engagement analysis.</p>
+    <p class="text-xs text-muted">Dossier computed at <?= htmlspecialchars((string) ($dossier['computed_at'] ?? ''), ENT_QUOTES) ?>.
+        <?php if ($cpSource === 'sql' || $enSource === 'sql'): ?>
+            Some data sourced from SQL fallback — Neo4j graph may need a rebuild via <code class="text-[10px]">reset_and_rebuild.sh</code>.
+        <?php else: ?>
+            Graph-derived metrics sourced from Neo4j co-occurrence and engagement analysis.
+        <?php endif; ?>
+    </p>
 </section>
 
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>
