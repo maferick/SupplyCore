@@ -1,4 +1,13 @@
-"""Tests for alliance dossier computation logic."""
+"""Tests for alliance dossier computation logic.
+
+Covers:
+- Geographic summary aggregation
+- Behavior metrics and posture classification
+- Neo4j co-presence and enemy queries (including graceful degradation)
+- SQL fallback queries (contract alignment with Neo4j results)
+- Trend computation
+- Payload contract integrity (producer keys match consumer expectations)
+"""
 
 from __future__ import annotations
 
@@ -30,9 +39,27 @@ def _load_module() -> ModuleType:
 _mod = _load_module()
 _load_geographic_summary = _mod._load_geographic_summary
 _load_behavior_metrics = _mod._load_behavior_metrics
+_load_ship_summary = _mod._load_ship_summary
 _query_co_presence_neo4j = _mod._query_co_presence_neo4j
+_query_co_presence_sql = _mod._query_co_presence_sql
 _query_enemies_neo4j = _mod._query_enemies_neo4j
+_query_enemies_sql = _mod._query_enemies_sql
 _compute_trend = _mod._compute_trend
+
+# ── Canonical payload key contracts ──────────────────────────────────────
+# These are the keys the PHP consumer expects.  Tests below assert that
+# every producer function returns exactly these keys.
+
+CO_PRESENT_REQUIRED_KEYS = {"alliance_id", "shared_battles", "shared_pilots", "source"}
+ENEMY_REQUIRED_KEYS = {"alliance_id", "engagements", "source"}
+REGION_REQUIRED_KEYS = {"region_id", "region_name", "battle_count"}
+SYSTEM_REQUIRED_KEYS = {"system_id", "system_name", "region_name", "battle_count"}
+SHIP_CLASS_REQUIRED_KEYS = {"class", "count"}
+SHIP_TYPE_REQUIRED_KEYS = {"type_id", "name", "fleet_function", "count"}
+BEHAVIOR_REQUIRED_KEYS = {"avg_engagement_rate", "avg_token_participation", "posture",
+                          "total_appearances", "high_sustain_count", "low_sustain_count"}
+TREND_REQUIRED_KEYS = {"battles_7d", "battles_8_30d", "battles_31_90d", "activity_trend"}
+POSTURE_VALUES = {"committed", "opportunistic", "infrequent", "balanced"}
 
 
 class TestGeographicSummary(unittest.TestCase):
@@ -59,6 +86,12 @@ class TestGeographicSummary(unittest.TestCase):
         self.assertEqual(result["top_regions"][0]["battle_count"], 15)  # 10 + 5
         self.assertEqual(len(result["top_systems"]), 3)
 
+        # Contract: all region items have required keys
+        for r in result["top_regions"]:
+            self.assertTrue(REGION_REQUIRED_KEYS.issubset(r.keys()), f"Missing keys: {REGION_REQUIRED_KEYS - r.keys()}")
+        for s in result["top_systems"]:
+            self.assertTrue(SYSTEM_REQUIRED_KEYS.issubset(s.keys()), f"Missing keys: {SYSTEM_REQUIRED_KEYS - s.keys()}")
+
     def test_empty_geographic_summary(self) -> None:
         db = MagicMock()
         db.fetch_all.return_value = []
@@ -69,6 +102,42 @@ class TestGeographicSummary(unittest.TestCase):
         self.assertIsNone(result["primary_system_id"])
         self.assertEqual(result["top_regions"], [])
         self.assertEqual(result["top_systems"], [])
+
+
+class TestShipSummary(unittest.TestCase):
+    def test_ship_class_and_type_keys(self) -> None:
+        db = MagicMock()
+        db.fetch_all.return_value = [
+            {"ship_type_id": 24690, "ship_name": "Maelstrom", "is_logi": 0, "is_command": 0, "is_capital": 0, "usage_count": 20},
+            {"ship_type_id": 11987, "ship_name": "Guardian", "is_logi": 1, "is_command": 0, "is_capital": 0, "usage_count": 15},
+            {"ship_type_id": 22474, "ship_name": "Vulture", "is_logi": 0, "is_command": 1, "is_capital": 0, "usage_count": 5},
+        ]
+
+        result = _load_ship_summary(db, 100)
+
+        # Contract: ship class items
+        for sc in result["top_ship_classes"]:
+            self.assertTrue(SHIP_CLASS_REQUIRED_KEYS.issubset(sc.keys()), f"Missing keys: {SHIP_CLASS_REQUIRED_KEYS - sc.keys()}")
+
+        # Contract: ship type items
+        for st in result["top_ship_types"]:
+            self.assertTrue(SHIP_TYPE_REQUIRED_KEYS.issubset(st.keys()), f"Missing keys: {SHIP_TYPE_REQUIRED_KEYS - st.keys()}")
+
+        # Verify fleet function derivation
+        type_by_id = {t["type_id"]: t for t in result["top_ship_types"]}
+        self.assertEqual(type_by_id[24690]["fleet_function"], "dps")
+        self.assertEqual(type_by_id[11987]["fleet_function"], "logistics")
+        self.assertEqual(type_by_id[22474]["fleet_function"], "command")
+
+    def test_capital_flag(self) -> None:
+        db = MagicMock()
+        db.fetch_all.return_value = [
+            {"ship_type_id": 19720, "ship_name": "Revelation", "is_logi": 0, "is_command": 0, "is_capital": 1, "usage_count": 3},
+        ]
+
+        result = _load_ship_summary(db, 100)
+        self.assertEqual(result["top_ship_types"][0]["fleet_function"], "capital")
+        self.assertEqual(result["top_ship_classes"][0]["class"], "capital")
 
 
 class TestBehaviorMetrics(unittest.TestCase):
@@ -82,7 +151,9 @@ class TestBehaviorMetrics(unittest.TestCase):
         result = _load_behavior_metrics(db, 100)
 
         self.assertEqual(result["posture"], "committed")
+        self.assertIn(result["posture"], POSTURE_VALUES)
         self.assertAlmostEqual(result["avg_engagement_rate"], 0.6, places=2)
+        self.assertTrue(BEHAVIOR_REQUIRED_KEYS.issubset(result.keys()))
 
     def test_opportunistic_posture(self) -> None:
         db = MagicMock()
@@ -94,6 +165,7 @@ class TestBehaviorMetrics(unittest.TestCase):
         result = _load_behavior_metrics(db, 200)
 
         self.assertEqual(result["posture"], "opportunistic")
+        self.assertIn(result["posture"], POSTURE_VALUES)
         self.assertAlmostEqual(result["avg_token_participation"], 0.45, places=2)
 
     def test_infrequent_posture(self) -> None:
@@ -106,15 +178,29 @@ class TestBehaviorMetrics(unittest.TestCase):
         result = _load_behavior_metrics(db, 300)
 
         self.assertEqual(result["posture"], "infrequent")
+        self.assertIn(result["posture"], POSTURE_VALUES)
+
+    def test_balanced_posture(self) -> None:
+        db = MagicMock()
+        db.fetch_one.return_value = {
+            "avg_centrality": 0.3, "avg_visibility": 0.3,
+            "high_sustain_count": 20, "low_sustain_count": 15, "total_appearances": 50,
+        }
+
+        result = _load_behavior_metrics(db, 400)
+
+        self.assertEqual(result["posture"], "balanced")
+        self.assertIn(result["posture"], POSTURE_VALUES)
 
     def test_no_data(self) -> None:
         db = MagicMock()
         db.fetch_one.return_value = None
 
-        result = _load_behavior_metrics(db, 400)
+        result = _load_behavior_metrics(db, 500)
 
         self.assertEqual(result["posture"], "infrequent")
         self.assertEqual(result["avg_engagement_rate"], 0.0)
+        self.assertTrue(BEHAVIOR_REQUIRED_KEYS.issubset(result.keys()))
 
 
 class TestNeo4jCoPresence(unittest.TestCase):
@@ -129,18 +215,86 @@ class TestNeo4jCoPresence(unittest.TestCase):
         result = _query_co_presence_neo4j(client, 100)
         self.assertEqual(result, [])
 
-    def test_returns_parsed_results(self) -> None:
+    def test_returns_canonical_keys(self) -> None:
+        """Neo4j co-presence results use the canonical contract keys."""
         client = MagicMock()
         client.query.return_value = [
-            {"co_alliance_id": 200, "co_battles": 5, "co_pilots": 12},
-            {"co_alliance_id": 300, "co_battles": 3, "co_pilots": 7},
+            {"co_alliance_id": 200, "shared_battles": 5, "shared_pilots": 12},
+            {"co_alliance_id": 300, "shared_battles": 3, "shared_pilots": 7},
         ]
 
         result = _query_co_presence_neo4j(client, 100)
 
         self.assertEqual(len(result), 2)
         self.assertEqual(result[0]["alliance_id"], 200)
-        self.assertEqual(result[0]["co_battles"], 5)
+        self.assertEqual(result[0]["shared_battles"], 5)
+        self.assertEqual(result[0]["shared_pilots"], 12)
+        self.assertEqual(result[0]["source"], "neo4j")
+        # Full contract check
+        for item in result:
+            self.assertTrue(CO_PRESENT_REQUIRED_KEYS.issubset(item.keys()),
+                          f"Missing keys: {CO_PRESENT_REQUIRED_KEYS - item.keys()}")
+
+    def test_fallback_to_engaged_alliance_path(self) -> None:
+        """When ON_SIDE path returns empty, falls back to ENGAGED_ALLIANCE."""
+        client = MagicMock()
+        # First query (ON_SIDE path) returns empty
+        # Second query (ENGAGED_ALLIANCE path) returns results
+        client.query.side_effect = [
+            [],
+            [{"co_alliance_id": 400, "shared_battles": 4, "shared_pilots": 6}],
+        ]
+
+        result = _query_co_presence_neo4j(client, 100)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["alliance_id"], 400)
+        self.assertEqual(result[0]["source"], "neo4j")
+        self.assertEqual(client.query.call_count, 2)
+
+
+class TestSqlCoPresence(unittest.TestCase):
+    def test_returns_canonical_keys(self) -> None:
+        """SQL co-presence fallback uses the same keys as Neo4j."""
+        db = MagicMock()
+        db.fetch_all.return_value = [
+            {"co_alliance_id": 200, "shared_battles": 5, "shared_pilots": 12},
+        ]
+
+        result = _query_co_presence_sql(db, 100)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["alliance_id"], 200)
+        self.assertEqual(result[0]["shared_battles"], 5)
+        self.assertEqual(result[0]["shared_pilots"], 12)
+        self.assertEqual(result[0]["source"], "sql")
+        for item in result:
+            self.assertTrue(CO_PRESENT_REQUIRED_KEYS.issubset(item.keys()),
+                          f"Missing keys: {CO_PRESENT_REQUIRED_KEYS - item.keys()}")
+
+    def test_key_parity_with_neo4j(self) -> None:
+        """SQL and Neo4j return the same key set (except source value)."""
+        db = MagicMock()
+        db.fetch_all.return_value = [
+            {"co_alliance_id": 300, "shared_battles": 3, "shared_pilots": 5},
+        ]
+        client = MagicMock()
+        client.query.return_value = [
+            {"co_alliance_id": 300, "shared_battles": 3, "shared_pilots": 5},
+        ]
+
+        sql_result = _query_co_presence_sql(db, 100)
+        neo4j_result = _query_co_presence_neo4j(client, 100)
+
+        self.assertEqual(set(sql_result[0].keys()), set(neo4j_result[0].keys()),
+                        "SQL and Neo4j co-presence results must have identical key sets")
+
+    def test_empty_result(self) -> None:
+        db = MagicMock()
+        db.fetch_all.return_value = []
+
+        result = _query_co_presence_sql(db, 999)
+        self.assertEqual(result, [])
 
 
 class TestNeo4jEnemies(unittest.TestCase):
@@ -155,7 +309,8 @@ class TestNeo4jEnemies(unittest.TestCase):
         result = _query_enemies_neo4j(client, 100)
         self.assertEqual(result, [])
 
-    def test_returns_parsed_results(self) -> None:
+    def test_returns_canonical_keys(self) -> None:
+        """Neo4j enemy results use the canonical contract keys."""
         client = MagicMock()
         client.query.return_value = [
             {"enemy_id": 500, "engagements": 8},
@@ -166,6 +321,61 @@ class TestNeo4jEnemies(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["alliance_id"], 500)
         self.assertEqual(result[0]["engagements"], 8)
+        self.assertEqual(result[0]["source"], "neo4j")
+        for item in result:
+            self.assertTrue(ENEMY_REQUIRED_KEYS.issubset(item.keys()),
+                          f"Missing keys: {ENEMY_REQUIRED_KEYS - item.keys()}")
+
+    def test_fallback_to_on_side_path(self) -> None:
+        """When ENGAGED_ALLIANCE path returns empty, falls back to ON_SIDE."""
+        client = MagicMock()
+        client.query.side_effect = [
+            [],
+            [{"enemy_id": 600, "engagements": 3}],
+        ]
+
+        result = _query_enemies_neo4j(client, 100)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["alliance_id"], 600)
+        self.assertEqual(result[0]["source"], "neo4j")
+        self.assertEqual(client.query.call_count, 2)
+
+
+class TestSqlEnemies(unittest.TestCase):
+    def test_returns_canonical_keys(self) -> None:
+        """SQL enemy fallback uses the same keys as Neo4j."""
+        db = MagicMock()
+        db.fetch_all.return_value = [
+            {"enemy_id": 500, "engagements": 8},
+        ]
+
+        result = _query_enemies_sql(db, 100)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["alliance_id"], 500)
+        self.assertEqual(result[0]["engagements"], 8)
+        self.assertEqual(result[0]["source"], "sql")
+        for item in result:
+            self.assertTrue(ENEMY_REQUIRED_KEYS.issubset(item.keys()),
+                          f"Missing keys: {ENEMY_REQUIRED_KEYS - item.keys()}")
+
+    def test_key_parity_with_neo4j(self) -> None:
+        """SQL and Neo4j return the same key set (except source value)."""
+        db = MagicMock()
+        db.fetch_all.return_value = [
+            {"enemy_id": 500, "engagements": 8},
+        ]
+        client = MagicMock()
+        client.query.return_value = [
+            {"enemy_id": 500, "engagements": 8},
+        ]
+
+        sql_result = _query_enemies_sql(db, 100)
+        neo4j_result = _query_enemies_neo4j(client, 100)
+
+        self.assertEqual(set(sql_result[0].keys()), set(neo4j_result[0].keys()),
+                        "SQL and Neo4j enemy results must have identical key sets")
 
 
 class TestTrendComputation(unittest.TestCase):
@@ -177,6 +387,7 @@ class TestTrendComputation(unittest.TestCase):
 
         self.assertEqual(result["activity_trend"], "rising")
         self.assertEqual(result["battles_7d"], 10)
+        self.assertTrue(TREND_REQUIRED_KEYS.issubset(result.keys()))
 
     def test_declining_trend(self) -> None:
         db = MagicMock()
@@ -193,6 +404,44 @@ class TestTrendComputation(unittest.TestCase):
         result = _compute_trend(db, 300)
 
         self.assertEqual(result["activity_trend"], "stable")
+
+    def test_trend_values_are_valid(self) -> None:
+        """Activity trend must be one of the documented values."""
+        for data, expected in [
+            ({"battles_7d": 10, "battles_8_30d": 3, "battles_31_90d": 5}, "rising"),
+            ({"battles_7d": 0, "battles_8_30d": 15, "battles_31_90d": 20}, "declining"),
+            ({"battles_7d": 3, "battles_8_30d": 10, "battles_31_90d": 20}, "stable"),
+        ]:
+            db = MagicMock()
+            db.fetch_one.return_value = data
+            result = _compute_trend(db, 100)
+            self.assertIn(result["activity_trend"], {"rising", "declining", "stable"},
+                         f"Invalid trend value: {result['activity_trend']}")
+
+
+class TestPostureValues(unittest.TestCase):
+    """Verify that all posture values produced by _load_behavior_metrics are
+    within the documented set and will have color mappings in the PHP consumer."""
+
+    def test_all_postures_are_documented(self) -> None:
+        """Every possible posture output must be in POSTURE_VALUES."""
+        test_cases = [
+            ({"high_sustain_count": 60, "low_sustain_count": 10, "total_appearances": 100,
+              "avg_centrality": 0.5, "avg_visibility": 0.4}, "committed"),
+            ({"high_sustain_count": 5, "low_sustain_count": 45, "total_appearances": 100,
+              "avg_centrality": 0.2, "avg_visibility": 0.3}, "opportunistic"),
+            ({"high_sustain_count": 1, "low_sustain_count": 1, "total_appearances": 3,
+              "avg_centrality": 0, "avg_visibility": 0}, "infrequent"),
+            ({"high_sustain_count": 20, "low_sustain_count": 15, "total_appearances": 50,
+              "avg_centrality": 0.3, "avg_visibility": 0.3}, "balanced"),
+        ]
+        for data, expected in test_cases:
+            db = MagicMock()
+            db.fetch_one.return_value = data
+            result = _load_behavior_metrics(db, 100)
+            self.assertEqual(result["posture"], expected)
+            self.assertIn(result["posture"], POSTURE_VALUES,
+                         f"Posture '{result['posture']}' not in documented set {POSTURE_VALUES}")
 
 
 if __name__ == "__main__":

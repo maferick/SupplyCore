@@ -70,10 +70,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         $allianceName = htmlspecialchars((string) ($d['alliance_name'] ?? 'Alliance #' . $allianceId), ENT_QUOTES);
                         $posture = (string) ($d['posture'] ?? 'unknown');
                         $postureColors = [
-                            'aggressive' => 'bg-red-900/60 text-red-300',
-                            'defensive' => 'bg-blue-900/60 text-blue-300',
-                            'balanced' => 'bg-amber-900/60 text-amber-300',
-                            'skirmish' => 'bg-purple-900/60 text-purple-300',
+                            'committed'     => 'bg-red-900/60 text-red-300',
+                            'opportunistic' => 'bg-purple-900/60 text-purple-300',
+                            'balanced'      => 'bg-amber-900/60 text-amber-300',
+                            'infrequent'    => 'bg-slate-700/60 text-slate-400',
                         ];
                         $postureClass = $postureColors[$posture] ?? 'bg-slate-700/60 text-slate-300';
                         $regionJson = $d['top_regions_json'] ?? null;
