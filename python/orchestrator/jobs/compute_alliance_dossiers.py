@@ -253,10 +253,16 @@ def _query_enemies_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
 
 
 def _query_co_presence_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
-    """Query Neo4j for alliances that frequently co-appear in the same battles."""
+    """Query Neo4j for alliances whose members co-occur in the same battles.
+
+    Uses ENGAGED_ALLIANCE relationships (created by intelligence_pipeline)
+    to find alliances whose characters share engagement patterns with the
+    target alliance's characters.
+    """
     if neo4j_client is None:
         return []
     try:
+        # First try the PARTICIPATED_IN path (battle_intelligence sync)
         rows = neo4j_client.query(
             """
             MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
@@ -272,6 +278,31 @@ def _query_co_presence_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
             """,
             {"aid": alliance_id},
         )
+        if rows:
+            return [{"alliance_id": int(r["co_alliance_id"]), "co_battles": int(r["co_battles"]),
+                     "co_pilots": int(r["co_pilots"])} for r in rows]
+
+        # Fallback: use ENGAGED_ALLIANCE path (intelligence_pipeline)
+        # Find alliances whose characters engage the same target alliances
+        rows = neo4j_client.query(
+            """
+            MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
+                  -[:ENGAGED_ALLIANCE]->(target:Alliance)
+            WITH target, collect(DISTINCT c) AS our_chars
+            MATCH (c2:Character)-[:ENGAGED_ALLIANCE]->(target)
+            WHERE NOT c2 IN our_chars
+            MATCH (c2)-[:MEMBER_OF_ALLIANCE]->(a2:Alliance)
+            WHERE a2.alliance_id <> $aid
+            WITH a2.alliance_id AS co_alliance_id,
+                 COUNT(DISTINCT target) AS shared_targets,
+                 COUNT(DISTINCT c2) AS co_pilots
+            WHERE shared_targets >= 2
+            RETURN co_alliance_id, shared_targets AS co_battles, co_pilots
+            ORDER BY co_battles DESC
+            LIMIT 15
+            """,
+            {"aid": alliance_id},
+        )
         return [{"alliance_id": int(r["co_alliance_id"]), "co_battles": int(r["co_battles"]),
                  "co_pilots": int(r["co_pilots"])} for r in rows]
     except Exception:
@@ -279,10 +310,35 @@ def _query_co_presence_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
 
 
 def _query_enemies_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
-    """Query Neo4j for alliances most often on the opposing side."""
+    """Query Neo4j for alliances most often on the opposing side.
+
+    Uses ENGAGED_ALLIANCE (intelligence_pipeline) as primary source,
+    falling back to ON_SIDE/HAS_SIDE path (battle_intelligence sync).
+    """
     if neo4j_client is None:
         return []
     try:
+        # Primary: use ENGAGED_ALLIANCE — directly shows which alliances
+        # this alliance's characters have fought
+        rows = neo4j_client.query(
+            """
+            MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
+                  -[e:ENGAGED_ALLIANCE]->(enemy:Alliance)
+            WHERE enemy.alliance_id <> $aid
+            WITH enemy.alliance_id AS enemy_id,
+                 SUM(e.encounters) AS total_encounters,
+                 COUNT(DISTINCT c) AS engaging_pilots
+            WHERE total_encounters >= 2
+            RETURN enemy_id, total_encounters AS engagements
+            ORDER BY engagements DESC
+            LIMIT 15
+            """,
+            {"aid": alliance_id},
+        )
+        if rows:
+            return [{"alliance_id": int(r["enemy_id"]), "engagements": int(r["engagements"])} for r in rows]
+
+        # Fallback: ON_SIDE/HAS_SIDE path (requires battle_intelligence sync)
         rows = neo4j_client.query(
             """
             MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
