@@ -121,6 +121,8 @@ echo "  ✓ Sync cursors and job state cleared"
 # ── Step 2: Clear all computed/derived tables ───────────────────────────────
 echo "[2/5] Clearing computed/derived tables..."
 mysql "$DB_NAME" -e "
+SET FOREIGN_KEY_CHECKS = 0;
+
 -- Battle intelligence
 TRUNCATE TABLE battle_rollups;
 TRUNCATE TABLE battle_participants;
@@ -182,7 +184,7 @@ TRUNCATE TABLE killmail_item_loss_1d;
 TRUNCATE TABLE killmail_hull_loss_1d;
 TRUNCATE TABLE killmail_doctrine_activity_1d;
 
--- Buy/signals (items before summary — FK dependency)
+-- Buy/signals
 TRUNCATE TABLE buy_all_precomputed_payloads;
 TRUNCATE TABLE buy_all_items;
 TRUNCATE TABLE buy_all_summary;
@@ -199,6 +201,8 @@ TRUNCATE TABLE ui_refresh_events;
 TRUNCATE TABLE doctrine_fit_snapshots;
 TRUNCATE TABLE doctrine_activity_snapshots;
 TRUNCATE TABLE item_priority_snapshots;
+
+SET FOREIGN_KEY_CHECKS = 1;
 "
 echo "  ✓ All computed tables cleared"
 
