@@ -65,9 +65,17 @@ TRUNCATE TABLE battle_actor_graph_metrics;
 TRUNCATE TABLE graph_health_snapshots;
 
 -- Theater intelligence
+DELETE FROM theater_graph_participants WHERE 1=1;
+DELETE FROM theater_graph_summary WHERE 1=1;
+DELETE FROM theater_suspicion_summary WHERE 1=1;
+DELETE FROM theater_side_composition WHERE 1=1;
+DELETE FROM theater_participants WHERE 1=1;
 DELETE FROM theater_alliance_summary WHERE 1=1;
-DELETE FROM theater_battle_membership WHERE 1=1;
+DELETE FROM theater_timeline WHERE 1=1;
+DELETE FROM theater_systems WHERE 1=1;
+DELETE FROM theater_battles WHERE 1=1;
 DELETE FROM theaters WHERE 1=1;
+DELETE FROM battle_turning_points WHERE 1=1;
 
 -- Intelligence expansion
 TRUNCATE TABLE alliance_dossiers;
